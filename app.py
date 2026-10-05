@@ -13802,8 +13802,8 @@ def koja_music_home():
 </style>
 <div class="music-screen"><section class="music-hero"><h1>KOJA MUSIC GLOBAL</h1><p>Music, artists and rights-cleared releases from Zambia, Africa and the world.</p><form method="get" action="{{ url_for('koja_music_search') }}" class="music-top"><input name="q" placeholder="Search music, artists, genres or countries"><button class="btn">Search</button></form></section>
 <div class="music-tabs"><a href="#featured">Featured</a><a href="#trending">Trending</a><a href="#explore">Explore</a><a href="{{ url_for('koja_music_submit') }}">Submit Music</a></div>
-<div class="card" id="featured"><h2>Featured Releases</h2><div class="music-grid">{% for t in featured %}<article class="music-card">{% if t.artwork_url %}<img class="music-cover" src="{{ t.artwork_url }}">{% endif %}<h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}<div class="music-downloads"><a href="{{ url_for('koja_music_watch',track_id=t.id) }}">Watch / Play</a>{% if t.audio_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='audio') }}">Audio</a>{% endif %}{% if t.visual_url or t.video_url or t.music_video_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='visual') }}">Visual</a>{% endif %}</div></article>{% else %}<p>No featured releases yet.</p>{% endfor %}</div></div>
-<div class="card" id="trending"><h2>Trending</h2><div class="music-grid">{% for t in trending %}<article class="music-card"><h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}<small>{{ t.plays or 0 }} plays</small><div class="music-downloads"><a href="{{ url_for('koja_music_watch',track_id=t.id) }}">Play</a>{% if t.audio_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='audio') }}">Audio</a>{% endif %}{% if t.visual_url or t.video_url or t.music_video_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='visual') }}">Visual</a>{% endif %}</div></article>{% else %}<p>No published music yet.</p>{% endfor %}</div></div>
+<div class="card" id="featured"><h2>Featured Releases</h2><div class="music-grid">{% for t in featured %}<article class="music-card">{% if t.artwork_url %}<img class="music-cover" src="{{ t.artwork_url }}">{% endif %}<h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ url_for('koja_music_secure_media',track_id=t.id,kind='audio') }}"></audio>{% endif %}<div class="music-downloads"><a href="{{ url_for('koja_music_watch',track_id=t.id) }}">Watch / Play</a>{% if t.audio_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='audio') }}">Audio</a>{% endif %}{% if t.visual_url or t.video_url or t.music_video_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='visual') }}">Visual</a>{% endif %}</div></article>{% else %}<p>No featured releases yet.</p>{% endfor %}</div></div>
+<div class="card" id="trending"><h2>Trending</h2><div class="music-grid">{% for t in trending %}<article class="music-card"><h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ url_for('koja_music_secure_media',track_id=t.id,kind='audio') }}"></audio>{% endif %}<small>{{ t.plays or 0 }} plays</small><div class="music-downloads"><a href="{{ url_for('koja_music_watch',track_id=t.id) }}">Play</a>{% if t.audio_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='audio') }}">Audio</a>{% endif %}{% if t.visual_url or t.video_url or t.music_video_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='visual') }}">Visual</a>{% endif %}</div></article>{% else %}<p>No published music yet.</p>{% endfor %}</div></div>
 <div class="actions"><a class="btn" href="{{ url_for('koja_music_submit') }}">Artist Submission</a>{% if user %}<a class="btn secondary" href="{{ url_for('koja_music_dashboard') }}">Artist Dashboard</a>{% endif %}</div>
 <div class="music-mobilebar"><a href="{{ url_for('koja_music_home') }}">Home</a><a href="{{ url_for('koja_music_search') }}">Search</a><a href="#trending">Trending</a><a href="{{ url_for('koja_music_submit') }}">Upload</a></div></div>
 ''',featured=featured,trending=trending,artists=artists,countries=countries,genres=genres)
@@ -13913,7 +13913,7 @@ def koja_music_dashboard():
     submissions=db_select("koja_music_artist_submissions",filters={"user_id":uid},order="created_at.desc",limit=5000) or []
     return render_page("KOJA MUSIC Artist Dashboard",r'''
 <div class="hero"><h1>KOJA MUSIC Artist Dashboard</h1><p>Profiles, releases, submissions and approval status.</p></div>
-<div class="card"><h2>My Artist Profiles</h2>{% for a in artists %}<div class="music-card"><h3>{{ a.artist_name }}</h3><p>{{ a.country }} · {{ a.status }} · rights: {{ a.rights_status or 'review_required' }}</p><a class="btn" href="{{ url_for('koja_music_release_new',artist_id=a.id) }}">Add Release</a></div>{% else %}<p>No artist profile yet. <a href="{{ url_for('koja_music_submit') }}">Submit one</a>.</p>{% endfor %}</div>
+<div class="card"><h2>My Artist Profiles</h2>{% for a in artists %}<div class="music-card"><h3>{{ a.artist_name }}</h3><p>{{ a.country }} · {{ a.status }} · rights: {{ a.rights_status or 'review_required' }}</p><a class="btn" href="{{ url_for('koja_music_dashboard_upload',artist_id=a.id) }}">Add Release</a></div>{% else %}<p>No artist profile yet. <a href="{{ url_for('koja_music_submit') }}">Submit one</a>.</p>{% endfor %}</div>
 <div class="card"><h2>Submissions</h2>{% for s in submissions %}<p>{{ s.artist_name }} — {{ s.status }}</p>{% else %}<p>No submissions.</p>{% endfor %}</div>
 ''',artists=artists,submissions=submissions)
 
@@ -14264,9 +14264,9 @@ def koja_music_release_page(release_id):
 <div class="card"><h2>Tracks</h2>{% for t in tracks %}<div class="music-card"><strong>{{ loop.index }}. {{ t.title }}</strong><p>{{ t.artist_name or '' }}</p>{% if t.audio_url %}<audio controls preload="none" style="width:100%" src="{{ t.audio_url }}"></audio>{% endif %}<div class="actions"><a class="btn secondary" href="{{ url_for('koja_music_full_player',track_id=t.id) }}">Player</a>{% if t.audio_url %}<a class="btn secondary" href="{{ url_for('koja_music_download_full',track_id=t.id,format='audio') }}">Audio</a>{% endif %}{% if t.visual_url or t.video_url or t.music_video_url %}<a class="btn secondary" href="{{ url_for('koja_music_download_full',track_id=t.id,format='visual') }}">Visual</a>{% endif %}</div></div>{% else %}<p>No approved tracks in this release yet.</p>{% endfor %}</div>
 ''',release=release,tracks=tracks)
 
-@app.route("/music/studio",methods=["GET","POST"])
+@app.route("/music/dashboard/release",methods=["GET","POST"])
 @login_required
-def koja_music_studio():
+def koja_music_dashboard_release():
     uid=_km_user_id(); artists=db_select("koja_music_artists",filters={"user_id":uid},order="created_at.desc",limit=5000) or []
     if request.method=="POST":
         artist_id=clean(request.form.get("artist_id")); artist=next((a for a in artists if str(a.get("id"))==artist_id),None)
@@ -14328,7 +14328,7 @@ def koja_music_admin_studio():
 <style>.kmadmin{max-width:1400px;margin:auto}.kmadmin-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.kmadmin-card{border:1px solid var(--border);border-radius:16px;padding:15px;background:var(--surface);margin-bottom:10px}.kmadmin-card form{display:flex;gap:7px;flex-wrap:wrap;align-items:center}</style>
 <div class="kmadmin"><div class="hero"><h1>KOJA MUSIC GLOBAL — ADMIN STUDIO</h1><p>Catalogue, release approval, rights clearance, submissions and publishing controls.</p></div>
 <div class="kmadmin-grid"><div class="card"><h2>{{ tracks|length }}</h2><p>Tracks</p></div><div class="card"><h2>{{ releases|length }}</h2><p>Releases</p></div><div class="card"><h2>{{ rights|length }}</h2><p>Rights records</p></div><div class="card"><h2>{{ submissions|length }}</h2><p>Submissions</p></div></div>
-<div class="card"><h2>Release / Track approval</h2>{% for t in tracks %}<div class="kmadmin-card"><strong>{{ t.title }}</strong><p>{{ t.artist_name or '' }} · {{ t.status }} · rights: {{ t.rights_status }}</p><form method="post" action="{{ url_for('koja_music_admin_track_v2',track_id=t.id) }}"><select name="status"><option value="pending_review">Pending</option><option value="published">Published</option><option value="rejected">Rejected</option><option value="suspended">Suspended</option></select><select name="rights_status"><option value="pending_review">Rights pending</option><option value="approved">Rights approved</option><option value="rejected">Rights rejected</option><option value="revoked">Rights revoked</option><option value="expired">Rights expired</option></select><label><input type="checkbox" name="featured" value="1" {% if t.featured %}checked{% endif %}> Featured</label><button class="btn">Apply</button></form></div>{% else %}<p>No tracks.</p>{% endfor %}</div>
+<div class="card"><h2>Release / Track approval</h2>{% for t in tracks %}<div class="kmadmin-card"><strong>{{ t.title }}</strong><p>{{ t.artist_name or '' }} · {{ t.status }} · rights: {{ t.rights_status }}</p><p><a class="btn secondary" href="{{ url_for('koja_music_studio_review',track_id=t.id) }}">Review rights &amp; publish</a></p><form method="post" action="{{ url_for('koja_music_admin_track_v2',track_id=t.id) }}"><select name="status"><option value="pending_review">Pending</option><option value="published">Published</option><option value="rejected">Rejected</option><option value="suspended">Suspended</option></select><select name="rights_status"><option value="pending_review">Rights pending</option><option value="approved">Rights approved</option><option value="rejected">Rights rejected</option><option value="revoked">Rights revoked</option><option value="expired">Rights expired</option></select><label><input type="checkbox" name="featured" value="1" {% if t.featured %}checked{% endif %}> Featured</label><button class="btn">Apply</button></form></div>{% else %}<p>No tracks.</p>{% endfor %}</div>
 <div class="card"><h2>Rights register</h2>{% for r in rights %}<div class="kmadmin-card"><strong>{{ r.master_owner or 'Owner not entered' }}</strong><p>{{ r.licence_type or '' }} · {{ r.territory or 'Global' }} · {{ r.rights_status or 'pending' }}</p></div>{% else %}<p>No rights records yet.</p>{% endfor %}</div>
 </div>
 ''',tracks=tracks,releases=releases,rights=rights,submissions=submissions)
@@ -14355,3 +14355,181 @@ def koja_music_discovery_v2():
     trending=sorted(tracks,key=lambda t:int(t.get("plays") or t.get("play_count") or 0),reverse=True)[:50]
     new=sorted(tracks,key=lambda t:str(t.get("published_at") or t.get("created_at") or ""),reverse=True)[:50]
     return jsonify(ok=True,count=len(tracks),featured=featured,trending=trending,new_releases=new)
+
+
+
+
+def music_upload_storage(file_storage, folder="uploads", public=False):
+    """Upload KOJA MUSIC media to the dedicated music bucket."""
+    if not file_storage or not file_storage.filename:
+        return None, "No file supplied."
+    if not supabase_configured():
+        return None, "Supabase is not configured."
+    filename=secure_filename(file_storage.filename)
+    if not filename:return None,"Invalid filename."
+    ext=filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
+    if ext not in ALLOWED_EXTENSIONS:return None,f"File type .{ext} is not allowed."
+    data=file_storage.read()
+    if len(data)>MAX_UPLOAD_MB*1024*1024:return None,f"Maximum file size is {MAX_UPLOAD_MB} MB."
+    bucket=os.getenv('KOJA_MUSIC_STORAGE_BUCKET','koja-music').strip() or 'koja-music'
+    path=f"{folder.strip('/')}/{uuid.uuid4().hex}_{filename}"
+    mime=file_storage.mimetype or 'application/octet-stream'
+    try:
+        r=requests.post(f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{quote(bucket,safe='')}/{quote(path,safe='/')}",headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
+        if not r.ok:return None,r.text[:1200]
+        public_url=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(bucket,safe='')}/{quote(path,safe='/')}" if public else None
+        return {'path':path,'url':public_url,'file_name':filename,'file_size':len(data),'mime_type':mime,'bucket':bucket},None
+    except Exception as exc:
+        logger.exception('KOJA MUSIC storage upload error: %s',exc)
+        return None,str(exc)
+
+def _km_signed_url(path, expires=1800):
+    path=str(path or '').strip().lstrip('/')
+    bucket=os.getenv('KOJA_MUSIC_STORAGE_BUCKET','koja-music').strip() or 'koja-music'
+    if not path or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:return None
+    try:
+        endpoint=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/sign/{quote(bucket,safe='')}/{quote(path,safe='/')}"
+        r=requests.post(endpoint,headers=sb_headers({'Content-Type':'application/json'},auth_key=SUPABASE_SERVICE_KEY),json={'expiresIn':max(60,min(int(expires or 1800),86400))},timeout=20)
+        if not r.ok:
+            logger.warning('KOJA MUSIC signed URL failed: %s %s',r.status_code,r.text[:500]); return None
+        data=json_or_empty(r); signed=data.get('signedURL') or data.get('signedUrl') or data.get('signed_url')
+        if not signed:return None
+        return signed if signed.startswith(('http://','https://')) else f"{SUPABASE_URL.rstrip('/')}/storage/v1{signed if signed.startswith('/') else '/'+signed}"
+    except Exception:
+        logger.exception('KOJA MUSIC signed URL error'); return None
+# ============================================================
+# KOJA MUSIC GLOBAL PRODUCTION PIPELINE v3
+# Separate Studio + private media + rights-controlled publishing.
+# ============================================================
+
+
+def _km_private_media_url(t,kind='audio',expires=1800):
+    if not t:return None
+    kind=(kind or 'audio').lower()
+    keys={
+        'audio':('audio_path',),
+        'visual':('visual_path','video_path','music_video_path'),
+        'artwork':('artwork_path','cover_art_path'),
+    }.get(kind,('audio_path',))
+    for key in keys:
+        if t.get(key):
+            u=_km_signed_url(t.get(key),expires)
+            if u:return u
+    fallback={
+        'audio':('audio_url','stream_url','file_url'),
+        'visual':('visual_url','video_url','music_video_url'),
+        'artwork':('artwork_url','cover_art_url'),
+    }.get(kind,('audio_url',))
+    for key in fallback:
+        if t.get(key):return t.get(key)
+    return None
+
+def _km_rights_document_url(row,expires=900):
+    if not row:return None
+    path=row.get('licence_document_path') or row.get('rights_document_path')
+    if path:return _km_signed_url(path,expires)
+    return row.get('licence_document_url') or row.get('rights_document_url')
+
+def _km_track_url(t,kind='audio'):
+    return _km_private_media_url(t,kind,1800) or ''
+
+@app.route('/music/dashboard/upload/<artist_id>',methods=['GET','POST'])
+@login_required
+def koja_music_dashboard_upload(artist_id):
+    uid=_km_user_id()
+    rows=db_select('koja_music_artists',filters={'id':artist_id,'user_id':uid},limit=1) or []
+    if not rows:return 'Artist profile not found.',404
+    artist=rows[0]
+    if request.method=='POST':
+        title=clean(request.form.get('title')); rtype=clean(request.form.get('release_type')).lower() or 'single'
+        if not title or rtype not in {'single','ep','album'}:return 'Valid title and release type are required.',400
+        artwork=request.files.get('artwork'); audio=request.files.get('audio'); visual=request.files.get('visual'); rights_doc=request.files.get('rights_document')
+        if not audio or not audio.filename:return 'Audio file is required for a music release.',400
+        art_path=art_url=audio_path=visual_path=rights_path=None
+        if artwork and artwork.filename:
+            result,err=music_upload_storage(artwork,'music/artwork',public=True)
+            if err:return 'Artwork upload failed: '+str(err),400
+            art_path=(result or {}).get('path'); art_url=(result or {}).get('url')
+        result,err=music_upload_storage(audio,'music/audio',public=False)
+        if err:return 'Audio upload failed: '+str(err),400
+        audio_path=(result or {}).get('path')
+        if visual and visual.filename:
+            result,err=music_upload_storage(visual,'music/visual',public=False)
+            if err:return 'Visual upload failed: '+str(err),400
+            visual_path=(result or {}).get('path')
+        if rights_doc and rights_doc.filename:
+            result,err=music_upload_storage(rights_doc,'music/rights',public=False)
+            if err:return 'Rights document upload failed: '+str(err),400
+            rights_path=(result or {}).get('path')
+        rel,err=db_insert('koja_music_releases',{'artist_id':artist_id,'title':title,'release_type':rtype,'genre':clean(request.form.get('genre')),'release_date':request.form.get('release_date') or None,'cover_art_url':art_url,'cover_art_path':art_path,'description':clean(request.form.get('description')),'status':'submitted','rights_status':'pending_review','created_by':uid})
+        if err:return 'Release creation failed: '+str(err),500
+        rid=(rel or {}).get('id') if isinstance(rel,dict) else None
+        if not rid:return 'Release created without an ID.',500
+        tr,err=db_insert('koja_music_tracks',{'release_id':rid,'artist_id':artist_id,'user_id':uid,'artist_name':artist.get('artist_name'),'country':artist.get('country'),'title':title,'album':title,'genre':clean(request.form.get('genre')),'release_date':request.form.get('release_date') or None,'audio_path':audio_path,'audio_url':None,'audio_mime':audio.mimetype,'visual_path':visual_path,'visual_url':None,'artwork_path':art_path,'artwork_url':art_url,'rights_document_path':rights_path,'status':'pending_review','rights_status':'pending_review','downloadable_audio':False,'downloadable_visual':False,'rights_declaration':True,'rights_declaration_at':utc_now()})
+        if err:return 'Track creation failed: '+str(err),500
+        if rights_path:
+            db_insert('koja_music_rights',{'track_id':(tr or {}).get('id'),'release_id':rid,'artist_id':artist_id,'licence_document_path':rights_path,'rights_status':'pending_review','notes':'Submitted with release.'})
+        flash('Release submitted to KOJA MUSIC Studio for rights review.','success')
+        return redirect(url_for('koja_music_dashboard'))
+    return render_page('KOJA MUSIC Studio Upload',r'''
+<div class="hero"><h1>KOJA MUSIC — Submit Release</h1><p>{{ artist.artist_name }} · private upload to the separate MUSIC Studio review queue.</p></div>
+<div class="card"><form method="post" enctype="multipart/form-data">
+<label>Release title</label><input name="title" required maxlength="220">
+<label>Release type</label><select name="release_type"><option value="single">Single</option><option value="ep">EP</option><option value="album">Album</option></select>
+<label>Genre</label><input name="genre" maxlength="120"><label>Release date</label><input type="date" name="release_date">
+<label>Description</label><textarea name="description" rows="4"></textarea>
+<label>Cover artwork</label><input type="file" name="artwork" accept="image/jpeg,image/png,image/webp">
+<label>Audio — required</label><input type="file" name="audio" required accept="audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/flac,.mp3,.wav,.m4a,.aac,.flac">
+<label>Visual / music video — optional</label><input type="file" name="visual" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov">
+<label>Rights / licence document — optional but recommended</label><input type="file" name="rights_document" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png">
+<label><input type="checkbox" name="rights_declaration" value="1" required> I confirm I have the rights or authorization to submit this material.</label>
+<button class="btn" type="submit">Submit to MUSIC Studio</button></form>
+<p class="small">Audio, visual files and rights documents are stored privately. Nothing becomes publicly streamable or downloadable until MUSIC Studio approves publication and rights.</p></div>
+''',artist=artist)
+
+@app.route('/music/secure-media/<track_id>/<kind>')
+def koja_music_secure_media(track_id,kind):
+    kind=clean(kind).lower()
+    if kind not in {'audio','visual','artwork'}:return 'Invalid media type.',400
+    t=_music_public_track(track_id)
+    if not t:return 'Media is not publicly available.',404
+    url=_km_private_media_url(t,kind,1800)
+    if not url:return 'Media is unavailable.',404
+    return redirect(url)
+
+@app.route('/music/studio/review/<track_id>',methods=['GET','POST'])
+@admin_required
+def koja_music_studio_review(track_id):
+    rows=db_select('koja_music_tracks',filters={'id':track_id},limit=1) or []
+    if not rows:return 'Track not found.',404
+    t=rows[0]
+    if request.method=='POST':
+        status=clean(request.form.get('status')); rights=clean(request.form.get('rights_status'))
+        if status not in {'pending_review','published','rejected','suspended'} or rights not in {'pending_review','approved','rejected','revoked','expired'}:return 'Invalid workflow state.',400
+        if status=='published' and rights!='approved':status='pending_review'
+        patch={'status':status,'rights_status':rights,'featured':bool(request.form.get('featured')),'downloadable_audio':bool(request.form.get('downloadable_audio')),'downloadable_visual':bool(request.form.get('downloadable_visual')),'reviewed_by':_km_user_id(),'reviewed_at':utc_now(),'published_at':utc_now() if status=='published' else None}
+        db_update('koja_music_tracks',{'id':track_id},patch)
+        release_id=t.get('release_id')
+        if release_id:
+            siblings=db_select('koja_music_tracks',filters={'release_id':release_id},limit=5000) or []
+            all_ok=bool(siblings) and all(str(x.get('status'))=='published' and str(x.get('rights_status'))=='approved' for x in siblings)
+            db_update('koja_music_releases',{'id':release_id},{'status':'published' if all_ok else 'submitted','rights_status':'approved' if all_ok else 'pending_review','published_at':utc_now() if all_ok else None})
+        flash('MUSIC Studio decision saved.','success')
+        return redirect(url_for('koja_music_studio'))
+    rights=db_select('koja_music_rights',filters={'track_id':track_id},order='created_at.desc',limit=20) or []
+    docs=[dict(r,document_url=_km_rights_document_url(r)) for r in rights]
+    audio=_km_private_media_url(t,'audio',900) if t.get('audio_path') else t.get('audio_url')
+    visual=_km_private_media_url(t,'visual',900) if t.get('visual_path') else t.get('visual_url')
+    return render_page('KOJA MUSIC Studio Review',r'''
+<div class="hero"><h1>MUSIC Studio Review</h1><p>{{ t.title }} · {{ t.artist_name or '' }}</p></div>
+<div class="card"><p><strong>Publication:</strong> {{ t.status }} · <strong>Rights:</strong> {{ t.rights_status }}</p>{% if audio %}<audio controls preload="metadata" style="width:100%" src="{{ audio }}"></audio>{% endif %}{% if visual %}<video controls playsinline style="width:100%;max-height:520px;background:#000;border-radius:14px" src="{{ visual }}"></video>{% endif %}</div>
+<div class="card"><h2>Rights documents</h2>{% for d in docs %}<p>{{ d.notes or 'Rights document' }} {% if d.document_url %}<a class="btn secondary" target="_blank" rel="noopener" href="{{ d.document_url }}">Open</a>{% endif %}</p>{% else %}<p>No rights document attached.</p>{% endfor %}</div>
+<div class="card"><form method="post"><label>Publication status</label><select name="status"><option value="pending_review">Pending review</option><option value="published">Published</option><option value="rejected">Rejected</option><option value="suspended">Suspended</option></select><label>Rights status</label><select name="rights_status"><option value="pending_review">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="revoked">Revoked</option><option value="expired">Expired</option></select><label><input type="checkbox" name="featured" {% if t.featured %}checked{% endif %}> Featured</label><label><input type="checkbox" name="downloadable_audio" {% if t.downloadable_audio %}checked{% endif %}> Permit audio download</label><label><input type="checkbox" name="downloadable_visual" {% if t.downloadable_visual %}checked{% endif %}> Permit visual download</label><button class="btn">Save Studio Decision</button></form></div>
+''',t=t,docs=docs,audio=audio,visual=visual)
+
+@app.route('/music/studio/api/summary')
+@admin_required
+def koja_music_studio_summary():
+    tracks=db_select('koja_music_tracks',limit=5000) or []
+    return jsonify(ok=True,artists=len(db_select('koja_music_artists',limit=5000) or []),releases=len(db_select('koja_music_releases',limit=5000) or []),pending=sum(1 for x in tracks if str(x.get('status')) in {'pending_review','submitted'}),published=sum(1 for x in tracks if str(x.get('status'))=='published' and str(x.get('rights_status'))=='approved'),downloads=sum(int(x.get('download_count') or 0) for x in tracks),plays=sum(int(x.get('plays') or x.get('play_count') or 0) for x in tracks))
+
