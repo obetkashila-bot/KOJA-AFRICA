@@ -13739,8 +13739,7 @@ def _music_status_label(row):
 
 @app.route("/music")
 def koja_music_home():
-    # Public catalogue: only songs with verified rights + an active signed licence
-    # are visible. Recruitment prospects and pending uploads are deliberately excluded.
+    # KOJA MUSIC vertical video-first feed. Only rights-cleared tracks with an authorised video are shown.
     tracks = db_select(
         "koja_music_tracks",
         {"status": "published", "rights_status": "verified"},
@@ -13749,64 +13748,163 @@ def koja_music_home():
     )
     visible = []
     for t in tracks:
-        if _music_active_licence(t.get("id")):
-            t["_stream_url"] = url_for("music_stream", track_id=t.get("id"))
-            t["_art_url"] = url_for("music_artwork", track_id=t.get("id")) if t.get("artwork_path") else ""
-            visible.append(t)
+        if not _music_active_licence(t.get("id")) or not clean(t.get("video_path")):
+            continue
+        t["_video_url"] = url_for("music_video", track_id=t.get("id"))
+        t["_audio_url"] = url_for("music_stream", track_id=t.get("id"))
+        t["_download_video_url"] = url_for("music_download", track_id=t.get("id"), kind="video")
+        t["_download_audio_url"] = url_for("music_download", track_id=t.get("id"), kind="audio")
+        visible.append(t)
+
     return render_page("KOJA MUSIC", r"""
 <style>
-.kmusic{max-width:1250px;margin:auto}.kmusic-hero{padding:28px;border-radius:22px;background:linear-gradient(135deg,#071b36,#0d4f9c);color:#fff}.kmusic-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.kmusic-track{padding:16px}.kmusic-art{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:14px;background:#e9eef5}.kmusic-meta{display:flex;justify-content:space-between;gap:8px;align-items:center}.kmusic-player{width:100%;margin-top:10px}.kmusic-badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#e7f5ed;color:#146c43;font-size:11px;font-weight:800}.kmusic-empty{text-align:center;padding:42px}.kmusic-note{font-size:13px;color:var(--muted)}@media(max-width:850px){.kmusic-grid{grid-template-columns:1fr 1fr}}@media(max-width:560px){.kmusic-grid{grid-template-columns:1fr}}
+html,body{background:#000!important}.koja-music-feed-shell nav,.koja-music-feed-shell footer{display:none!important}
+nav,footer{display:none!important}.container{width:100%!important;max-width:none!important;margin:0!important;padding:0!important}
+.koja-music-feed-shell{width:100vw;max-width:none;margin:0;padding:0;background:#000}
+.koja-music-feed{width:100%;height:100vh;min-height:520px;overflow-y:auto;overflow-x:hidden;scroll-snap-type:y mandatory;background:#000;overscroll-behavior-y:contain}
+.koja-music-item{position:relative;width:100%;height:100vh;min-height:520px;background:#000;scroll-snap-align:start;scroll-snap-stop:always;overflow:hidden}
+.koja-music-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+.koja-music-shade{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.82) 0%,rgba(0,0,0,.28) 25%,transparent 52%);pointer-events:none}
+.koja-music-info{position:absolute;left:14px;right:82px;bottom:18px;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.8);z-index:4}
+.koja-music-title{font-size:15px;font-weight:800;line-height:1.25;margin:0 0 4px;max-width:85%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.koja-music-artist{font-size:12px;line-height:1.25;margin:0 0 4px;font-weight:600;opacity:.94;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.koja-music-streamers{font-size:10px;line-height:1.2;opacity:.82;margin:0}
+.koja-music-actions{position:absolute;left:10px;bottom:17px;z-index:5;display:flex;flex-direction:row;align-items:center;gap:10px}
+.koja-music-action{width:48px;height:48px;border:0;border-radius:50%;background:rgba(0,0,0,.46);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 14px rgba(0,0,0,.3);font-size:21px}
+.koja-music-action.like.active{color:#ff496f}
+.koja-music-download-wrap{position:relative}
+.koja-music-download-menu{display:none;position:absolute;left:0;bottom:56px;min-width:132px;background:rgba(8,14,24,.96);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:6px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+.koja-music-download-menu.open{display:block}
+.koja-music-download-menu a{display:block;color:#fff;text-decoration:none;font-size:12px;font-weight:700;padding:10px 12px;border-radius:8px;white-space:nowrap}
+.koja-music-download-menu a:hover{background:rgba(255,255,255,.1)}
+.koja-music-empty{height:calc(100vh - 68px);min-height:520px;display:grid;place-items:center;color:#fff;text-align:center;padding:30px;background:#000}
+.koja-music-empty h2{font-size:20px;margin:0 0 8px}.koja-music-empty p{font-size:12px;color:#aab4c2;margin:0}
+@media(min-width:900px){.koja-music-feed{max-width:560px;margin:0 auto;border-left:1px solid #111;border-right:1px solid #111}}
+@media(max-width:560px){.koja-music-feed,.koja-music-item,.koja-music-empty{height:100vh;min-height:480px}.koja-music-info{left:10px;bottom:13px}.koja-music-actions{left:7px;bottom:13px}.koja-music-action{width:44px;height:44px;font-size:19px}.koja-music-title{font-size:14px}.koja-music-artist{font-size:11px}.koja-music-streamers{font-size:9px}}
 </style>
-<div class="kmusic">
-  <div class="kmusic-hero"><h1>KOJA MUSIC</h1><p>Authorised music discovery from artists and rights holders who have granted KOJA permission to stream and promote their recordings.</p>{% if user %}<div class="actions"><a class="btn" href="{{ url_for('music_artist_apply') }}">Artist / Rights Holder</a>{% if user.is_admin %}<a class="btn secondary" href="{{ url_for('admin_music') }}">Music Rights Administration</a>{% endif %}</div>{% endif %}</div>
-  <div class="card"><strong>{{ tracks|length }}</strong> authorised tracks currently published <span class="kmusic-note">• KOJA's 100-song target is tracked internally; uploads are not published until rights are verified.</span></div>
-  {% if tracks %}<div class="kmusic-grid">{% for t in tracks %}<article class="card kmusic-track"><img class="kmusic-art" src="{{ t._art_url }}" alt="{{ t.title }} artwork" onerror="this.style.display='none'"><div class="kmusic-meta"><h3>{{ t.title }}</h3><span class="kmusic-badge">AUTHORISED</span></div><p><strong>{{ t.artist_name }}</strong>{% if t.album %} · {{ t.album }}{% endif %}</p>{% if t.genre %}<p class="kmusic-note">{{ t.genre }}{% if t.country %} · {{ t.country }}{% endif %}</p>{% endif %}<audio class="kmusic-player" controls preload="none" src="{{ t._stream_url }}"></audio></article>{% endfor %}</div>{% else %}<div class="card kmusic-empty"><h2>No authorised music published yet.</h2><p>KOJA MUSIC is ready for rights-cleared catalogue onboarding.</p></div>{% endif %}
+<div class="koja-music-feed-shell">
+  <div class="koja-music-feed" id="kojaMusicFeed">
+  {% if tracks %}
+    {% for t in tracks %}
+    <article class="koja-music-item" data-track-id="{{ t.id }}">
+      <video class="koja-music-video" playsinline webkit-playsinline loop muted preload="metadata" data-src="{{ t._video_url }}" poster="{{ url_for('music_artwork', track_id=t.id) if t.artwork_path else '' }}"></video>
+      <div class="koja-music-shade"></div>
+      <div class="koja-music-info"><div class="koja-music-title">{{ t.title }}</div><div class="koja-music-artist">{{ t.artist_name }}</div><div class="koja-music-streamers">{{ (t.plays or 0)|int }} streamers</div></div>
+      <div class="koja-music-actions">
+        <div class="koja-music-download-wrap"><button class="koja-music-action" type="button" aria-label="Download" onclick="toggleMusicDownload(this)">↓</button><div class="koja-music-download-menu"><a href="{{ t._download_video_url }}">Download video</a><a href="{{ t._download_audio_url }}">Download audio</a></div></div>
+        <button class="koja-music-action like" type="button" aria-label="Like" data-track="{{ t.id }}">♡</button>
+      </div>
+    </article>
+    {% endfor %}
+  {% else %}
+    <div class="koja-music-empty"><div><h2>No music videos available yet</h2><p>Rights-cleared music videos will appear here as KOJA MUSIC licences are verified.</p></div></div>
+  {% endif %}
+  </div>
 </div>
+<script>
+(function(){
+  const feed=document.getElementById('kojaMusicFeed'); if(!feed)return;
+  const items=[...feed.querySelectorAll('.koja-music-item')];
+  function load(v){if(!v||v.dataset.loaded)return;v.src=v.dataset.src;v.dataset.loaded='1';v.load();}
+  function playItem(item){const v=item.querySelector('video');items.forEach(x=>{const ov=x.querySelector('video');if(x!==item&&ov)ov.pause();});load(v);const p=v.play();if(p&&p.catch)p.catch(()=>{});fetch('/api/music/stream/'+encodeURIComponent(item.dataset.trackId),{method:'POST',credentials:'same-origin'}).catch(()=>{});}
+  const io=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting&&e.intersectionRatio>=.72)playItem(e.target)}),{root:feed,threshold:[.72,.9]});
+  items.forEach(item=>{io.observe(item);const v=item.querySelector('video');if(v)v.addEventListener('click',()=>{if(v.paused)v.play().catch(()=>{});else v.pause()});});
+  if(items[0])playItem(items[0]);
+  window.toggleMusicDownload=function(btn){const m=btn.nextElementSibling;if(!m)return;document.querySelectorAll('.koja-music-download-menu.open').forEach(x=>{if(x!==m)x.classList.remove('open')});m.classList.toggle('open')};
+  document.addEventListener('click',e=>{if(!e.target.closest('.koja-music-download-wrap'))document.querySelectorAll('.koja-music-download-menu.open').forEach(x=>x.classList.remove('open'))});
+  document.querySelectorAll('.koja-music-action.like').forEach(btn=>btn.addEventListener('click',async()=>{try{const r=await fetch('/music/like/'+encodeURIComponent(btn.dataset.track),{method:'POST',credentials:'same-origin'});const d=await r.json();if(d.ok){btn.classList.toggle('active',!!d.liked);btn.textContent=d.liked?'♥':'♡'}}catch(e){}}));
+})();
+</script>
 """, tracks=visible)
+
+
+@app.route("/api/music/stream/<track_id>", methods=["POST"])
+def music_stream_event(track_id):
+    track = _music_track(track_id)
+    if not track or track.get("status") != "published" or track.get("rights_status") != "verified" or not _music_active_licence(track_id):
+        return jsonify({"ok": False}), 404
+    db_insert("koja_music_play_events", {"id": str(uuid.uuid4()), "track_id": track_id, "user_id": _music_user_id() or None, "played_at": utc_now()})
+    try:
+        db_update("koja_music_tracks", {"id": track_id}, {"plays": int(track.get("plays") or 0) + 1, "last_played_at": utc_now()})
+    except Exception:
+        logger.exception("KOJA MUSIC play counter update failed")
+    return jsonify({"ok": True})
+
+
+@app.route("/music/video/<track_id>")
+def music_video(track_id):
+    track = _music_track(track_id)
+    if not track or track.get("status") != "published" or track.get("rights_status") != "verified" or not _music_active_licence(track_id): abort(404)
+    path = clean(track.get("video_path"))
+    if not path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=120)
+        if not r.ok: abort(404)
+        response=Response(r.content,mimetype=r.headers.get("Content-Type") or track.get("video_mime") or "video/mp4")
+        response.headers["Cache-Control"]="public, max-age=300"; response.headers["Accept-Ranges"]="bytes"; response.headers["Content-Length"]=str(len(r.content)); response.headers["X-Content-Type-Options"]="nosniff"
+        return response
+    except Exception: logger.exception("KOJA MUSIC video read failed"); abort(404)
+
+
+@app.route("/music/download/<track_id>/<kind>")
+def music_download(track_id, kind):
+    if kind not in {"video","audio"}: abort(404)
+    track=_music_track(track_id)
+    if not track or track.get("status")!="published" or track.get("rights_status")!="verified" or not _music_active_licence(track_id): abort(404)
+    licence=_music_active_licence(track_id)
+    if not as_bool(licence.get("download_allowed")): abort(403)
+    path=clean(track.get("video_path" if kind=="video" else "audio_path"))
+    if not path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=120)
+        if not r.ok: abort(404)
+        ext=os.path.splitext(path)[1] or (".mp4" if kind=="video" else ".mp3")
+        filename=f"{secure_filename(track.get('artist_name') or 'KOJA')}-{secure_filename(track.get('title') or 'music')}{ext}"
+        response=Response(r.content,mimetype=r.headers.get("Content-Type") or ("video/mp4" if kind=="video" else "audio/mpeg"))
+        response.headers["Content-Disposition"]=f'attachment; filename="{filename}"'; response.headers["Content-Length"]=str(len(r.content)); response.headers["X-Content-Type-Options"]="nosniff"
+        return response
+    except Exception: logger.exception("KOJA MUSIC download failed"); abort(404)
+
+
+@app.route("/music/like/<track_id>", methods=["POST"])
+def music_like(track_id):
+    track=_music_track(track_id)
+    if not track or track.get("status")!="published" or track.get("rights_status")!="verified" or not _music_active_licence(track_id): return jsonify({"ok":False}),404
+    uid=_music_user_id() or request.headers.get("X-Device-Id") or request.remote_addr or "anonymous"
+    existing=db_select("koja_music_likes", {"track_id":track_id,"user_key":uid}, limit=1)
+    if existing:
+        db_delete("koja_music_likes", {"id":existing[0].get("id")})
+        return jsonify({"ok":True,"liked":False})
+    db_insert("koja_music_likes", {"id":str(uuid.uuid4()),"track_id":track_id,"user_key":uid,"created_at":utc_now()})
+    return jsonify({"ok":True,"liked":True})
 
 
 @app.route("/music/stream/<track_id>")
 def music_stream(track_id):
     track = _music_track(track_id)
-    if not track or track.get("status") != "published" or track.get("rights_status") != "verified" or not _music_active_licence(track_id):
-        abort(404)
+    if not track or track.get("status") != "published" or track.get("rights_status") != "verified" or not _music_active_licence(track_id): abort(404)
     path = clean(track.get("audio_path"))
-    if not path or not supabase_configured():
-        abort(404)
+    if not path or not supabase_configured(): abort(404)
     try:
-        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=90)
-        if not r.ok:
-            abort(404)
-        response = Response(r.content, mimetype=r.headers.get("Content-Type") or track.get("audio_mime") or "audio/mpeg")
-        response.headers["Cache-Control"] = "public, max-age=300"
-        response.headers["Accept-Ranges"] = "bytes"
-        response.headers["Content-Length"] = str(len(r.content))
-        response.headers["X-Content-Type-Options"] = "nosniff"
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=90)
+        if not r.ok: abort(404)
+        response=Response(r.content,mimetype=r.headers.get("Content-Type") or track.get("audio_mime") or "audio/mpeg")
+        response.headers["Cache-Control"]="public, max-age=300"; response.headers["Accept-Ranges"]="bytes"; response.headers["Content-Length"]=str(len(r.content)); response.headers["X-Content-Type-Options"]="nosniff"
         return response
-    except Exception:
-        logger.exception("KOJA MUSIC stream read failed")
-        abort(404)
+    except Exception: logger.exception("KOJA MUSIC stream read failed"); abort(404)
 
 
 @app.route("/music/artwork/<track_id>")
 def music_artwork(track_id):
-    track = _music_track(track_id)
-    if not track or track.get("status") != "published" or track.get("rights_status") != "verified" or not _music_active_licence(track_id):
-        abort(404)
-    path = clean(track.get("artwork_path"))
-    if not path or not supabase_configured():
-        abort(404)
+    track=_music_track(track_id)
+    if not track or track.get("status")!="published" or track.get("rights_status")!="verified" or not _music_active_licence(track_id): abort(404)
+    path=clean(track.get("artwork_path"))
+    if not path or not supabase_configured(): abort(404)
     try:
-        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=30)
-        if not r.ok:
-            abort(404)
-        response = Response(r.content, mimetype=r.headers.get("Content-Type") or "image/jpeg")
-        response.headers["Cache-Control"] = "public, max-age=3600"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
-    except Exception:
-        logger.exception("KOJA MUSIC artwork read failed")
-        abort(404)
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
+        if not r.ok: abort(404)
+        response=Response(r.content,mimetype=r.headers.get("Content-Type") or "image/jpeg"); response.headers["Cache-Control"]="public, max-age=3600"; response.headers["X-Content-Type-Options"]="nosniff"; return response
+    except Exception: logger.exception("KOJA MUSIC artwork read failed"); abort(404)
 
 
 @app.route("/music/artist/apply", methods=["GET", "POST"])
@@ -13866,6 +13964,14 @@ def music_artist_tracks():
         if err:
             flash(f"Audio upload failed: {err}", "danger")
             return redirect(url_for("music_artist_tracks"))
+        video = None
+        if request.files.get("video") and request.files.get("video").filename:
+            video, err = _music_upload(request.files.get("video"), "video", {".mp4", ".webm", ".mov", ".m4v"})
+            if err:
+                flash(f"Music video upload failed: {err}", "danger")
+                try: delete_storage_path(audio["path"])
+                except Exception: pass
+                return redirect(url_for("music_artist_tracks"))
         artwork = None
         if request.files.get("artwork") and request.files.get("artwork").filename:
             artwork, err = _music_upload(request.files.get("artwork"), "artwork", MUSIC_ARTWORK_EXTENSIONS)
@@ -13882,6 +13988,10 @@ def music_artist_tracks():
             "release_date": release_date, "isrc": isrc,
             "audio_path": audio["path"], "audio_url": audio["url"],
             "audio_mime": audio["mime"], "audio_size": audio["size"],
+            "video_path": video["path"] if video else None,
+            "video_url": video["url"] if video else None,
+            "video_mime": video["mime"] if video else None,
+            "video_size": video["size"] if video else None,
             "artwork_path": artwork["path"] if artwork else None,
             "artwork_url": artwork["url"] if artwork else None,
             "rights_status": "pending_review", "status": "pending_review",
@@ -13894,6 +14004,9 @@ def music_artist_tracks():
             except Exception: pass
             if artwork:
                 try: delete_storage_path(artwork["path"])
+                except Exception: pass
+            if video:
+                try: delete_storage_path(video["path"])
                 except Exception: pass
             flash(f"Track could not be saved: {err}", "danger")
         else:
@@ -13913,7 +14026,7 @@ def music_artist_tracks():
         t["rights"] = _music_rights(t.get("id"))
     return render_page("KOJA MUSIC Catalogue", r"""
 <div class="card"><h2>{{ artist.artist_name }} Catalogue</h2><p>Upload only recordings you are authorised to license. Every submission remains private until KOJA completes rights verification.</p></div>
-<div class="card"><h3>Submit a recording</h3><form method="post" enctype="multipart/form-data"><label>Song title</label><input name="title" required><label>Album / EP / Single</label><input name="album"><label>Genre</label><input name="genre"><label>Release date</label><input type="date" name="release_date"><label>ISRC (if available)</label><input name="isrc"><label>Audio (max 15 MB)</label><input type="file" name="audio" required accept="audio/*"><label>Cover artwork</label><input type="file" name="artwork" accept="image/*"><button class="btn" type="submit">Submit for rights review</button></form></div>
+<div class="card"><h3>Submit a recording</h3><form method="post" enctype="multipart/form-data"><label>Song title</label><input name="title" required><label>Album / EP / Single</label><input name="album"><label>Genre</label><input name="genre"><label>Release date</label><input type="date" name="release_date"><label>ISRC (if available)</label><input name="isrc"><label>Audio (max 15 MB)</label><input type="file" name="audio" required accept="audio/*"><label>Music video (for the KOJA vertical feed)</label><input type="file" name="video" accept="video/mp4,video/webm,video/quicktime,video/x-m4v"><p class="small">Only tracks with an authorised music video appear in the public video feed.</p><label>Cover artwork</label><input type="file" name="artwork" accept="image/*"><button class="btn" type="submit">Submit for rights review</button></form></div>
 <div class="card"><h3>Submitted recordings</h3>{% for t in tracks %}<div style="padding:14px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong> — {{ t.status|upper }} / {{ t.rights_status|upper }}<div class="small">Licence: {{ 'ACTIVE' if t.licence else 'NOT ACTIVE' }} · Rights notes: {{ t.rights.rights_notes or '—' }}</div></div>{% else %}<p>No recordings submitted.</p>{% endfor %}</div>
 """, artist=artist, tracks=tracks)
 
