@@ -15,7 +15,7 @@ import time
 import threading
 import xml.etree.ElementTree as ET
 from html import unescape, escape
-from urllib.parse import urlparse, parse_qs, urljoin, quote_plus
+from urllib.parse import urlparse, parse_qs, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -131,7 +131,7 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = os.getenv("KOJA_APP_VERSION", "2026.10.05-MUSIC-V3")
+APP_VERSION = "2026.10.01-TERMS-CONSENT-V1"
 TERMS_VERSION = "2026-10-01-v1"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
@@ -713,20 +713,6 @@ def admin_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-
-def music_artist_required(fn):
-    """Artist-only authentication without the global Terms gate."""
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Artist login required.", "warning")
-            return redirect(url_for("login", next=request.path))
-        if not _music_artist_user(user):
-            abort(403)
-        return fn(*args, **kwargs)
-    return wrapper
-
 def driver_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -983,9 +969,6 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
 <a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
 <a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
-<a role="menuitem" href="{{ url_for('music_home') }}">KOJA MUSIC</a>
-{% if user and user.role in ['artist','musician','music_artist'] %}<a role="menuitem" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('music_admin') }}">MUSIC Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
 <a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
 <a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
@@ -6014,902 +5997,6 @@ def sitemap_xml():
     return (xml, 200, {"Content-Type": "application/xml; charset=utf-8"})
 
 # ============================================================
-
-# ============================================================
-# KOJA MUSIC GLOBAL — PUBLIC + ADMIN MANAGEMENT
-# Additive module. Uses existing Supabase REST helpers and admin_required.
-# ============================================================
-
-def _music_rows(table, filters=None, order='created_at.desc', limit=300):
-    try:
-        return db_select(table, filters=filters, order=order, limit=limit) or []
-    except Exception as exc:
-        logger.warning('KOJA MUSIC table %s unavailable: %s', table, exc)
-        return []
-
-
-def _music_count(table, filters=None):
-    return len(_music_rows(table, filters=filters, limit=1000))
-
-
-def _music_upload(file_storage, folder):
-    if not file_storage or not getattr(file_storage, 'filename', ''):
-        return None
-    try:
-        return upload_storage(file_storage, folder=folder, public=True)
-    except Exception as exc:
-        logger.warning('Music upload failed: %s', exc)
-        return None
-
-
-# Initial KOJA MUSIC discovery catalogue. Official YouTube embeds keep the public feed working while direct rights are being cleared.
-KOJA_MUSIC_INITIAL_CATALOGUE = [{'id': 'ext-tyla-water', 'title': 'Water', 'artist': 'Tyla', 'country': 'South Africa', 'region': 'Africa', 'genre': 'Afrobeats / Pop', 'provider': 'youtube', 'video_id': 'XoiOOiuH8iI', 'source_url': 'https://www.youtube.com/watch?v=XoiOOiuH8iI'}, {'id': 'ext-rema-calm-down', 'title': 'Calm Down', 'artist': 'Rema & Selena Gomez', 'country': 'Nigeria / United States', 'region': 'Africa / Americas', 'genre': 'Afrobeats / Pop', 'provider': 'youtube', 'video_id': 'WcIcVapfqXw', 'source_url': 'https://www.youtube.com/watch?v=WcIcVapfqXw'}, {'id': 'ext-diamond-jeje', 'title': 'Jeje', 'artist': 'Diamond Platnumz', 'country': 'Tanzania', 'region': 'Africa', 'genre': 'Bongo Flava', 'provider': 'youtube', 'video_id': 'g5rFro4XdZ0', 'source_url': 'https://www.youtube.com/watch?v=g5rFro4XdZ0'}, {'id': 'ext-masterkg-jerusalema', 'title': 'Jerusalema', 'artist': 'Master KG ft. Nomcebo', 'country': 'South Africa', 'region': 'Africa', 'genre': 'Afro House', 'provider': 'youtube', 'video_id': 'fCZVL_8D048', 'source_url': 'https://www.youtube.com/watch?v=fCZVL_8D048'}, {'id': 'ext-shakira-waka-waka', 'title': 'Waka Waka (This Time for Africa)', 'artist': 'Shakira', 'country': 'Colombia / South Africa', 'region': 'Americas / Africa', 'genre': 'Pop / World', 'provider': 'youtube', 'video_id': 'pRpeEdMmmQ0', 'source_url': 'https://www.youtube.com/watch?v=pRpeEdMmmQ0'}, {'id': 'ext-davido-fall', 'title': 'Fall', 'artist': 'Davido', 'country': 'Nigeria', 'region': 'Africa', 'genre': 'Afrobeats', 'provider': 'youtube', 'video_id': '3JZ_D3ELwOQ', 'source_url': 'https://www.youtube.com/watch?v=3JZ_D3ELwOQ'}, {'id': 'ext-ayrastarr-rush', 'title': 'Rush', 'artist': 'Ayra Starr', 'country': 'Nigeria', 'region': 'Africa', 'genre': 'Afropop', 'provider': 'youtube', 'video_id': 'crtQSTYWtY0', 'source_url': 'https://www.youtube.com/watch?v=crtQSTYWtY0'}, {'id': 'ext-burna-lastlast', 'title': 'Last Last', 'artist': 'Burna Boy', 'country': 'Nigeria', 'region': 'Africa', 'genre': 'Afrobeats', 'provider': 'youtube', 'video_id': '421w1j87fEM', 'source_url': 'https://www.youtube.com/watch?v=421w1j87fEM'}, {'id': 'ext-ckay-love', 'title': 'Love Nwantiti', 'artist': 'CKay', 'country': 'Nigeria', 'region': 'Africa', 'genre': 'Afrobeats', 'provider': 'youtube', 'video_id': 'D-YDEyuDxWU', 'source_url': 'https://www.youtube.com/watch?v=D-YDEyuDxWU'}, {'id': 'ext-omahlay-soso', 'title': 'soso', 'artist': 'Omah Lay', 'country': 'Nigeria', 'region': 'Africa', 'genre': 'Afrobeats', 'provider': 'youtube', 'video_id': 'D8K90hX4PrE', 'source_url': 'https://www.youtube.com/watch?v=D8K90hX4PrE'}, {'id': 'ext-sautisol-suzanna', 'title': 'Suzanna', 'artist': 'Sauti Sol', 'country': 'Kenya', 'region': 'Africa', 'genre': 'Afropop', 'provider': 'youtube', 'video_id': '5mXnY6Wf1hA', 'source_url': 'https://www.youtube.com/watch?v=5mXnY6Wf1hA'}, {'id': 'ext-kizz-buga', 'title': 'Buga', 'artist': 'Kizz Daniel ft. Tekno', 'country': 'Nigeria', 'region': 'Africa', 'genre': 'Afrobeats', 'provider': 'youtube', 'video_id': 'K3Qzzggn--s', 'source_url': 'https://www.youtube.com/watch?v=K3Qzzggn--s'}, {'id': 'ext-psy-gangnam', 'title': 'Gangnam Style', 'artist': 'PSY', 'country': 'South Korea', 'region': 'Asia', 'genre': 'K-Pop', 'provider': 'youtube', 'video_id': '9bZkp7q19f0', 'source_url': 'https://www.youtube.com/watch?v=9bZkp7q19f0'}, {'id': 'ext-bts-dynamite', 'title': 'Dynamite', 'artist': 'BTS', 'country': 'South Korea', 'region': 'Asia', 'genre': 'K-Pop', 'provider': 'youtube', 'video_id': 'gdZLi9oWNZg', 'source_url': 'https://www.youtube.com/watch?v=gdZLi9oWNZg'}, {'id': 'ext-blackpink-dduddu', 'title': 'DDU-DU DDU-DU', 'artist': 'BLACKPINK', 'country': 'South Korea', 'region': 'Asia', 'genre': 'K-Pop', 'provider': 'youtube', 'video_id': 'IHNzOHi8sJs', 'source_url': 'https://www.youtube.com/watch?v=IHNzOHi8sJs'}, {'id': 'ext-blackpink-hylt', 'title': 'How You Like That', 'artist': 'BLACKPINK', 'country': 'South Korea', 'region': 'Asia', 'genre': 'K-Pop', 'provider': 'youtube', 'video_id': 'ioNng23DkIM', 'source_url': 'https://www.youtube.com/watch?v=ioNng23DkIM'}, {'id': 'ext-psy-gentleman', 'title': 'Gentleman', 'artist': 'PSY', 'country': 'South Korea', 'region': 'Asia', 'genre': 'K-Pop', 'provider': 'youtube', 'video_id': 'ASO_zypdnsQ', 'source_url': 'https://www.youtube.com/watch?v=ASO_zypdnsQ'}, {'id': 'ext-jungkook-seven', 'title': 'Seven', 'artist': 'Jung Kook ft. Latto', 'country': 'South Korea / United States', 'region': 'Asia / Americas', 'genre': 'Pop / K-Pop', 'provider': 'youtube', 'video_id': 'QU9c0053UAU', 'source_url': 'https://www.youtube.com/watch?v=QU9c0053UAU'}, {'id': 'ext-arijit-tum-hi-ho', 'title': 'Tum Hi Ho', 'artist': 'Arijit Singh', 'country': 'India', 'region': 'Asia', 'genre': 'Indian Pop / Bollywood', 'provider': 'youtube', 'video_id': 'Umqb9KENgmk', 'source_url': 'https://www.youtube.com/watch?v=Umqb9KENgmk'}, {'id': 'ext-arijit-chaleya', 'title': 'Chaleya', 'artist': 'Arijit Singh & Shilpa Rao', 'country': 'India', 'region': 'Asia', 'genre': 'Indian Pop / Bollywood', 'provider': 'youtube', 'video_id': 'VAdGW7QDJiU', 'source_url': 'https://www.youtube.com/watch?v=VAdGW7QDJiU'}, {'id': 'ext-luis-despacito', 'title': 'Despacito', 'artist': 'Luis Fonsi ft. Daddy Yankee', 'country': 'Puerto Rico', 'region': 'Americas', 'genre': 'Latin Pop / Reggaeton', 'provider': 'youtube', 'video_id': 'kJQP7kiw5Fk', 'source_url': 'https://www.youtube.com/watch?v=kJQP7kiw5Fk'}, {'id': 'ext-shakira-hips', 'title': 'Hips Don’t Lie', 'artist': 'Shakira ft. Wyclef Jean', 'country': 'Colombia', 'region': 'Americas', 'genre': 'Pop / Latin', 'provider': 'youtube', 'video_id': 'DUT5rEU6pqM', 'source_url': 'https://www.youtube.com/watch?v=DUT5rEU6pqM'}, {'id': 'ext-bad-bunny-titi', 'title': 'Tití Me Preguntó', 'artist': 'Bad Bunny', 'country': 'Puerto Rico', 'region': 'Americas', 'genre': 'Latin / Reggaeton', 'provider': 'youtube', 'video_id': 'Cr8K88UcO0s', 'source_url': 'https://www.youtube.com/watch?v=Cr8K88UcO0s'}, {'id': 'ext-camila-havana', 'title': 'Havana', 'artist': 'Camila Cabello ft. Young Thug', 'country': 'United States / Cuba', 'region': 'Americas', 'genre': 'Pop / Latin', 'provider': 'youtube', 'video_id': 'HCjNJDNzw8Y', 'source_url': 'https://www.youtube.com/watch?v=HCjNJDNzw8Y'}, {'id': 'ext-bruno-uptown', 'title': 'Uptown Funk', 'artist': 'Mark Ronson ft. Bruno Mars', 'country': 'United States / United Kingdom', 'region': 'Americas / Europe', 'genre': 'Pop / Funk', 'provider': 'youtube', 'video_id': 'OPf0YbXqDm0', 'source_url': 'https://www.youtube.com/watch?v=OPf0YbXqDm0'}, {'id': 'ext-weeknd-blinding', 'title': 'Blinding Lights', 'artist': 'The Weeknd', 'country': 'Canada', 'region': 'Americas', 'genre': 'Pop / R&B', 'provider': 'youtube', 'video_id': '4NRXx6U8ABQ', 'source_url': 'https://www.youtube.com/watch?v=4NRXx6U8ABQ'}, {'id': 'ext-gaga-bad-romance', 'title': 'Bad Romance', 'artist': 'Lady Gaga', 'country': 'United States', 'region': 'Americas', 'genre': 'Pop', 'provider': 'youtube', 'video_id': 'qrO4YZeyl0I', 'source_url': 'https://www.youtube.com/watch?v=qrO4YZeyl0I'}, {'id': 'ext-ed-sheeran-shape', 'title': 'Shape of You', 'artist': 'Ed Sheeran', 'country': 'United Kingdom', 'region': 'Europe', 'genre': 'Pop', 'provider': 'youtube', 'video_id': 'JGwWNGJdvx8', 'source_url': 'https://www.youtube.com/watch?v=JGwWNGJdvx8'}, {'id': 'ext-taylor-blank-space', 'title': 'Blank Space', 'artist': 'Taylor Swift', 'country': 'United States', 'region': 'Americas', 'genre': 'Pop', 'provider': 'youtube', 'video_id': 'e-ORhEE9VVg', 'source_url': 'https://www.youtube.com/watch?v=e-ORhEE9VVg'}, {'id': 'ext-rihanna-diamonds', 'title': 'Diamonds', 'artist': 'Rihanna', 'country': 'Barbados / United States', 'region': 'Americas', 'genre': 'Pop / R&B', 'provider': 'youtube', 'video_id': 'lWA2pjMjpBs', 'source_url': 'https://www.youtube.com/watch?v=lWA2pjMjpBs'}]
-
-KOJA_AFRICA_54_COUNTRIES = [
-    ('Algeria','Soolking','Raï / Pop'),
-    ('Angola','C4 Pedro','Kuduro / Afro-pop'),
-    ('Benin','Angelique Kidjo','Afro-pop / World'),
-    ('Botswana','Vee Mampeezy','Afro-pop / House'),
-    ('Burkina Faso','Smarty','Hip-hop / Afrobeat'),
-    ('Burundi','Sat-B','Afro-pop'),
-    ('Cabo Verde','Cesaria Evora','Morna / World'),
-    ('Cameroon','Charlotte Dipanda','Makossa / Afro-pop'),
-    ('Central African Republic','Bibi Den’s','Afro-pop'),
-    ('Chad','Mounira Mitchala','Afro-pop / Traditional'),
-    ('Comoros','Goulam','Afro-pop / Zouk'),
-    ('Republic of the Congo','Roga Roga','Soukous / Rumba'),
-    ('Côte d’Ivoire','Didi B','Rap / Coupé-décalé'),
-    ('Democratic Republic of the Congo','Fally Ipupa','Congolese Rumba / Afro-pop'),
-    ('Djibouti','Omar Daher','Afro-pop / Traditional'),
-    ('Egypt','Amr Diab','Arabic Pop'),
-    ('Equatorial Guinea','Nelida Karr','Afro-pop'),
-    ('Eritrea','Helen Meles','Tigrinya Pop'),
-    ('Eswatini','Bholoja','Afro-folk / Soul'),
-    ('Ethiopia','Rophnan','Ethio-electronic / Afro-pop'),
-    ('Gabon','Shan’L','Afro-pop'),
-    ('Gambia','Sona Jobarteh','Manding / World'),
-    ('Ghana','Sarkodie','Hiplife / Afrobeats'),
-    ('Guinea','Mory Kante','Manding / World'),
-    ('Guinea-Bissau','Manecas Costa','Gumbé / Afro-pop'),
-    ('Kenya','Bien','Afropop / Benga'),
-    ('Lesotho','Tsepo Tshola','Sesotho / Afro-jazz'),
-    ('Liberia','Miatta Fahnbulleh','Traditional / Folk'),
-    ('Libya','Ahmed Fakroun','Arabic / World'),
-    ('Madagascar','D-Lain','Afro-pop / Malagasy'),
-    ('Malawi','Tay Grin','Afro-pop / Hip-hop'),
-    ('Mali','Fatoumata Diawara','Wassoulou / Afro-pop'),
-    ('Mauritania','Noura Mint Seymali','Desert Blues / Moorish'),
-    ('Mauritius','Alain Ramanisum','Sega'),
-    ('Morocco','Saad Lamjarred','Arabic Pop / Rai'),
-    ('Mozambique','Mr Bow','Marrabenta / Afro-pop'),
-    ('Namibia','Gazza','Kwaito / Afro-pop'),
-    ('Niger','Bombino','Tuareg / Desert Blues'),
-    ('Nigeria','Burna Boy','Afrobeats'),
-    ('Rwanda','Bruce Melodie','Afropop'),
-    ('Sao Tome and Principe','Juka','Afro-pop / Lusophone'),
-    ('Senegal','Youssou N’Dour','Mbalax / World'),
-    ('Seychelles','Patrick Victor','Sega / Creole'),
-    ('Sierra Leone','Emmerson','Afro-pop / Hip-hop'),
-    ('Somalia',"K'naan",'Hip-hop / Somali'),
-    ('South Africa','Tyla','Amapiano / Pop'),
-    ('South Sudan','Emmanuel Jal','Hip-hop / Afro-pop'),
-    ('Sudan','Alsarah','Nubian / East African'),
-    ('Tanzania','Diamond Platnumz','Bongo Flava'),
-    ('Togo','Toofan','Afro-pop / Dance'),
-    ('Tunisia','Balti','Hip-hop / Arabic Pop'),
-    ('Uganda','Eddy Kenzo','Afropop / Dancehall'),
-    ('Zambia','Yo Maps','Zambian Pop / Afrobeats'),
-    ('Zimbabwe','Winky D','Dancehall / Zimdancehall'),
-]
-
-for _country, _artist, _genre in KOJA_AFRICA_54_COUNTRIES:
-    _slug = re.sub(r'[^a-z0-9]+', '-', _country.lower()).strip('-')
-    KOJA_MUSIC_INITIAL_CATALOGUE.append({
-        'id': f'africa54-{_slug}',
-        'title': f'{_country} music discovery',
-        'artist': _artist,
-        'country': _country,
-        'region': 'Africa',
-        'genre': _genre,
-        'provider': 'youtube',
-        'youtube_search': f'{_artist} official music video {_country}',
-        'source_url': f'https://www.youtube.com/results?search_query={quote_plus(_artist + " official music video " + _country)}',
-    })
-
-def _music_initial_catalogue(q=''):
-    rows=[]; needle=clean(q).lower()
-    for x in KOJA_MUSIC_INITIAL_CATALOGUE:
-        hay=' '.join(str(x.get(k) or '') for k in ('title','artist','country','region','genre')).lower()
-        if needle and needle not in hay: continue
-        y=dict(x); y['external_video_url']=(f"https://www.youtube.com/embed/{x['video_id']}?playsinline=1&rel=0&enablejsapi=1" if x.get('video_id') else f"https://www.youtube.com/embed?listType=search&list={quote_plus(x.get('youtube_search',''))}&playsinline=1&rel=0")
-        y['external_video_provider']='youtube'; y['status']='published'; y['rights_status']='external_embed'
-        y['downloadable_visual']=False; y['downloadable_audio']=False; y['audio_url']=''
-        rows.append(y)
-    return rows
-
-def _music_artist_profiles_for_user(user):
-    if not user or not user.get('id'):
-        return []
-    try:
-        return _music_rows('koja_music_artists', {'created_by': user.get('id')}, order='created_at.desc', limit=100)
-    except Exception:
-        return []
-
-def _music_artist_is_active(user):
-    """An activated/published MUSIC artist can use the full MUSIC workspace."""
-    profiles = _music_artist_profiles_for_user(user)
-    return any(bool(a.get('active')) or str(a.get('status') or '').strip().lower() in ('published','approved','active') for a in profiles)
-
-def _music_artist_user(user):
-    """Return True for MUSIC artists, while allowing an artist role to create/view a pending profile."""
-    if not user:
-        return False
-    role = str(user.get('role') or '').strip().lower()
-    if role in ('artist', 'musician', 'music_artist'):
-        return True
-    return bool(_music_artist_profiles_for_user(user))
-
-def _music_track_ready_for_publication(track):
-    return bool(
-        clean(track.get('title'))
-        and (track.get('video_url') or track.get('music_video_url') or track.get('visual_url'))
-        and clean(track.get('master_owner'))
-        and clean(track.get('composition_owner'))
-        and clean(track.get('licence_reference'))
-    )
-
-
-@app.route('/music', methods=['GET'])
-def music_home():
-    q = clean(request.args.get('q'))
-    tracks = _music_rows('koja_music_tracks', {'status':'published'}, order='featured.desc,release_date.desc,created_at.desc', limit=500)
-    artists = _music_rows('koja_music_artists', {'status':'published'}, order='featured.desc,created_at.desc', limit=500)
-    amap = {str(a.get('id')): a for a in artists}
-    def has_video(t):
-        return bool(t.get('video_url') or t.get('music_video_url') or t.get('visual_url') or t.get('external_video_url'))
-    videos = [t for t in tracks if has_video(t)]
-    if q:
-        needle=q.lower()
-        videos=[t for t in videos if needle in str(t.get('title','')).lower() or needle in str(t.get('genre','')).lower() or needle in str(t.get('album_title','')).lower() or needle in str(amap.get(str(t.get('artist_id')),{}).get('artist_name','')).lower()]
-    # Keep MUSIC populated while the direct KOJA catalogue grows. Native releases remain first.
-    videos += _music_initial_catalogue(q)
-    artist_active = _music_artist_is_active(current_user())
-    return render_page('KOJA MUSIC VIDEO', """
-<style>
-.km-wrap{max-width:760px;margin:0 auto;padding:0 8px 54px}.km-search{position:sticky;top:0;z-index:40;padding:10px 0;background:rgba(7,20,38,.98);backdrop-filter:blur(10px)}.km-search form{display:flex;gap:8px}.km-search input{flex:1;min-width:0;border-radius:28px;padding:14px 18px;font-size:16px}.km-search button{border-radius:28px;min-width:58px;font-weight:800}.km-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}.km-toolbar .km-tool{display:inline-flex;align-items:center;padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;border:1px solid rgba(255,255,255,.12);text-decoration:none;font-size:13px;font-weight:800}.km-data-toggle{cursor:pointer}.km-data-toggle.km-data-on{background:#177245;border-color:rgba(255,255,255,.25)}.km-feed{scroll-snap-type:y mandatory}.km-item{scroll-snap-align:start;scroll-snap-stop:always;background:#0a1422;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.08);margin-bottom:18px}.km-video-wrap{position:relative;background:#000}.km-item video,.km-external-frame{display:block;width:100%;aspect-ratio:9/16;max-height:78vh;background:#000;border:0}.km-external-frame{min-height:540px}.km-info{padding:9px 10px 11px;display:flex;align-items:center;gap:8px;min-height:46px}.km-bottom-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;flex-wrap:wrap}.km-title{font-weight:800;color:#fff;font-size:11px}.km-artist{color:#c0cad7;font-size:11px}.km-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.km-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.18);background:#14253a;color:#fff;border-radius:50%;cursor:pointer;text-decoration:none;padding:0}.km-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}.km-icon.liked{color:#ff4d67;background:#281522}.km-mp3{font-size:9px;font-weight:900;color:#fff;background:#177245;padding:4px 6px;border-radius:5px}.km-float-actions{position:absolute;right:9px;bottom:60px;display:flex;flex-direction:column;gap:9px;z-index:5}.km-float-actions .km-icon{width:42px;height:42px;background:rgba(8,18,31,.88)}.km-source{font-size:10px;color:#91a0b3;margin:0 10px 10px}.km-source a{color:#6ab8ff}.km-head{margin:10px 0 12px}.km-small{font-size:12px;color:#93a3b7}@media(min-width:800px){.km-item video,.km-external-frame{max-height:760px}}
-</style>
-<div class="km-wrap">
-<div class="km-search"><form method="get" action="{{ url_for('music_home') }}"><input name="q" value="{{ q }}" placeholder="Search songs, artists or albums"><button class="btn" type="submit">Search</button></form></div>
-<div class="km-head"><h1>KOJA MUSIC</h1><div class="km-small">Music videos playing now · KOJA catalogue + official external embeds</div></div>
-<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and (user.role in ['artist','musician','music_artist'] or artist_active) %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
-<div class="km-feed">
-{% for t in videos %}{% set external=t.get('external_video_provider')=='youtube' %}{% set video=t.video_url or t.music_video_url or t.visual_url %}{% set artist=amap.get(t.artist_id,{}) %}
-<article class="km-item"><div class="km-video-wrap">{% if external %}<iframe class="km-external-frame" data-src="{{ t.external_video_url }}" loading="lazy" title="{{ t.title }} — {{ t.artist }}" allow="accelerometer; autoplay; encrypted-media; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>{% else %}<video class="km-feed-video" data-track="{{ t.id }}" controls playsinline preload="none" loading="lazy" poster="{{ t.cover_image_url or '' }}"><source data-src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon" type="button" onclick="kmLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon" href="{{ video }}" download>↓</a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download><span class="km-mp3">MP3</span></a>{% endif %}</div>{% endif %}</div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ t.artist or artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div>{% if external %}<div class="km-actions"><button class="km-icon km-local-like" type="button" data-id="{{ t.id }}" onclick="kmLocalLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button><a class="km-icon" href="{{ t.source_url }}" target="_blank" rel="noopener">↗</a></div>{% endif %}</div>{% if external %}<p class="km-source">Official video embedded from its YouTube publication. <a href="{{ t.source_url }}" target="_blank" rel="noopener">View on YouTube</a></p>{% endif %}</article>
-{% endfor %}
-</div></div>
-<script>
-function kmLocalLike(btn,id){const k='koja_music_external_like_'+id;const on=localStorage.getItem(k)==='1';localStorage.setItem(k,on?'0':'1');btn.classList.toggle('liked',!on)}
-async function kmLike(btn,id){try{const r=await fetch('/api/music/track/'+encodeURIComponent(id)+'/like',{method:'POST'});const d=await r.json();if(r.ok)btn.classList.toggle('liked',!!d.liked)}catch(e){}}
-document.querySelectorAll('.km-local-like').forEach(b=>b.classList.toggle('liked',localStorage.getItem('koja_music_external_like_'+b.dataset.id)==='1'));
-
-/* KOJA MUSIC low-data vertical feed.
-   Only the dominant visible item gets a media source. Off-screen native videos
-   keep preload=none and external embeds have no src until activated. This avoids
-   downloading many music videos/iframes while the user scrolls. */
-(function(){
-  const items=[...document.querySelectorAll('.km-item')];
-  const native=[...document.querySelectorAll('.km-feed-video')];
-  const frames=[...document.querySelectorAll('.km-external-frame')];
-  const toggle=document.getElementById('kmDataToggle');
-  const conn=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
-  const autoSaver=!!(conn&&((conn.saveData===true)||/^(slow-2g|2g)$/.test(conn.effectiveType||'')));
-  let dataSaver=autoSaver;
-  try{if(localStorage.getItem('koja_music_data_saver')==='1')dataSaver=true;if(localStorage.getItem('koja_music_data_saver')==='0')dataSaver=false}catch(e){}
-  let active=null;
-  function updateToggle(){if(!toggle)return;toggle.textContent='Data Saver: '+(dataSaver?'On':'Off');toggle.setAttribute('aria-pressed',String(dataSaver));toggle.classList.toggle('km-data-on',dataSaver)}
-  updateToggle();
-  if(toggle)toggle.addEventListener('click',function(){dataSaver=!dataSaver;try{localStorage.setItem('koja_music_data_saver',dataSaver?'1':'0')}catch(e){};updateToggle();if(active)prepareAndPlay(active)});
-
-  function youtubeCommand(frame,func){try{if(frame&&frame.contentWindow)frame.contentWindow.postMessage(JSON.stringify({event:'command',func:func,args:[]}), 'https://www.youtube.com')}catch(e){}}
-  function loadNative(v){
-    const src=v.querySelector('source[data-src]');
-    if(src&&!src.src)src.src=src.dataset.src;
-    if(src&&!v.currentSrc)try{v.load()}catch(e){}
-  }
-  function loadFrame(f){
-    if(f&&!(f.getAttribute('src')||'').trim()){f.src=f.dataset.src||'';}
-  }
-  function unloadFrame(f){
-    if(!f)return;
-    try{youtubeCommand(f,'pauseVideo');}catch(e){}
-    /* Removing the source stops the external player from continuing to consume data. */
-    if(f.getAttribute('src')){f.removeAttribute('src');}
-  }
-  function pauseItem(item,unload){
-    if(!item)return;
-    const v=item.querySelector('.km-feed-video');
-    if(v){try{v.pause()}catch(e){}}
-    const f=item.querySelector('.km-external-frame');
-    if(f){youtubeCommand(f,'pauseVideo');if(unload)unloadFrame(f)}
-    if(v&&unload){v.preload='none';}
-    item.classList.remove('km-active');
-  }
-  function prepareAndPlay(item){
-    if(!item)return;
-    items.forEach(x=>{if(x!==item)pauseItem(x,true)});
-    active=item;item.classList.add('km-active');
-    const v=item.querySelector('.km-feed-video');
-    if(v){
-      loadNative(v);
-      v.preload=dataSaver?'none':'metadata';
-      /* Data Saver still permits the active item to play; it simply never preloads off-screen items. */
-      const p=v.play();if(p&&p.catch)p.catch(()=>{});
-    }
-    const f=item.querySelector('.km-external-frame');
-    if(f){loadFrame(f);}
-  }
-  const observer=new IntersectionObserver(entries=>{
-    entries.forEach(entry=>{entry.target._kmRatio=entry.isIntersecting?entry.intersectionRatio:0});
-    let best=null,bestRatio=0;
-    items.forEach(item=>{const r=item._kmRatio||0;if(r>bestRatio){bestRatio=r;best=item}});
-    if(best&&bestRatio>=0.60&&best!==active)prepareAndPlay(best);
-    if(active&&(active._kmRatio||0)<0.20){pauseItem(active,true);active=null}
-  },{threshold:[0,0.2,0.6,0.85]});
-  items.forEach(item=>observer.observe(item));
-  /* Start the first feed item immediately. IntersectionObserver can be delayed on
-     some mobile WebViews while the page is still settling, which otherwise leaves
-     an empty/white external-player area on first paint. */
-  if(items.length){
-    const first=items[0];
-    requestAnimationFrame(()=>{
-      if(!active)prepareAndPlay(first);
-    });
-  }
-
-  native.forEach(v=>v.addEventListener('play',()=>{
-    native.forEach(other=>{if(other!==v)try{other.pause()}catch(e){}});
-    const item=v.closest('.km-item');if(item)active=item;
-    if(v.dataset.playTracked!=='1'){
-      v.dataset.playTracked='1';
-      fetch('/api/music/track/'+encodeURIComponent(v.dataset.track)+'/play',{method:'POST'}).catch(()=>{});
-    }
-  }));
-  document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)pauseItem(active,true)});
-  window.addEventListener('pagehide',()=>{items.forEach(x=>pauseItem(x,true))});
-  setTimeout(()=>{
-    let best=null,br=0;
-    items.forEach(item=>{const r=item.getBoundingClientRect();const visible=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0))/Math.max(1,r.height);if(visible>br){br=visible;best=item}});
-    if(best&&br>=0.60)prepareAndPlay(best);
-  },250);
-})();</script>
-""", videos=videos, amap=amap, q=q, artist_active=artist_active)
-
-@app.route('/music/search', methods=['GET'])
-def music_search():
-    return music_home()
-
-@app.route('/music/track/<track_id>')
-def music_track(track_id):
-    rows=_music_rows('koja_music_tracks', {'id':track_id}, limit=1)
-    if not rows or rows[0].get('status')!='published': abort(404)
-    track=rows[0]; video=track.get('video_url') or track.get('music_video_url') or track.get('visual_url')
-    if not video: abort(404)
-    artist_rows=_music_rows('koja_music_artists', {'id':track.get('artist_id')}, limit=1); artist=artist_rows[0] if artist_rows else {}
-    return render_page('KOJA MUSIC VIDEO', r'''
-<div class="hero"><h1>{{ track.title }}</h1><p>{{ artist.get('artist_name','Artist') }}</p></div><div class="card"><video controls playsinline preload="metadata" poster="{{ track.cover_image_url or '' }}" style="width:100%;max-height:760px;background:#000"><source src="{{ video }}"></video><div class="actions" style="margin-top:12px">{% if track.downloadable_visual %}<a class="btn" href="{{ video }}" download>Download Video</a>{% endif %}{% if track.audio_url and track.downloadable_audio %}<a class="btn secondary" href="{{ track.audio_url }}" download>Download Audio</a>{% endif %}</div></div>
-''', track=track, artist=artist, video=video)
-
-
-@app.route('/music/studio')
-@music_artist_required
-def music_studio():
-    u=current_user()
-    if not _music_artist_user(u):
-        abort(403)
-    artists=_music_artist_profiles_for_user(u); active_artist_ids=[str(a.get('id')) for a in artists if str(a.get('status') or '').lower()=='published']; artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
-    for aid in artist_ids: tracks.extend(_music_rows('koja_music_tracks', {'artist_id':aid}, order='created_at.desc', limit=300))
-    artist_active=bool(active_artist_ids)
-    return render_page('KOJA MUSIC Studio', r'''
-<style>.kstudio{max-width:900px;margin:0 auto}.upload-box{border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:20px;background:#0a1422}.upload-box h2{margin-top:0}.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.upload-grid .full{grid-column:1/-1}@media(max-width:700px){.upload-grid{grid-template-columns:1fr}.upload-grid .full{grid-column:auto}}.kstudio small{color:#91a0b3}.kstudio .file{padding:12px;border:1px dashed rgba(255,255,255,.18);border-radius:12px}</style>
-<div class="kstudio"><div class="hero"><h1>KOJA MUSIC STUDIO</h1><p>Artist-only upload workspace. Publish your music directly when all required rights information is complete.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Industry Lifecycle</a></div></div>
-{% if not artists %}<div class="card"><h2>Artist profile required</h2><p>Only registered KOJA MUSIC artists can use this studio.</p><a class="btn success" href="{{ url_for('music_artist_new') }}">Create Artist Profile</a></div>
-{% else %}{% if not artist_active %}<div class="card" style="border-color:rgba(255,184,107,.45)"><h2>Artist activation required</h2><p>Your MUSIC artist profile is currently <strong>pending</strong>. Once KOJA activates the artist, the full MUSIC Studio becomes available and qualifying releases can be published to Public Music automatically.</p></div>{% else %}<div class="upload-box"><h2>Upload a song</h2><small>Required: song title, music video, master owner, composition owner and rights reference. Audio and artwork are optional.</small><form method="post" action="{{ url_for('music_artist_upload') }}" enctype="multipart/form-data"><div class="upload-grid"><div><label>Artist</label><select name="artist_id" required>{% for a in artists %}<option value="{{ a.id }}">{{ a.artist_name }}</option>{% endfor %}</select></div><div><label>Song title</label><input name="title" required placeholder="Song title"></div><div><label>Release type</label><select name="release_type"><option value="single">Single</option><option value="EP">EP</option><option value="album">Album</option></select></div><div><label>Album / EP</label><input name="album_title" placeholder="Optional"></div><div><label>Genre</label><input name="genre" placeholder="Afrobeats, Gospel, Hip-Hop..."></div><div><label>Release date</label><input type="date" name="release_date"></div><div class="full"><label>Music video</label><input class="file" type="file" name="music_video" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" required></div><div><label>Audio file (optional)</label><input class="file" type="file" name="audio_file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/ogg,.mp3,.wav,.m4a,.ogg"></div><div><label>Cover artwork (optional)</label><input class="file" type="file" name="cover_image" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"></div><div class="full"><label>Description</label><textarea name="description" rows="4" placeholder="About this song..."></textarea></div><div><label>Master owner *</label><input name="master_owner" required placeholder="Rights holder"></div><div><label>Composition owner *</label><input name="composition_owner" required placeholder="Rights holder"></div><div class="full"><label>Licence / rights reference *</label><input name="licence_reference" required placeholder="Reference or ownership statement"></div><div class="full"><label><input type="checkbox" name="downloadable_visual"> Allow public video download</label></div><div class="full"><label><input type="checkbox" name="downloadable_audio"> Allow public audio download</label></div></div><button class="btn success" type="submit">Publish Song</button></form></div>{% endif %}<div class="card"><h2>Your uploads</h2>{% for t in tracks %}<div class="card"><strong>{{ t.title }}</strong><div class="small">{{ 'Published automatically' if t.status=='published' else (t.status or 'pending') }} · {{ t.rights_status or 'rights_pending' }}</div></div>{% else %}<p>No songs uploaded yet.</p>{% endfor %}</div>{% endif %}</div>
-''', artists=artists, tracks=tracks)
-
-@app.route('/music/studio/upload', methods=['POST'])
-@music_artist_required
-def music_artist_upload():
-    u=current_user()
-    if not _music_artist_user(u):
-        abort(403)
-    artist_id=clean(request.form.get('artist_id')); own_artists=_music_rows('koja_music_artists', {'created_by':u.get('id')}, limit=100)
-    selected_artist = next((a for a in own_artists if str(a.get('id')) == artist_id), None)
-    if not selected_artist: abort(403)
-    if str(selected_artist.get('status') or '').lower() != 'published':
-        flash('Your artist profile must be activated before you can publish music.','warning')
-        return redirect(url_for('music_studio'))
-    required_fields = {
-        'title': clean(request.form.get('title')),
-        'master_owner': clean(request.form.get('master_owner')),
-        'composition_owner': clean(request.form.get('composition_owner')),
-        'licence_reference': clean(request.form.get('licence_reference')),
-    }
-    if not all(required_fields.values()) or not request.files.get('music_video'):
-        flash('Complete all required fields and provide the music video before publishing.','danger'); return redirect(url_for('music_studio'))
-    video, video_err = _music_upload(request.files.get('music_video'), 'music/videos')
-    if video_err:
-        flash('Music video upload failed: '+str(video_err),'danger'); return redirect(url_for('music_studio'))
-    audio=cover=None
-    if request.files.get('audio_file') and request.files.get('audio_file').filename:
-        audio, err=_music_upload(request.files.get('audio_file'),'music/audio')
-        if err: flash('Audio upload failed: '+str(err),'danger'); return redirect(url_for('music_studio'))
-    if request.files.get('cover_image') and request.files.get('cover_image').filename:
-        cover, err=_music_upload(request.files.get('cover_image'),'music/artwork')
-        if err: flash('Cover upload failed: '+str(err),'danger'); return redirect(url_for('music_studio'))
-    payload={'id':str(uuid.uuid4()),'artist_id':artist_id,'title':clean(request.form.get('title')),'release_type':clean(request.form.get('release_type') or 'single'),'album_title':clean(request.form.get('album_title')),'genre':clean(request.form.get('genre')),'description':clean(request.form.get('description')),'video_url':(video or {}).get('url'),'music_video_url':(video or {}).get('url'),'visual_url':(video or {}).get('url'),'audio_url':(audio or {}).get('url'),'stream_url':(audio or {}).get('url'),'cover_image_url':(cover or {}).get('url'),'master_owner':clean(request.form.get('master_owner')),'composition_owner':clean(request.form.get('composition_owner')),'licence_reference':clean(request.form.get('licence_reference')),'downloadable_visual':bool(request.form.get('downloadable_visual')),'downloadable_audio':bool(request.form.get('downloadable_audio')),'status':'published','rights_status':'verified','featured':False,'created_by':u.get('id'),'created_at':utc_now(),'updated_at':utc_now()}
-    if request.form.get('release_date'): payload['release_date']=clean(request.form.get('release_date'))
-    _,err=db_insert('koja_music_tracks',payload)
-    flash(('Song published successfully.' if not err else 'Song could not be saved: '+str(err)), 'success' if not err else 'danger')
-    return redirect(url_for('music_studio'))
-
-@app.route('/admin/music', methods=['GET','POST'])
-@admin_required
-def music_admin():
-    if request.method == 'POST':
-        action=clean(request.form.get('action')); track_id=clean(request.form.get('track_id')); artist_id=clean(request.form.get('artist_id'))
-        if track_id and action in ('publish','reject','suspend','feature','unfeature','verify_rights'):
-            if action=='publish': db_update('koja_music_tracks', {'id':track_id}, {'status':'published','updated_at':utc_now()}); flash('Music release published.','success')
-            elif action=='reject': db_update('koja_music_tracks', {'id':track_id}, {'status':'rejected','updated_at':utc_now()}); flash('Music release rejected.','success')
-            elif action=='suspend': db_update('koja_music_tracks', {'id':track_id}, {'status':'suspended','updated_at':utc_now()}); flash('Music release suspended.','success')
-            elif action=='feature': db_update('koja_music_tracks', {'id':track_id}, {'featured':True,'updated_at':utc_now()}); flash('Music release featured.','success')
-            elif action=='unfeature': db_update('koja_music_tracks', {'id':track_id}, {'featured':False,'updated_at':utc_now()}); flash('Music release removed from featured.','success')
-            elif action=='verify_rights': db_update('koja_music_tracks', {'id':track_id}, {'rights_status':'verified','updated_at':utc_now()}); flash('Music rights marked verified.','success')
-        elif artist_id and action in ('artist_publish','artist_suspend'):
-            new_status = 'published' if action == 'artist_publish' else 'suspended'
-            # Some existing KOJA MUSIC databases constrain artist.status to approved/pending/etc.
-            # Activation therefore writes the independent active flag first, then uses published
-            # when the schema permits it, falling back to approved without losing activation.
-            if action == 'artist_publish':
-                updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'active':True,'updated_at':utc_now()})
-                if update_err:
-                    updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'active':True})
-                updated_status, status_err = db_update('koja_music_artists', {'id':artist_id}, {'status':'published','updated_at':utc_now()})
-                if status_err:
-                    updated_status, status_err = db_update('koja_music_artists', {'id':artist_id}, {'status':'approved'})
-            else:
-                updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'active':False,'updated_at':utc_now()})
-                if update_err:
-                    updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'active':False})
-            artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
-            verified_status = str((artist_row or {}).get('status') or '').lower()
-            verified_active = bool((artist_row or {}).get('active'))
-            if action == 'artist_publish' and not (verified_active or verified_status in ('published','approved','active')):
-                # Some older deployments have duplicate/legacy artist records keyed by created_by.
-                owner_id = (artist_row or {}).get('created_by')
-                if owner_id:
-                    db_update('koja_music_artists', {'created_by':owner_id}, {'active':True})
-                    db_update('koja_music_artists', {'created_by':owner_id}, {'status':'published'})
-                    artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
-                    verified_status = str((artist_row or {}).get('status') or '').lower()
-                    verified_active = bool((artist_row or {}).get('active'))
-            if action == 'artist_publish' and artist_row and (verified_active or verified_status in ('published','approved','active')):
-                owner_id = artist_row.get('created_by')
-                # Give the activated artist the MUSIC role and keep the account active.
-                if owner_id:
-                    role_updated, role_err = db_update('profiles', {'id':owner_id}, {'role':'artist','is_active':True,'updated_at':utc_now()})
-                    if role_err:
-                        # Compatibility retry when an older profiles table lacks updated_at.
-                        db_update('profiles', {'id':owner_id}, {'role':'artist','is_active':True})
-                # Any complete releases belonging to this artist become public immediately.
-                for tr in _music_rows('koja_music_tracks', {'artist_id':artist_id}, limit=1000):
-                    if _music_track_ready_for_publication(tr) and str(tr.get('status') or '').lower() not in ('rejected','suspended'):
-                        db_update('koja_music_tracks', {'id':tr.get('id')}, {'status':'published','rights_status':'verified','updated_at':utc_now()})
-                flash('Artist activated. Full MUSIC access is now enabled and qualifying music is live in Public Music.','success')
-            elif action == 'artist_publish':
-                flash('Artist activation could not be saved. The database did not change the artist from pending to published. Please check the MUSIC artist table permissions/schema.','danger')
-            else:
-                if verified_status == 'suspended':
-                    flash('Artist suspended successfully.','success')
-                else:
-                    flash('Artist suspension could not be confirmed in the database.','danger')
-        return redirect(url_for('music_admin'))
-    tracks=_music_rows('koja_music_tracks', order='created_at.desc', limit=1000)
-    artists=_music_rows('koja_music_artists', order='created_at.desc', limit=1000)
-    amap={str(a.get('id')):a for a in artists}
-    q=clean(request.args.get('q')).lower(); sf=clean(request.args.get('status')).lower(); cf=clean(request.args.get('country')).lower()
-    if q:
-        tracks=[t for t in tracks if q in str(t.get('title') or '').lower() or q in str(amap.get(str(t.get('artist_id')),{}).get('artist_name') or '').lower()]
-        artists=[a for a in artists if q in str(a.get('artist_name') or '').lower()]
-    if sf and sf!='all':
-        tracks=[t for t in tracks if str(t.get('status') or 'review').lower()==sf]; artists=[a for a in artists if str(a.get('status') or 'draft').lower()==sf]
-    if cf and cf!='all':
-        tracks=[t for t in tracks if str(amap.get(str(t.get('artist_id')),{}).get('country') or '').lower()==cf]; artists=[a for a in artists if str(a.get('country') or '').lower()==cf]
-    all_tracks=_music_rows('koja_music_tracks', order='created_at.desc', limit=1000); all_artists=_music_rows('koja_music_artists', order='created_at.desc', limit=1000)
-    stats={'artists':len(all_artists),'releases':len(all_tracks),'published':sum(str(t.get('status') or '').lower()=='published' for t in all_tracks),'pending':sum(str(t.get('status') or '').lower() not in ('published','rejected','suspended') for t in all_tracks),'rights_verified':sum(str(t.get('rights_status') or '').lower()=='verified' for t in all_tracks),'featured':sum(bool(t.get('featured')) for t in all_tracks)}
-    countries=sorted({str(a.get('country') or '').strip() for a in all_artists if str(a.get('country') or '').strip()},key=str.lower)
-    for t in tracks:
-        missing=[]
-        if not clean(t.get('title')): missing.append('song title')
-        if not (t.get('video_url') or t.get('music_video_url') or t.get('visual_url')): missing.append('music video')
-        if not clean(t.get('master_owner')): missing.append('master owner')
-        if not clean(t.get('composition_owner')): missing.append('composition owner')
-        if not clean(t.get('licence_reference')): missing.append('rights reference')
-        t['_missing_requirements']=missing; t['_ready']=not missing
-    return render_page('KOJA MUSIC Management', r'''<style>
-.km-admin{max-width:1400px;margin:0 auto}.km-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:14px 0}.km-stat{padding:16px;border:1px solid rgba(255,255,255,.1);border-radius:14px;background:rgba(9,20,34,.82)}.km-stat b{display:block;font-size:25px}.km-stat span{font-size:12px;color:#91a0b3}.km-filters{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end}.km-table-wrap{overflow:auto}.km-admin table{min-width:1100px}.km-actions{display:flex;gap:6px;flex-wrap:wrap}.km-badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;background:rgba(255,255,255,.08)}.km-ready{color:#78e08f}.km-missing{color:#ffb86b}.km-missing-list{font-size:12px;color:#ffb86b;margin-top:5px}.km-muted{color:#91a0b3;font-size:12px}@media(max-width:900px){.km-stats{grid-template-columns:repeat(3,1fr)}.km-filters{grid-template-columns:1fr 1fr}.km-filters .wide{grid-column:1/-1}}@media(max-width:520px){.km-stats{grid-template-columns:repeat(2,1fr)}}
-</style><div class="km-admin"><div class="hero"><h1>KOJA MUSIC Management</h1><p>Manage releases, artists, rights and publication from one MUSIC control centre. Releases with all required fields are automatically approved by the Artist Studio.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a><a class="btn secondary" href="{{ url_for('music_industry') }}">Music Industry</a><a class="btn success" href="{{ url_for('music_studio') }}">Artist MUSIC Studio</a></div></div>
-<div class="km-stats"><div class="km-stat"><b>{{ stats.artists }}</b><span>Artists</span></div><div class="km-stat"><b>{{ stats.releases }}</b><span>Releases</span></div><div class="km-stat"><b>{{ stats.published }}</b><span>Published</span></div><div class="km-stat"><b>{{ stats.pending }}</b><span>Needs attention</span></div><div class="km-stat"><b>{{ stats.rights_verified }}</b><span>Rights verified</span></div><div class="km-stat"><b>{{ stats.featured }}</b><span>Featured</span></div></div>
-<div class="card"><form method="get" class="km-filters"><div class="wide"><label>Search</label><input name="q" value="{{ request.args.get('q','') }}" placeholder="Search song or artist"></div><div><label>Status</label><select name="status"><option value="all">All statuses</option>{% for s in ['published','review','pending','rejected','suspended'] %}<option value="{{ s }}" {% if sf==s %}selected{% endif %}>{{ s|title }}</option>{% endfor %}</select></div><div><label>Country</label><select name="country"><option value="all">All countries</option>{% for c in countries %}<option value="{{ c|lower }}" {% if cf==c|lower %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div><button class="btn" type="submit">Filter</button></form></div>
-<div class="card"><h2>Release Queue</h2><p class="km-muted">{{ tracks|length }} release(s) shown. Missing requirements are identified automatically.</p><div class="km-table-wrap"><table><tr><th>Song</th><th>Artist</th><th>Release</th><th>Status</th><th>Rights</th><th>Readiness</th><th>Actions</th></tr>{% for t in tracks %}<tr><td><strong>{{ t.title or 'Untitled' }}</strong>{% if t.album_title %}<div class="km-muted">{{ t.album_title }}</div>{% endif %}</td><td>{{ amap.get(t.artist_id,{}).get('artist_name','Artist') }}<div class="km-muted">{{ amap.get(t.artist_id,{}).get('country','') }}</div></td><td>{{ t.release_type or 'Single' }}{% if t.genre %}<div class="km-muted">{{ t.genre }}</div>{% endif %}</td><td><span class="km-badge">{{ t.status or 'review' }}</span></td><td><span class="km-badge">{{ t.rights_status or 'review_required' }}</span></td><td>{% if t._ready %}<strong class="km-ready">Ready</strong>{% else %}<strong class="km-missing">Incomplete</strong><div class="km-missing-list">Missing: {{ t._missing_requirements|join(', ') }}</div>{% endif %}</td><td><div class="km-actions"><form method="post"><input type="hidden" name="track_id" value="{{ t.id }}">{% if t.status != 'published' and t._ready %}<button class="btn success" name="action" value="publish">Publish</button>{% endif %}{% if t.status != 'rejected' %}<button class="btn danger" name="action" value="reject">Reject</button>{% endif %}{% if t.status != 'suspended' %}<button class="btn warning" name="action" value="suspend">Suspend</button>{% endif %}{% if t.rights_status != 'verified' %}<button class="btn" name="action" value="verify_rights">Verify Rights</button>{% endif %}<button class="btn secondary" name="action" value="{{ 'unfeature' if t.featured else 'feature' }}">{{ 'Unfeature' if t.featured else 'Feature' }}</button></form></div></td></tr>{% else %}<tr><td colspan="7">No music releases match the current filters.</td></tr>{% endfor %}</table></div></div>
-<div class="card"><h2>Artists</h2><div class="km-table-wrap"><table><tr><th>Artist</th><th>Country</th><th>Genre</th><th>Releases</th><th>Status</th><th>Actions</th></tr>{% for a in artists %}{% set acount=all_tracks|selectattr('artist_id','equalto',a.id)|list|length %}<tr><td><strong>{{ a.artist_name }}</strong></td><td>{{ a.country or '—' }}</td><td>{{ a.genre or '—' }}</td><td>{{ acount }}</td><td><span class="km-badge">{{ a.status or 'draft' }}</span></td><td><form method="post" class="km-actions"><input type="hidden" name="artist_id" value="{{ a.id }}">{% if a.status != 'published' %}<button class="btn success" name="action" value="artist_publish">Activate</button>{% endif %}{% if a.status != 'suspended' %}<button class="btn warning" name="action" value="artist_suspend">Suspend</button>{% endif %}</form></td></tr>{% else %}<tr><td colspan="6">No artists match the current filters.</td></tr>{% endfor %}</table></div></div></div>''', tracks=tracks, artists=artists, amap=amap, stats=stats, countries=countries, all_tracks=all_tracks, sf=sf, cf=cf)
-
-
-# ============================================================
-# KOJA MUSIC GLOBAL — COMPLETION LAYER
-# Artist profiles, persistent engagement, analytics, albums and playlists.
-# All additions are additive and degrade gracefully if optional tables are absent.
-# ============================================================
-
-def _music_optional_insert(table, payload):
-    try:
-        row, err = db_insert(table, payload)
-        return row, err
-    except Exception as exc:
-        return None, str(exc)
-
-
-def _music_public_artist(artist_id):
-    rows = _music_rows('koja_music_artists', {'id': artist_id}, limit=1)
-    return rows[0] if rows else None
-
-
-def _music_artist_tracks(artist_id):
-    return _music_rows('koja_music_tracks', {'artist_id': artist_id, 'status':'published'}, order='release_date.desc,created_at.desc', limit=500)
-
-
-def _music_user_liked(user_id, track_id):
-    if not user_id or not track_id:
-        return False
-    rows = _music_rows('koja_music_likes', {'user_id': user_id, 'track_id': track_id}, limit=1)
-    return bool(rows)
-
-
-@app.route('/music/artist/new', methods=['GET','POST'])
-@music_artist_required
-def music_artist_new():
-    user=current_user()
-    if request.method=='POST':
-        name=clean(request.form.get('artist_name'))
-        country=clean(request.form.get('country'))
-        genre=clean(request.form.get('genre'))
-        bio=clean(request.form.get('bio'))
-        if not name:
-            flash('Artist name is required.','danger')
-            return redirect(url_for('music_artist_new'))
-        existing=_music_rows('koja_music_artists', {'created_by':user.get('id')}, limit=100)
-        if any(str(x.get('artist_name','')).strip().lower()==name.lower() for x in existing):
-            flash('You already have an artist profile with that name.','warning')
-            return redirect(url_for('music_studio'))
-        payload={'id':str(uuid.uuid4()),'created_by':user.get('id'),'artist_name':name,'country':country,'genre':genre,'bio':bio,'status':'published','featured':False,'created_at':utc_now(),'updated_at':utc_now()}
-        _,err=db_insert('koja_music_artists',payload)
-        flash('Artist profile created.' if not err else 'Artist profile could not be saved: '+str(err),'success' if not err else 'danger')
-        return redirect(url_for('music_studio'))
-    return render_page('Create MUSIC Artist Profile',r'''
-<div class="hero"><h1>Create Artist Profile</h1><p>Your public KOJA MUSIC identity.</p></div>
-<div class="card" style="max-width:760px;margin:auto"><form method="post">
-<label>Artist name</label><input name="artist_name" required maxlength="160" placeholder="Stage or professional name">
-<label>Country</label><input name="country" maxlength="80" placeholder="Zambia">
-<label>Primary genre</label><input name="genre" maxlength="100" placeholder="Afrobeats, Gospel, Hip-Hop...">
-<label>Artist bio</label><textarea name="bio" rows="6" maxlength="5000" placeholder="Tell listeners about the artist..."></textarea>
-<div class="actions" style="margin-top:14px"><button class="btn success" type="submit">Create Artist</button><a class="btn secondary" href="{{ url_for('music_studio') }}">Back to Studio</a></div>
-</form></div>''')
-
-
-@app.route('/music/artist/<artist_id>')
-def music_artist_page(artist_id):
-    artist=_music_public_artist(artist_id)
-    if not artist or artist.get('status') not in (None,'published'):
-        abort(404)
-    tracks=_music_artist_tracks(artist_id)
-    return render_page('KOJA MUSIC Artist',r'''
-<div class="hero"><h1>{{ artist.artist_name }}</h1><p>{{ artist.country or '' }}{% if artist.country and artist.genre %} · {% endif %}{{ artist.genre or '' }}</p><p>{{ artist.bio or 'KOJA MUSIC artist' }}</p></div>
-<div class="card"><h2>Releases</h2><div class="grid">{% for t in tracks %}<div class="card"><h3>{{ t.title }}</h3><p class="small">{{ t.album_title or t.release_type or 'Single' }}</p><a class="btn" href="{{ url_for('music_track',track_id=t.id) }}">Watch</a></div>{% else %}<p>No published releases yet.</p>{% endfor %}</div></div>''',artist=artist,tracks=tracks)
-
-
-@app.route('/music/album/<path:album_name>')
-def music_album_page(album_name):
-    target=clean(album_name).lower()
-    all_tracks=_music_rows('koja_music_tracks', {'status':'published'}, order='release_date.desc,created_at.desc', limit=1000)
-    tracks=[t for t in all_tracks if clean(t.get('album_title')).lower()==target]
-    if not tracks: abort(404)
-    artist=_music_public_artist(tracks[0].get('artist_id')) or {}
-    return render_page('KOJA MUSIC Album',r'''
-<div class="hero"><h1>{{ album }}</h1><p>{{ artist.artist_name or 'KOJA MUSIC' }}</p></div>
-<div class="card"><div class="grid">{% for t in tracks %}<div class="card"><h3>{{ t.title }}</h3><p class="small">{{ t.genre or '' }}</p><a class="btn" href="{{ url_for('music_track',track_id=t.id) }}">Watch</a></div>{% endfor %}</div></div>''',album=tracks[0].get('album_title'),artist=artist,tracks=tracks)
-
-
-@app.route('/api/music/track/<track_id>/like', methods=['POST'])
-def music_like_api(track_id):
-    track=first_row('koja_music_tracks',{'id':track_id})
-    if not track or track.get('status')!='published':
-        return jsonify({'ok':False,'error':'track_not_found'}),404
-    user=current_user(); uid=str(user.get('id')) if user else None
-    if not uid:
-        return jsonify({'ok':False,'error':'login_required'}),401
-    existing=_music_rows('koja_music_likes',{'user_id':uid,'track_id':track_id},limit=1)
-    if existing:
-        try: db_delete('koja_music_likes',{'id':existing[0].get('id')})
-        except Exception: pass
-        liked=False
-    else:
-        _,err=_music_optional_insert('koja_music_likes',{'id':str(uuid.uuid4()),'user_id':uid,'track_id':track_id,'created_at':utc_now()})
-        if err: return jsonify({'ok':False,'error':'like_unavailable','detail':str(err)[:200]}),503
-        liked=True
-    count=_music_count('koja_music_likes',{'track_id':track_id})
-    return jsonify({'ok':True,'liked':liked,'likes':count})
-
-
-@app.route('/api/music/track/<track_id>/play', methods=['POST'])
-def music_play_api(track_id):
-    track=first_row('koja_music_tracks',{'id':track_id})
-    if not track or track.get('status')!='published':
-        return jsonify({'ok':False,'error':'track_not_found'}),404
-    user=current_user(); uid=str(user.get('id')) if user else None
-    payload={'id':str(uuid.uuid4()),'track_id':track_id,'user_id':uid,'session_key':clean(request.headers.get('X-Koja-Session'))[:120],'created_at':utc_now()}
-    _,err=_music_optional_insert('koja_music_plays',payload)
-    if err: return jsonify({'ok':False,'error':'play_tracking_unavailable'}),503
-    return jsonify({'ok':True})
-
-
-@app.route('/music/dashboard')
-@music_artist_required
-def music_dashboard_v2():
-    u=current_user(); artists=_music_rows('koja_music_artists',{'created_by':u.get('id')},limit=100)
-    ids={str(a.get('id')) for a in artists}; tracks=[]
-    for aid in ids: tracks.extend(_music_rows('koja_music_tracks',{'artist_id':aid},limit=500))
-    plays=[]; likes=[]
-    for t in tracks:
-        tid=t.get('id'); plays += _music_rows('koja_music_plays',{'track_id':tid},limit=1000); likes += _music_rows('koja_music_likes',{'track_id':tid},limit=1000)
-    published=sum(1 for t in tracks if t.get('status')=='published')
-    return render_page('KOJA MUSIC Artist Dashboard',r'''
-<div class="hero"><h1>KOJA MUSIC Artist Dashboard</h1><p>Releases, audience activity and artist controls.</p><div class="actions"><a class="btn" href="{{ url_for('music_studio') }}">MUSIC Studio</a><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a></div></div>
-<div class="grid"><div class="stat"><div class="big">{{ artists|length }}</div><div class="small">Artist profiles</div></div><div class="stat"><div class="big">{{ published }}</div><div class="small">Published releases</div></div><div class="stat"><div class="big">{{ plays|length }}</div><div class="small">Tracked plays</div></div><div class="stat"><div class="big">{{ likes|length }}</div><div class="small">Likes</div></div></div>
-<div class="card"><h2>Your releases</h2>{% for t in tracks %}<div style="padding:12px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong><span class="small"> · {{ t.status or 'draft' }} · {{ t.album_title or 'Single' }}</span><div style="margin-top:7px"><a class="btn secondary" href="{{ url_for('music_track',track_id=t.id) if t.status=='published' else url_for('music_studio') }}">{{ 'View release' if t.status=='published' else 'Manage' }}</a></div></div>{% else %}<p>No releases yet.</p>{% endfor %}</div>''',artists=artists,tracks=tracks,plays=plays,likes=likes,published=published)
-
-
-
-# ============================================================
-# KOJA MUSIC GLOBAL INDUSTRY NETWORK
-# ============================================================
-KOJA_MUSIC_INDUSTRY_SEEDS = [
-    ('Africa','Zambia','ZAMCOPS','Collecting Society','https://zamcops.org/','Rights, licensing and creator representation'),
-    ('Africa','South Africa','Recording Industry of South Africa (RISA)','Industry Association','https://risa.org.za/','Recording-industry representation and information'),
-    ('Africa','Kenya','Recording Industry of Kenya (RIKE)','Industry Association','https://www.rike.or.ke/','Recording industry and rights information'),
-    ('Africa','Nigeria','IFPI Sub-Saharan Africa','Regional Industry','https://www.ifpi.org/','Regional recording-industry information and licensing'),
-    ('Africa','Ghana','IFPI / Ghana music industry network','Industry Network','https://www.ifpi.org/','Industry, licensing and rights information'),
-    ('Africa','Uganda','Uganda Performing Right Society (UPRS)','Collecting Society','https://www.uprs.go.ug/','Creator rights and licensing'),
-    ('Africa','Tanzania','IFPI Sub-Saharan Africa','Regional Industry','https://www.ifpi.org/','Recording-industry information'),
-    ('Asia','India','Indian Music Industry (IMI)','Industry Association','https://indianmi.org/','Recording-industry representation and ISRC information'),
-    ('Asia','Japan','Recording Industry Association of Japan (RIAJ)','Industry Association','https://www.riaj.or.jp/','Recording-industry and rights information'),
-    ('Asia','South Korea','Korea Music Content Association (KMCA)','Industry Association','https://www.k-mca.or.kr/','Music-content industry information'),
-    ('Asia','Malaysia','Recording Industry Association of Malaysia (RIM)','Industry Association','https://www.rim.org.my/','Recording-industry information'),
-    ('Asia','Singapore','Recording Industry Association (Singapore) (RIAS)','Industry Association','https://www.rias.org.sg/','Recording-industry information'),
-    ('Asia','China','IFPI Asia / regional network','Regional Industry','https://www.ifpi.org/','Music industry and rights information'),
-    ('Americas','United States','Recording Industry Association of America (RIAA)','Industry Association','https://www.riaa.com/','Recording-industry and rights information'),
-    ('Americas','Canada','Re:Sound','Collecting Society','https://www.resound.ca/','Neighbouring-rights licensing and information'),
-    ('Americas','Mexico','SOMEXFON','Collecting Society','https://somexfon.com/','Music licensing and rights information'),
-    ('Americas','Brazil','ABRAMUS','Collecting Society','https://www.abramus.org.br/','Music rights and creator representation'),
-    ('Americas','Argentina','CAPIF','Industry Association','https://www.capif.org.ar/','Recording-industry information'),
-    ('Americas','Jamaica','JAMMS','Collecting Society','https://jammsonline.com/','Music rights and licensing'),
-    ('Global','Global','IFPI','Global Recording Industry','https://www.ifpi.org/','Global recording-industry data, licensing and rights'),
-    ('Global','Global','YouTube for Artists','Artist Platform','https://artists.youtube/','Official artist-channel and music-video resources'),
-]
-
-def _music_industry_seed():
-    try:
-        existing=_music_rows('koja_music_industries', limit=500)
-        keys={(clean(x.get('region')).lower(),clean(x.get('country')).lower(),clean(x.get('name')).lower()) for x in existing}
-        for region,country,name,kind,url,desc in KOJA_MUSIC_INDUSTRY_SEEDS:
-            key=(region.lower(),country.lower(),name.lower())
-            if key in keys: continue
-            db_insert('koja_music_industries', {'id':str(uuid.uuid4()),'region':region,'country':country,'name':name,'industry_type':kind,'website':url,'description':desc,'status':'active','created_at':utc_now(),'updated_at':utc_now()})
-    except Exception as exc:
-        logger.info('KOJA MUSIC industry seed skipped: %s', exc)
-
-def _music_industry_videos(country=None, region=None, limit=80):
-    tracks=_music_rows('koja_music_tracks', {'status':'published'}, order='featured.desc,release_date.desc,created_at.desc', limit=1000)
-    artists=_music_rows('koja_music_artists', {'status':'published'}, limit=1000)
-    amap={str(a.get('id')):a for a in artists}; out=[]
-    region_countries={
-        'Africa':{'zambia','south africa','kenya','nigeria','ghana','uganda','tanzania','zimbabwe','namibia','rwanda','botswana','malawi','mozambique','ethiopia','egypt'},
-        'Asia':{'india','japan','south korea','korea','malaysia','singapore','china','indonesia','philippines','thailand','pakistan','bangladesh'},
-        'Americas':{'united states','usa','canada','mexico','brazil','argentina','jamaica','colombia','chile','peru'}
-    }
-    for t in tracks:
-        video=t.get('video_url') or t.get('music_video_url') or t.get('visual_url')
-        if not video: continue
-        a=amap.get(str(t.get('artist_id')),{}); ac=clean(a.get('country')).lower()
-        if country and clean(country).lower() not in ac: continue
-        if region and ac and not any(ac in c for c in region_countries.get(region,set())): continue
-        t=dict(t); t['_artist']=a; out.append(t)
-        if len(out)>=limit: break
-    return out
-
-@app.route('/music/industry')
-def music_industry():
-    _music_industry_seed()
-    region=clean(request.args.get('region')); country=clean(request.args.get('country'))
-    industries=_music_rows('koja_music_industries', {}, order='region.asc,country.asc,name.asc', limit=500)
-    if region: industries=[x for x in industries if clean(x.get('region')).lower()==region.lower()]
-    if country: industries=[x for x in industries if clean(x.get('country')).lower()==country.lower()]
-    videos=_music_industry_videos(country=country or None, region=region or None, limit=80)
-    return render_page('KOJA MUSIC Industry',r'''
-<style>
-.mi{max-width:1100px;margin:auto}.mi-nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.mi-nav a{padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;text-decoration:none;font-weight:800;font-size:13px}.mi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mi-card{background:#0a1422;border:1px solid rgba(255,255,255,.1);border-radius:15px;padding:14px}.mi-card h3{margin:0 0 6px}.mi-card a{color:#65b7ff}.mi-videos{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.mi-video{background:#08111d;border-radius:14px;overflow:hidden}.mi-video video{width:100%;aspect-ratio:9/16;object-fit:cover;display:block;background:#000}.mi-video .cap{padding:8px;font-size:11px}.mi-region{font-size:11px;color:#69b9ff;font-weight:800;text-transform:uppercase}@media(max-width:850px){.mi-grid{grid-template-columns:1fr 1fr}.mi-videos{grid-template-columns:repeat(2,1fr)}}@media(max-width:520px){.mi-grid,.mi-videos{grid-template-columns:1fr}}
-</style>
-<div class="mi"><div class="hero"><h1>KOJA MUSIC INDUSTRY</h1><p>Connect artists, labels, rights organisations and music markets across Africa, Asia and the Americas.</p></div>
-<div class="mi-nav"><a href="{{ url_for('music_home') }}">Music Home</a><a href="{{ url_for('music_industry') }}">All Industries</a><a href="{{ url_for('music_industry',region='Africa') }}">Africa</a><a href="{{ url_for('music_industry',region='Asia') }}">Asia</a><a href="{{ url_for('music_industry',region='Americas') }}">Americas</a><a href="{{ url_for('music_industry',region='Global') }}">Global</a></div>
-<div class="card"><h2>Music videos</h2><p class="small">KOJA shows videos that are published in the KOJA catalogue. Rights-pending third-party recordings are not copied into KOJA.</p><div class="mi-videos">{% for t in videos %}<div class="mi-video"><a href="{{ url_for('music_track',track_id=t.id) }}"><video muted playsinline preload="metadata" poster="{{ t.cover_image_url or '' }}"><source src="{{ t.video_url or t.music_video_url or t.visual_url }}"></video></a><div class="cap"><strong>{{ t.title }}</strong><br>{{ t._artist.get('artist_name','Artist') }}{% if t.audio_url %} · MP3{% endif %}</div></div>{% else %}<div class="card"><p>No published KOJA videos are available for this region yet.</p><a class="btn" href="{{ url_for('music_home') }}">Watch KOJA MUSIC</a></div>{% endfor %}</div></div>
-<div class="card"><h2>Industry network{% if region %} · {{ region }}{% endif %}{% if country %} · {{ country }}{% endif %}</h2><div class="mi-grid">{% for x in industries %}<div class="mi-card"><div class="mi-region">{{ x.region }} · {{ x.country }}</div><h3>{{ x.name }}</h3><p class="small">{{ x.industry_type }}</p><p class="small">{{ x.description }}</p><a href="{{ x.website }}" target="_blank" rel="noopener">Official website</a></div>{% else %}<p>No industry records yet.</p>{% endfor %}</div></div>
-<div class="card"><h2>Artist recruitment</h2><p>Artists and rights holders can join KOJA MUSIC and submit authorised music videos through the separate MUSIC Studio.</p></div></div>''',industries=industries,videos=videos,region=region,country=country)
-
-@app.route('/music/industry/<path:country_name>')
-def music_industry_country(country_name):
-    return redirect(url_for('music_industry', country=country_name))
-
-@app.route('/api/music/industry')
-def music_industry_api():
-    _music_industry_seed()
-    rows=_music_rows('koja_music_industries',{},order='region.asc,country.asc,name.asc',limit=500)
-    return jsonify({'ok':True,'count':len(rows),'industries':rows})
-
-
-
-# ============================================================
-# KOJA MUSIC INDUSTRY LIFECYCLE
-# Artist -> Songwriter -> Producer -> Recording -> Rights ->
-# Distribution -> Promotion -> Radio/Media -> Live Events -> Fans ->
-# Monetisation -> Royalties -> Accounting
-# ============================================================
-KOJA_MUSIC_LIFECYCLE = [
-    ('artist','Artist','Profiles, teams, management and artist identity'),
-    ('songwriter','Songwriter','Compositions, writers, publishers and split sheets'),
-    ('producer','Producer','Producers, beats, production credits and agreements'),
-    ('recording','Recording','Masters, sessions, stems, versions and identifiers'),
-    ('rights','Rights','Master, composition, publishing, neighbouring and permissions'),
-    ('distribution','Distribution','Release delivery, territories, stores and scheduling'),
-    ('promotion','Promotion','Campaigns, playlists, social, press and influencers'),
-    ('radio_media','Radio / Media','Radio, TV, interviews, blogs and media submissions'),
-    ('live_events','Live Events','Shows, festivals, venues, bookings and ticketing'),
-    ('fans','Fans','Followers, engagement, communities and audience activity'),
-    ('monetisation','Monetisation','Streaming, ads, licensing, tickets, subscriptions and merch'),
-    ('royalties','Royalties','Royalty pools, splits, statements and payment calculations'),
-    ('accounting','Accounting','Invoices, expenses, settlements, taxes and financial reports'),
-]
-
-KOJA_MUSIC_LIFECYCLE_TABLES = {
-    'songwriter':'koja_music_songwriters','producer':'koja_music_producers','recording':'koja_music_recordings',
-    'rights':'koja_music_rights','distribution':'koja_music_distributions','promotion':'koja_music_promotions',
-    'radio_media':'koja_music_media_outreach','live_events':'koja_music_live_events','fans':'koja_music_fans',
-    'monetisation':'koja_music_monetisation','royalties':'koja_music_royalties','accounting':'koja_music_accounting'
-}
-
-def _music_lifecycle_user_id():
-    return (current_user() or {}).get('id')
-
-def _music_lifecycle_schema_status():
-    """Return lifecycle-table availability without requiring a direct Postgres connection."""
-    status = {}
-    for key, table in KOJA_MUSIC_LIFECYCLE_TABLES.items():
-        try:
-            if not supabase_configured():
-                status[key] = {'table': table, 'available': False, 'reason': 'supabase_not_configured'}
-                continue
-            r = requests.get(
-                sb_rest_url(table),
-                headers=sb_headers(),
-                params={'select':'*', 'limit':'1'},
-                timeout=12,
-            )
-            if r.ok:
-                status[key] = {'table': table, 'available': True, 'reason': 'ok'}
-            else:
-                body = r.text[:600]
-                status[key] = {
-                    'table': table,
-                    'available': False,
-                    'reason': 'table_or_api_error',
-                    'http_status': r.status_code,
-                    'detail': body,
-                }
-        except Exception as exc:
-            status[key] = {'table': table, 'available': False, 'reason': 'request_error', 'detail': str(exc)[:300]}
-    return status
-
-
-def _music_lifecycle_readiness(uid):
-    """Calculate a conservative per-release readiness view from lifecycle records.
-
-    A release is not marked monetisation-ready merely because a row exists. Rights
-    and royalty/accounting records are treated as control points, while distribution,
-    promotion and media are operational stages.
-    """
-    artists = _music_rows('koja_music_artists', {'created_by': uid}, limit=200) if uid else []
-    out = []
-    for artist in artists:
-        aid = artist.get('id')
-        tracks = _music_rows('koja_music_tracks', {'artist_id': aid}, order='created_at.desc', limit=200)
-        for track in tracks:
-            tid = track.get('id')
-            checks = {}
-            for key in ('songwriter','producer','recording','rights','distribution','promotion','radio_media','live_events','fans','monetisation','royalties','accounting'):
-                table = KOJA_MUSIC_LIFECYCLE_TABLES[key]
-                filters = {'created_by': uid}
-                if key not in ('songwriter','producer','fans','accounting'):
-                    filters['track_id'] = tid
-                else:
-                    # People/accounting records can be linked through artist ownership.
-                    filters['artist_id'] = aid
-                try:
-                    checks[key] = bool(_music_rows(table, filters, limit=1))
-                except Exception:
-                    checks[key] = False
-            critical = all(checks.get(k) for k in ('rights','recording'))
-            commercial = all(checks.get(k) for k in ('distribution','monetisation','royalties','accounting'))
-            out.append({
-                'track_id': tid,
-                'title': track.get('title') or 'Untitled',
-                'artist_id': aid,
-                'artist_name': artist.get('artist_name') or 'Artist',
-                'critical_ready': critical,
-                'commercial_ready': commercial,
-                'checks': checks,
-                'completed': sum(1 for v in checks.values() if v),
-                'total': len(checks),
-            })
-    return out
-
-def _music_lifecycle_artist_ids(uid):
-    if not uid: return set()
-    return {str(x.get('id')) for x in _music_rows('koja_music_artists', {'created_by':uid}, limit=500) if x.get('id')}
-
-def _music_lifecycle_owned_rows(table, uid, limit=500):
-    # Best-effort ownership filtering for lifecycle tables.
-    return _music_rows(table, {'created_by':uid}, order='created_at.desc', limit=limit) if uid else []
-
-def _music_lifecycle_counts(uid):
-    counts={'artist':len(_music_lifecycle_artist_ids(uid))}
-    for key,table in KOJA_MUSIC_LIFECYCLE_TABLES.items():
-        try: counts[key]=len(_music_lifecycle_owned_rows(table,uid,500))
-        except Exception: counts[key]=0
-    return counts
-
-@app.route('/music/industry-suite')
-@music_artist_required
-def music_industry_suite():
-    uid=_music_lifecycle_user_id(); counts=_music_lifecycle_counts(uid)
-    artists=_music_rows('koja_music_artists', {'created_by':uid}, limit=100)
-    tracks=[]
-    for a in artists:
-        tracks += _music_rows('koja_music_tracks', {'artist_id':a.get('id')}, order='created_at.desc', limit=200)
-    recent=[]
-    for key,table in KOJA_MUSIC_LIFECYCLE_TABLES.items():
-        try:
-            rows=_music_lifecycle_owned_rows(table,uid,8)
-            for row in rows:
-                row=dict(row); row['_module']=dict((x for x in KOJA_MUSIC_LIFECYCLE if x[0]==key))[1]
-                recent.append(row)
-        except Exception: pass
-    recent.sort(key=lambda x:x.get('created_at') or '', reverse=True)
-    return render_page('KOJA MUSIC Industry Lifecycle',r'''
-<style>
-.kml{max-width:1180px;margin:auto}.kml-hero{background:linear-gradient(135deg,#071426,#123b69);border:1px solid rgba(255,255,255,.1);border-radius:22px;padding:24px;color:#fff}.kml-flow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.kml-stage{display:block;text-decoration:none;color:inherit;background:var(--card,#0b1727);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:15px;padding:15px;min-height:120px}.kml-stage:hover{border-color:#2687d9;transform:translateY(-1px)}.kml-stage .num{font-size:11px;font-weight:900;color:#4da7ff}.kml-stage h3{margin:6px 0}.kml-stage p{font-size:12px;opacity:.8}.kml-count{font-size:22px;font-weight:900}.kml-track{display:flex;gap:6px;overflow:auto;padding:8px 0}.kml-chip{white-space:nowrap;padding:7px 10px;border-radius:999px;background:#10233a;color:#fff;font-size:11px;font-weight:800}.kml-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}@media(max-width:800px){.kml-flow{grid-template-columns:repeat(2,1fr)}.kml-grid{grid-template-columns:1fr}}@media(max-width:480px){.kml-flow{grid-template-columns:1fr}}
-</style>
-<div class="kml">
-<div class="kml-hero"><div class="small">KOJA MUSIC INDUSTRY OPERATING SYSTEM</div><h1>From creation to royalty accounting</h1><p>One connected lifecycle for the artist, composition, recording, rights, distribution, promotion, audience and money.</p><div class="kml-track">{% for x in lifecycle %}<span class="kml-chip">{{ loop.index }} · {{ x[1] }}</span>{% endfor %}</div></div>
-<div class="card"><h2>Industry lifecycle</h2><div class="kml-flow">{% for x in lifecycle %}<a class="kml-stage" href="{{ url_for('music_lifecycle_module',module=x[0]) }}"><div class="num">{{ '%02d'|format(loop.index) }}</div><h3>{{ x[1] }}</h3><p>{{ x[2] }}</p><div class="kml-count">{{ counts.get(x[0],0) }}</div><div class="small">records</div></a>{% endfor %}</div></div>
-<div class="kml-grid"><div class="card"><h2>Your releases</h2>{% for t in tracks[:20] %}<div style="padding:10px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong><span class="small"> · {{ t.status or 'draft' }}</span></div>{% else %}<p>No releases yet. Create an artist profile and release in MUSIC Studio.</p>{% endfor %}</div>
-<div class="card"><h2>Lifecycle activity</h2>{% for r in recent[:20] %}<div style="padding:9px 0;border-bottom:1px solid var(--border)"><strong>{{ r.get('_module') }}</strong><div class="small">{{ r.get('name') or r.get('title') or r.get('description') or 'Record' }}</div></div>{% else %}<p>No lifecycle records yet.</p>{% endfor %}</div></div>
-</div>''',lifecycle=KOJA_MUSIC_LIFECYCLE,counts=counts,tracks=tracks,recent=recent)
-
-@app.route('/music/industry-suite/<module>', methods=['GET','POST'])
-@music_artist_required
-def music_lifecycle_module(module):
-    if module not in dict((x[0],x) for x in KOJA_MUSIC_LIFECYCLE): abort(404)
-    label=dict((x[0],x) for x in KOJA_MUSIC_LIFECYCLE)[module][1]
-    uid=_music_lifecycle_user_id(); table=KOJA_MUSIC_LIFECYCLE_TABLES.get(module)
-    if request.method=='POST':
-        title=clean(request.form.get('title') or request.form.get('name'))
-        artist_id=clean(request.form.get('artist_id'))
-        track_id=clean(request.form.get('track_id'))
-        description=clean(request.form.get('description'))
-        status=clean(request.form.get('status')) or 'draft'
-        if module=='songwriter':
-            payload={'created_by':uid,'artist_id':artist_id or None,'name':title,'email':clean(request.form.get('email')),'publisher':clean(request.form.get('publisher')),'share_percent':request.form.get('share_percent') or None,'status':status}
-        elif module=='producer':
-            payload={'created_by':uid,'artist_id':artist_id or None,'name':title,'email':clean(request.form.get('email')),'role':clean(request.form.get('role')) or 'Producer','fee':request.form.get('fee') or None,'royalty_percent':request.form.get('royalty_percent') or None,'status':status}
-        elif module=='recording':
-            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'title':title,'master_url':clean(request.form.get('url')),'isrc':clean(request.form.get('isrc')),'version':clean(request.form.get('version')) or 'Original','status':status}
-        elif module=='rights':
-            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'right_type':clean(request.form.get('right_type')) or 'master','owner_name':title,'share_percent':request.form.get('share_percent') or None,'territory':clean(request.form.get('territory')) or 'Worldwide','status':status,'reference':clean(request.form.get('reference'))}
-        elif module=='distribution':
-            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'distributor':title,'territories':clean(request.form.get('territories')) or 'Worldwide','release_date':clean(request.form.get('release_date')) or None,'stores':clean(request.form.get('stores')),'status':status}
-        elif module=='promotion':
-            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'campaign_name':title,'channel':clean(request.form.get('channel')),'budget':request.form.get('budget') or None,'start_date':clean(request.form.get('start_date')) or None,'end_date':clean(request.form.get('end_date')) or None,'status':status}
-        elif module=='radio_media':
-            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'outlet_name':title,'outlet_type':clean(request.form.get('outlet_type')) or 'Radio','contact':clean(request.form.get('contact')),'submission_url':clean(request.form.get('url')),'status':status}
-        elif module=='live_events':
-            payload={'created_by':uid,'artist_id':artist_id or None,'event_name':title,'venue':clean(request.form.get('venue')),'event_date':clean(request.form.get('event_date')) or None,'promoter':clean(request.form.get('promoter')),'fee':request.form.get('fee') or None,'status':status}
-        elif module=='fans':
-            payload={'created_by':uid,'artist_id':artist_id or None,'name':title,'email':clean(request.form.get('email')),'country':clean(request.form.get('country')),'source':clean(request.form.get('source')) or 'KOJA MUSIC','status':status}
-        elif module=='monetisation':
-            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'source':title,'period':clean(request.form.get('period')),'gross_amount':request.form.get('amount') or 0,'currency':clean(request.form.get('currency')) or 'USD','reference':clean(request.form.get('reference')),'status':status}
-        elif module=='royalties':
-            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'payee_name':title,'right_type':clean(request.form.get('right_type')) or 'master','share_percent':request.form.get('share_percent') or 0,'gross_amount':request.form.get('amount') or 0,'royalty_amount':request.form.get('royalty_amount') or 0,'period':clean(request.form.get('period')),'status':status}
-        else:
-            payload={'created_by':uid,'artist_id':artist_id or None,'entry_type':clean(request.form.get('entry_type')) or 'income','description':description or title,'amount':request.form.get('amount') or 0,'currency':clean(request.form.get('currency')) or 'USD','reference':clean(request.form.get('reference')),'entry_date':clean(request.form.get('entry_date')) or None,'status':status}
-        payload={k:v for k,v in payload.items() if v is not None}
-        _,err=db_insert(table,payload)
-        flash(f'{label} record saved.' if not err else f'{label} record could not be saved. Run the KOJA MUSIC lifecycle migration in Supabase.','success' if not err else 'danger')
-        return redirect(url_for('music_lifecycle_module',module=module))
-    rows=_music_lifecycle_owned_rows(table,uid,300)
-    artists=_music_rows('koja_music_artists',{'created_by':uid},limit=100)
-    tracks=[]
-    for a in artists: tracks += _music_rows('koja_music_tracks',{'artist_id':a.get('id')},limit=200)
-    return render_page(f'KOJA MUSIC · {label}',r'''
-<div class="hero"><div class="small">KOJA MUSIC INDUSTRY LIFECYCLE</div><h1>{{ label }}</h1><p>{{ description }}</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Lifecycle</a><a class="btn" href="{{ url_for('music_studio') }}">MUSIC Studio</a></div></div>
-<div class="card"><h2>Add {{ label }} record</h2><form method="post"><div class="grid"><div><label>Name / title</label><input name="title" required></div><div><label>Artist</label><select name="artist_id"><option value="">Select artist</option>{% for a in artists %}<option value="{{ a.id }}">{{ a.artist_name }}</option>{% endfor %}</select></div>{% if module in ['recording','rights','distribution','promotion','radio_media','monetisation','royalties'] %}<div><label>Release</label><select name="track_id"><option value="">Select release</option>{% for t in tracks %}<option value="{{ t.id }}">{{ t.title }}</option>{% endfor %}</select></div>{% endif %}
-{% if module in ['songwriter','fans'] %}<div><label>Email</label><input name="email" type="email"></div>{% endif %}
-{% if module=='songwriter' %}<div><label>Publisher</label><input name="publisher"></div><div><label>Share %</label><input name="share_percent" type="number" step="0.01" min="0" max="100"></div>{% endif %}
-{% if module=='producer' %}<div><label>Role</label><input name="role" value="Producer"></div><div><label>Fee</label><input name="fee" type="number" step="0.01"></div><div><label>Royalty %</label><input name="royalty_percent" type="number" step="0.01"></div>{% endif %}
-{% if module=='recording' %}<div><label>Master URL</label><input name="url"></div><div><label>ISRC</label><input name="isrc"></div><div><label>Version</label><input name="version" value="Original"></div>{% endif %}
-{% if module=='rights' %}<div><label>Right type</label><select name="right_type"><option>master</option><option>composition</option><option>publishing</option><option>neighbouring</option><option>synchronisation</option><option>performance</option></select></div><div><label>Share %</label><input name="share_percent" type="number" step="0.01" min="0" max="100"></div><div><label>Territory</label><input name="territory" value="Worldwide"></div><div><label>Rights reference</label><input name="reference"></div>{% endif %}
-{% if module=='distribution' %}<div><label>Stores</label><input name="stores" placeholder="KOJA, Spotify, Apple Music, etc."></div><div><label>Territories</label><input name="territories" value="Worldwide"></div><div><label>Release date</label><input name="release_date" type="date"></div>{% endif %}
-{% if module=='promotion' %}<div><label>Channel</label><input name="channel" placeholder="Playlist / Social / Press / Influencer"></div><div><label>Budget</label><input name="budget" type="number" step="0.01"></div><div><label>Start</label><input name="start_date" type="date"></div><div><label>End</label><input name="end_date" type="date"></div>{% endif %}
-{% if module=='radio_media' %}<div><label>Outlet type</label><select name="outlet_type"><option>Radio</option><option>TV</option><option>Blog</option><option>Podcast</option><option>Press</option><option>Playlist</option></select></div><div><label>Contact</label><input name="contact"></div><div><label>Submission URL</label><input name="url"></div>{% endif %}
-{% if module=='live_events' %}<div><label>Venue</label><input name="venue"></div><div><label>Event date</label><input name="event_date" type="date"></div><div><label>Promoter</label><input name="promoter"></div><div><label>Fee</label><input name="fee" type="number" step="0.01"></div>{% endif %}
-{% if module=='fans' %}<div><label>Country</label><input name="country"></div><div><label>Source</label><input name="source" value="KOJA MUSIC"></div>{% endif %}
-{% if module=='monetisation' %}<div><label>Period</label><input name="period" placeholder="2026-10"></div><div><label>Gross amount</label><input name="amount" type="number" step="0.0001"></div><div><label>Currency</label><input name="currency" value="USD"></div><div><label>Reference</label><input name="reference"></div>{% endif %}
-{% if module=='royalties' %}<div><label>Payee</label><input name="title" required></div><div><label>Right type</label><select name="right_type"><option>master</option><option>composition</option><option>publishing</option><option>producer</option><option>neighbouring</option></select></div><div><label>Share %</label><input name="share_percent" type="number" step="0.0001"></div><div><label>Gross amount</label><input name="amount" type="number" step="0.0001"></div><div><label>Royalty amount</label><input name="royalty_amount" type="number" step="0.0001"></div><div><label>Period</label><input name="period"></div>{% endif %}
-{% if module=='accounting' %}<div><label>Entry type</label><select name="entry_type"><option>income</option><option>expense</option><option>invoice</option><option>settlement</option><option>tax</option><option>payout</option></select></div><div><label>Description</label><input name="description"></div><div><label>Amount</label><input name="amount" type="number" step="0.0001"></div><div><label>Currency</label><input name="currency" value="USD"></div><div><label>Reference</label><input name="reference"></div><div><label>Date</label><input name="entry_date" type="date"></div>{% endif %}
-<div><label>Status</label><select name="status"><option value="draft">Draft</option><option value="pending">Pending</option><option value="active">Active</option><option value="verified">Verified</option><option value="completed">Completed</option></select></div></div><button class="btn" type="submit">Save {{ label }}</button></form></div>
-<div class="card"><h2>{{ label }} records</h2>{% for r in rows %}<div style="padding:11px 0;border-bottom:1px solid var(--border)"><strong>{{ r.get('name') or r.get('title') or r.get('campaign_name') or r.get('outlet_name') or r.get('event_name') or r.get('distributor') or r.get('payee_name') or r.get('source') or r.get('description') or 'Record' }}</strong><span class="small"> · {{ r.get('status','draft') }} · {{ r.get('created_at','') }}</span></div>{% else %}<p>No records yet.</p>{% endfor %}</div>''',label=label,description=dict((x[0],x[2]) for x in KOJA_MUSIC_LIFECYCLE)[module],module=module,rows=rows,artists=artists,tracks=tracks)
-
-@app.route('/api/music/industry-lifecycle')
-@music_artist_required
-def music_lifecycle_api():
-    uid=_music_lifecycle_user_id()
-    schema=_music_lifecycle_schema_status()
-    return jsonify({
-        'ok':True,
-        'lifecycle':[{'key':x[0],'name':x[1],'description':x[2],'count':_music_lifecycle_counts(uid).get(x[0],0),'table_available':schema.get(x[0],{}).get('available',False)} for x in KOJA_MUSIC_LIFECYCLE],
-        'schema':schema,
-        'readiness':_music_lifecycle_readiness(uid),
-    })
-
-
-@app.route('/music/industry-suite/readiness')
-@music_artist_required
-def music_lifecycle_readiness_page():
-    uid=_music_lifecycle_user_id()
-    schema=_music_lifecycle_schema_status()
-    readiness=_music_lifecycle_readiness(uid)
-    return render_page('KOJA MUSIC Lifecycle Readiness', r'''
-<style>
-.kmr{max-width:1180px;margin:auto}.kmr-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.kmr-card{border:1px solid var(--border,rgba(255,255,255,.12));border-radius:15px;padding:15px;background:var(--card,#0b1727)}.kmr-ok{color:#39d98a;font-weight:900}.kmr-warn{color:#ffb84d;font-weight:900}.kmr-bad{color:#ff6b6b;font-weight:900}.kmr-bar{height:8px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden;margin:9px 0}.kmr-bar span{display:block;height:100%;background:#2787d9}.kmr-chips{display:flex;gap:6px;flex-wrap:wrap}.kmr-chip{font-size:10px;padding:5px 7px;border-radius:999px;background:#10233a}.kmr-schema{font-size:12px}.kmr-schema div{padding:7px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.08))}@media(max-width:800px){.kmr-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){.kmr-grid{grid-template-columns:1fr}}
-</style>
-<div class="kmr"><div class="hero"><div class="small">KOJA MUSIC INDUSTRY OPERATING SYSTEM</div><h1>Lifecycle readiness</h1><p>Track every release from creation through rights, distribution, monetisation, royalties and accounting.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Lifecycle</a><a class="btn" href="{{ url_for('music_studio') }}">MUSIC Studio</a></div></div>
-<div class="card"><h2>Database readiness</h2><p class="small">The app checks the Supabase Data API without creating or altering tables. Run the lifecycle SQL migration for any missing module.</p><div class="kmr-schema">{% for key,x in schema.items() %}<div><strong>{{ x.table }}</strong> — {% if x.available %}<span class="kmr-ok">Available</span>{% else %}<span class="kmr-bad">Missing / unavailable</span>{% endif %}</div>{% endfor %}</div></div>
-<div class="kmr-grid">{% for r in readiness %}<div class="kmr-card"><h3>{{ r.artist_name }} · {{ r.title }}</h3><p><strong>{{ r.completed }}/{{ r.total }}</strong> lifecycle stages recorded</p><div class="kmr-bar"><span style="width:{{ ((r.completed / r.total) * 100) if r.total else 0 }}%"></span></div><p>{% if r.critical_ready %}<span class="kmr-ok">Critical rights/recording ready</span>{% else %}<span class="kmr-warn">Rights or recording incomplete</span>{% endif %}</p><p>{% if r.commercial_ready %}<span class="kmr-ok">Commercial accounting chain ready</span>{% else %}<span class="kmr-warn">Commercial chain incomplete</span>{% endif %}</p><div class="kmr-chips">{% for key,val in r.checks.items() %}<span class="kmr-chip">{{ key.replace('_',' ') }}: {{ 'yes' if val else 'no' }}</span>{% endfor %}</div></div>{% else %}<div class="card"><p>No releases are linked to your MUSIC artist profile yet.</p></div>{% endfor %}</div></div>''', schema=schema, readiness=readiness)
-
-
-@app.route('/api/music/industry-lifecycle/readiness')
-@music_artist_required
-def music_lifecycle_readiness_api():
-    uid=_music_lifecycle_user_id()
-    return jsonify({'ok':True,'schema':_music_lifecycle_schema_status(),'readiness':_music_lifecycle_readiness(uid)})
-
-
 # ADMIN
 # ============================================================
 
@@ -6954,7 +6041,6 @@ def admin():
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}"> Google Search & Distribution</a>
-<a class="btn success" href="{{ url_for('music_admin') }}">KOJA MUSIC Management</a>
 </div></div>
 """,counts=counts)
 
@@ -8878,7 +7964,7 @@ def media_nextgen():
 .koja-intro{position:fixed;inset:0;z-index:99999;background:#020305;display:grid;place-items:center;opacity:1;visibility:visible;transition:opacity .55s ease,visibility .55s ease}.koja-intro.hide{opacity:0;visibility:hidden;pointer-events:none}.koja-intro-logo{width:min(210px,48vw);height:auto;filter:drop-shadow(0 0 24px rgba(25,167,184,.28));animation:kojaIntroLogo 2.35s cubic-bezier(.2,.75,.25,1) both}.koja-intro-glow{position:absolute;width:min(430px,80vw);height:min(430px,80vw);border-radius:50%;background:radial-gradient(circle,rgba(25,167,184,.16),transparent 68%);animation:kojaIntroGlow 2.4s ease-out both;pointer-events:none}.koja-intro-skip{position:absolute;right:18px;bottom:18px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff;border-radius:999px;padding:8px 14px;font-size:12px}.koja-intro-enter{position:absolute;bottom:70px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.08);color:#fff;border-radius:999px;padding:10px 18px;font-weight:700;display:none}.koja-intro-enter.show{display:block}@keyframes kojaIntroLogo{0%{opacity:0;transform:scale(.62);filter:drop-shadow(0 0 0 rgba(25,167,184,0))}55%{opacity:1;transform:scale(1.04)}100%{opacity:1;transform:scale(1)}}@keyframes kojaIntroGlow{0%{opacity:0;transform:scale(.55)}45%{opacity:1;transform:scale(1)}100%{opacity:.72;transform:scale(1.08)}
 }
 .media-home{background:#05070b;color:#f7f9fc;padding-bottom:38px;min-height:calc(100vh - 110px);overflow:hidden}.media-nav{display:flex;gap:8px;overflow:auto;padding:12px 20px;background:#070b11;border-bottom:1px solid rgba(255,255,255,.08)}.media-nav a{color:#dce4ee;text-decoration:none;border:1px solid rgba(255,255,255,.1);border-radius:999px;padding:8px 13px;font-size:12px;white-space:nowrap}.media-hero{min-height:440px;position:relative;display:flex;align-items:flex-end;padding:30px;overflow:hidden;background:#0b1119}.hero-media{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.62}.media-hero:after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,10,.98),rgba(3,6,10,.55) 48%,rgba(3,6,10,.12)),linear-gradient(0deg,rgba(3,6,10,.98),transparent 65%)}.hero-copy{position:relative;z-index:2;max-width:650px}.hero-copy h1{font-size:clamp(30px,5vw,56px);margin:7px 0;line-height:1.04}.hero-kicker{font-size:12px;letter-spacing:.15em;color:#63b4ff;font-weight:800}.hero-copy p{color:#d0d9e5;max-width:580px}.hero-buttons{display:flex;gap:8px;flex-wrap:wrap}.media-content{padding:0 20px}.media-row-title{display:flex;align-items:center;justify-content:space-between;margin:25px 0 9px}.media-row-title h2{margin:0;font-size:21px}.media-row-title span{font-size:12px;color:#7f8da0}.media-row{display:flex;gap:14px;overflow-x:auto;padding:3px 2px 15px;scroll-snap-type:x proximity}.media-row::-webkit-scrollbar{height:6px}.media-row::-webkit-scrollbar-thumb{background:#293544;border-radius:9px}.media-card{position:relative;flex:0 0 235px;scroll-snap-align:start;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;color:#fff;text-decoration:none;box-shadow:0 8px 25px rgba(0,0,0,.25);transition:.18s}.media-card:hover{transform:translateY(-5px);border-color:rgba(93,169,255,.55)}.media-thumb{position:relative;aspect-ratio:16/9;background:#111923;overflow:hidden}.media-thumb img,.media-thumb video{width:100%;height:100%;object-fit:cover;display:block}.media-gradient{position:absolute;inset:auto 0 0;height:55%;background:linear-gradient(transparent,rgba(0,0,0,.65))}.media-play{position:absolute;left:10px;bottom:9px;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.78);display:grid;place-items:center;font-size:13px}.media-badge{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.75);padding:4px 7px;border-radius:999px;font-size:10px}.media-info{padding:10px}.media-info h3{margin:0 0 5px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-info p{margin:0;color:#9eabbc;font-size:11px;line-height:1.4;height:31px;overflow:hidden}.media-progress{height:3px;background:#303946}.media-progress i{display:block;height:100%;background:#e50914;width:0}@media(max-width:700px){.media-hero{min-height:360px;padding:20px}.media-content{padding:0 13px}.media-card{flex-basis:190px}}
-</style><div id="kojaIntro" class="koja-intro" aria-label="KOJA opening"><div class="koja-intro-glow"></div><svg class="koja-intro-logo" viewBox="0 0 240 90" fill="none" aria-hidden="true"><path d="M35 69V21h38c16 0 27 10 27 24s-11 24-27 24H49" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><path d="M49 34h19c6 0 11 4 11 11s-5 11-11 11H49" stroke="#19a7b8" stroke-width="7" stroke-linecap="round"/><text x="112" y="57" fill="#fff" font-size="30" font-family="Arial,sans-serif" font-weight="800" letter-spacing="3">KOJA</text></svg><button id="kojaIntroEnter" class="koja-intro-enter" type="button">ENTER KOJA</button><button id="kojaIntroSkip" class="koja-intro-skip" type="button">Skip</button></div><div class="media-home"><div class="media-nav"><a href="#continue">Continue Watching</a><a href="#trending">Trending</a><a href="#movies">Movies</a><a href="#series">Series</a><a href="#news">News</a><a href="{{ url_for('media_live') }}">LIVE</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>{% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline preload="metadata"></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:280] }}</p><div class="hero-buttons"><a class="btn" href="{{ url_for('media_watch',post_id=hero.id) }}">Play</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% endif %}<div class="media-content">{% for label,group in groups %}<section id="{{ label|lower|replace(' ','-') }}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<a class="media-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="media-gradient"></div><span class="media-play">▶</span><span class="media-badge">{{ p.post_type|title }}</span></div><div class="media-progress"><i id="progress-{{ p.id }}"></i></div>{% if label=='Continue Watching' %}<div class="media-progress"><i style="width:{{ (100*(p._progress/(p._duration or 1)))|round(1) }}%"></i></div>{% endif %}<div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p></div></a>{% endfor %}</div></section>{% endfor %}</div></div><audio id="kojaIntroAudio" preload="auto"><source src="{{ url_for('static', filename='koja-intro.wav') }}" type="audio/wav"></audio><script>(function(){const intro=document.getElementById('kojaIntro'),audio=document.getElementById('kojaIntroAudio'),enter=document.getElementById('kojaIntroEnter'),skip=document.getElementById('kojaIntroSkip');if(!intro)return;let done=false;function closeIntro(){if(done)return;done=true;try{audio.pause();audio.currentTime=0}catch(e){}intro.classList.add('hide');try{sessionStorage.setItem('koja_intro_seen','1')}catch(e){}}function begin(){enter.classList.remove('show');try{audio.currentTime=0;const pr=audio.play();if(pr&&pr.catch)pr.catch(function(){enter.classList.add('show')})}catch(e){enter.classList.add('show')}setTimeout(closeIntro,3000)}skip.addEventListener('click',closeIntro);enter.addEventListener('click',begin);let seen=false;try{seen=sessionStorage.getItem('koja_intro_seen')==='1'}catch(e){}if(seen){closeIntro();return}begin()})();document.querySelectorAll('.media-card').forEach(function(c){let id=c.dataset.id,b=document.getElementById('progress-'+id);try{let t=parseFloat(localStorage.getItem('koja_resume_'+id)||'0');if(t>3)b.style.width=Math.min(95,Math.max(4,t/6))+'%'}catch(e){}});</script>''',groups=groups,hero=hero)
+</style><div id="kojaIntro" class="koja-intro" aria-label="KOJA opening"><div class="koja-intro-glow"></div><svg class="koja-intro-logo" viewBox="0 0 240 90" fill="none" aria-hidden="true"><path d="M35 69V21h38c16 0 27 10 27 24s-11 24-27 24H49" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><path d="M49 34h19c6 0 11 4 11 11s-5 11-11 11H49" stroke="#19a7b8" stroke-width="7" stroke-linecap="round"/><text x="112" y="57" fill="#fff" font-size="30" font-family="Arial,sans-serif" font-weight="800" letter-spacing="3">KOJA</text></svg><button id="kojaIntroEnter" class="koja-intro-enter" type="button">ENTER KOJA</button><button id="kojaIntroSkip" class="koja-intro-skip" type="button">Skip</button></div><div class="media-home"><div class="media-nav"><a href="#continue">Continue Watching</a><a href="#trending">Trending</a><a href="#movies">Movies</a><a href="#series">Series</a><a href="#news">News</a><a href="{{ url_for('media_live') }}">LIVE</a>{% if user %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>{% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline preload="metadata"></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:280] }}</p><div class="hero-buttons"><a class="btn" href="{{ url_for('media_watch',post_id=hero.id) }}">Play</a>{% if user %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% endif %}<div class="media-content">{% for label,group in groups %}<section id="{{ label|lower|replace(' ','-') }}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<a class="media-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="media-gradient"></div><span class="media-play">▶</span><span class="media-badge">{{ p.post_type|title }}</span></div><div class="media-progress"><i id="progress-{{ p.id }}"></i></div>{% if label=='Continue Watching' %}<div class="media-progress"><i style="width:{{ (100*(p._progress/(p._duration or 1)))|round(1) }}%"></i></div>{% endif %}<div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p></div></a>{% endfor %}</div></section>{% endfor %}</div></div><audio id="kojaIntroAudio" preload="auto"><source src="{{ url_for('static', filename='koja-intro.wav') }}" type="audio/wav"></audio><script>(function(){const intro=document.getElementById('kojaIntro'),audio=document.getElementById('kojaIntroAudio'),enter=document.getElementById('kojaIntroEnter'),skip=document.getElementById('kojaIntroSkip');if(!intro)return;let done=false;function closeIntro(){if(done)return;done=true;try{audio.pause();audio.currentTime=0}catch(e){}intro.classList.add('hide');try{sessionStorage.setItem('koja_intro_seen','1')}catch(e){}}function begin(){enter.classList.remove('show');try{audio.currentTime=0;const pr=audio.play();if(pr&&pr.catch)pr.catch(function(){enter.classList.add('show')})}catch(e){enter.classList.add('show')}setTimeout(closeIntro,3000)}skip.addEventListener('click',closeIntro);enter.addEventListener('click',begin);let seen=false;try{seen=sessionStorage.getItem('koja_intro_seen')==='1'}catch(e){}if(seen){closeIntro();return}begin()})();document.querySelectorAll('.media-card').forEach(function(c){let id=c.dataset.id,b=document.getElementById('progress-'+id);try{let t=parseFloat(localStorage.getItem('koja_resume_'+id)||'0');if(t>3)b.style.width=Math.min(95,Math.max(4,t/6))+'%'}catch(e){}});</script>''',groups=groups,hero=hero)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
@@ -13851,37 +12937,15 @@ def _africa_now_panel_html():
  };
  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
  function categoryOf(h){const c=String(h.category||'').trim();const low=c.toLowerCase();if(low.includes('job')||low.includes('opportun'))return'jobs';if(low.includes('business')||low.includes('econom')||low.includes('market'))return'business';if(low.includes('health')||low.includes('medical'))return'health';if(low.includes('tech')||low.includes('digital')||low.includes('ai'))return'technology';if(low.includes('education')||low.includes('university')||low.includes('scholar'))return'education';if(low.includes('politic')||low.includes('government')||low.includes('election'))return'politics';if(low.includes('sport')||low.includes('football')||low.includes('athlet'))return'sports';if(low.includes('science')||low.includes('research')||low.includes('environment'))return'science';if(low.includes('culture')||low.includes('travel')||low.includes('tour')||low.includes('art')||low.includes('entertain'))return'culture';return null;}
- function topScore(h){
-   const title=String(h.title||'').toLowerCase(), summary=String(h.summary||'').toLowerCase(), hay=title+' '+summary;
-   let score=Number(h.score)||0;
-   if(h.is_live) score+=4;
-   if(/\b(breaking|major|urgent|historic|landmark|crisis|deadly|massive|national|president|election|summit|outbreak|earthquake|flood|war|conflict)\b/.test(hay)) score+=3;
-   if(/\b(live now|live stream|watch live|broadcast live)\b/.test(hay)) score+=2;
-   return score;
- }
+ function isTop(h){return !h.is_live && categoryOf(h)!=='jobs' && !categoryOf(h);}
  function generatedVisual(h){return '<div class="anx-generated"><span class="anx-orbit"></span><strong>KOJA VISUAL</strong><small>'+esc((h.category||'AFRICA NOW').toUpperCase())+' · GENERATED VISUAL</small></div>';}
  function mediaHtml(h){let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video><span class="anx-video-tag">SOURCE VIDEO</span>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="lazy">';}else{media=generatedVisual(h);}if(h.is_live)media+='<span class="anx-live-dot">● LIVE</span>';return media;}
  function renderLead(h){if(!h)return;let media=mediaHtml(h);const live=!!h.is_live;main.innerHTML='<div class="anx-card-media" style="height:100%">'+media+'</div><div class="anx-overlay"><div class="anx-kicker">'+(live?'<span class="anx-live">● LIVE</span> ':'')+esc(h.category||'Top Stories')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Top Africa story')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(live?'Watch / Open Live Story':'Open Story')+'</a></div>'}
  function renderCard(h){return '<article class="anx-card"><div class="anx-card-media">'+mediaHtml(h)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(h.category||'Africa')+' · '+esc(h.country||'Africa')+'</div><div class="anx-card-title">'+esc(h.title||'Africa story')+'</div><div class="anx-card-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-card-link" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(h.category==='Jobs & Opportunities'?'VIEW OPPORTUNITY':'READ STORY')+' →</a></div></article>';}
  function put(groupKey,arr){const g=groups[groupKey],sec=document.getElementById(g.section),row=document.getElementById(g.row),count=document.getElementById(g.count);if(!g||!sec||!row)return;if(!arr.length){sec.style.display='none';return;}sec.style.display='block';row.innerHTML=arr.slice(0,10).map(renderCard).join('');if(count)count.textContent=arr.length+' available';}
- function renderSections(items){
-   const news=items.filter(h=>categoryOf(h)!=='jobs');
-   const top=news.slice().sort((a,b)=>topScore(b)-topScore(a)).slice(0,10);
-   put('business',items.filter(h=>categoryOf(h)==='business'));
-   put('jobs',items.filter(h=>categoryOf(h)==='jobs'));
-   put('health',items.filter(h=>categoryOf(h)==='health'));
-   put('technology',items.filter(h=>categoryOf(h)==='technology'));
-   put('education',items.filter(h=>categoryOf(h)==='education'));
-   put('politics',items.filter(h=>categoryOf(h)==='politics'));
-   put('sports',items.filter(h=>categoryOf(h)==='sports'));
-   put('science',items.filter(h=>categoryOf(h)==='science'));
-   put('culture',items.filter(h=>categoryOf(h)==='culture'));
-   const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');
-   if(top.length){ts.style.display='block';tr.innerHTML=top.map(renderCard).join('');tc.textContent=top.length+' available';}else{ts.style.display='none';}
-   progress.textContent=items.length+' stories';
- }
- async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){const news=items.filter(x=>categoryOf(x)!=='jobs').sort((a,b)=>topScore(b)-topScore(a));const lead=news[0]||items[0];renderLead(lead);renderSections(items);updated.textContent=(lead&&lead.is_live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached Africa story shown · retrying feed';}finally{clearTimeout(timer);}}
- load();setInterval(load,30000);
+ function renderSections(items){const top=items.filter(isTop).slice(0,10);const live=items.filter(h=>h.is_live&&categoryOf(h)!=='jobs');const topAll=[...live,...top.filter(h=>!live.includes(h))].slice(0,10);put('business',items.filter(h=>categoryOf(h)==='business'));put('jobs',items.filter(h=>categoryOf(h)==='jobs'));put('health',items.filter(h=>categoryOf(h)==='health'));put('technology',items.filter(h=>categoryOf(h)==='technology'));put('education',items.filter(h=>categoryOf(h)==='education'));put('politics',items.filter(h=>categoryOf(h)==='politics'));put('sports',items.filter(h=>categoryOf(h)==='sports'));put('science',items.filter(h=>categoryOf(h)==='science'));put('culture',items.filter(h=>categoryOf(h)==='culture'));const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');if(topAll.length){ts.style.display='block';tr.innerHTML=topAll.map(renderCard).join('');tc.textContent=topAll.length+' available';}else{ts.style.display='none';}progress.textContent=items.length+' stories';}
+ async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){const live=items.find(x=>x.is_live&&categoryOf(x)!=='jobs');const lead=live||items.find(x=>categoryOf(x)!=='jobs')||items[0];renderLead(lead);renderSections(items);updated.textContent=(live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached Africa story shown · retrying feed';}finally{clearTimeout(timer);}}
+ load();setInterval(load,60000);
 })();
 </script>
 """
@@ -14667,3 +13731,249 @@ const nexusAdminRows={{ rows|tojson }};
 function editNexus(id){const r=nexusAdminRows.find(x=>String(x.id)===String(id));if(!r)return;document.getElementById('nxa_id').value=r.id||'';document.getElementById('nxa_name').value=r.name||r.service_name||'';document.getElementById('nxa_code').value=r.country_code||'';document.getElementById('nxa_country').value=r.country_name||'';document.getElementById('nxa_category').value=r.category||'';document.getElementById('nxa_url').value=r.official_url||r.url||'';document.getElementById('nxa_description').value=r.description||'';document.getElementById('nxa_tags').value=(r.tags||[]).join(', ');document.getElementById('nxa_sort').value=r.sort_order||100;document.getElementById('nxa_active').value=(r.active===false||r.is_active===false)?'0':'1';window.scrollTo({top:0,behavior:'smooth'})}
 </script>
 ''', rows=rows, categories=KOJA_WORLD_CATEGORIES, service_name=_world_service_name, verified=_world_verified, active=_world_active)
+# ============================================================
+# KOJA MUSIC + RIGHTS CONTROL LAYER
+# Additive module: preserves the existing KOJA AFRICA application.
+# ============================================================
+
+KOJA_MUSIC_RIGHTS_VERSION = "2026.10.06-RIGHTS-100-V1"
+
+
+def _music_admin_user():
+    u = current_user() or {}
+    return bool(u.get("is_admin"))
+
+
+def _music_artist_active(artist):
+    if not artist:
+        return False
+    return str(artist.get("status") or "").lower() in {"active", "published", "approved"} and not artist.get("suspended", False)
+
+
+def _music_track_rights_verified(track):
+    return str(track.get("rights_status") or "review_required").lower() == "verified"
+
+
+def _music_public_track(track):
+    artist = first_row("koja_music_artists", {"id": track.get("artist_id")}) if track.get("artist_id") else None
+    if not _music_artist_active(artist):
+        return False
+    status = str(track.get("status") or "draft").lower()
+    if status not in {"published", "active"}:
+        return False
+    # Rights verification is the final publication gate.
+    if not _music_track_rights_verified(track):
+        return False
+    return bool(first_nonempty(track.get("audio_url"), track.get("stream_url"), track.get("file_url"), track.get("video_url"), track.get("music_video_url"), track.get("visual_url")))
+
+
+def _music_media_url(track):
+    return first_nonempty(track.get("audio_url"), track.get("stream_url"), track.get("file_url"), track.get("video_url"), track.get("music_video_url"), track.get("visual_url"))
+
+
+def _music_youtube_embed(url):
+    u = clean(url)
+    if not u:
+        return ""
+    try:
+        p = urlparse(u)
+        host = (p.netloc or "").lower()
+        if "youtube.com" in host:
+            q = parse_qs(p.query).get("v", [""])[0]
+            if q:
+                return f"https://www.youtube.com/embed/{quote(q, safe='')}"
+            if p.path.startswith("/embed/"):
+                return u
+        if "youtu.be" in host:
+            vid = p.path.strip("/").split("/")[0]
+            if vid:
+                return f"https://www.youtube.com/embed/{quote(vid, safe='')}"
+    except Exception:
+        pass
+    return ""
+
+
+def _music_rows():
+    tracks = db_select("koja_music_tracks", order="created_at.desc", limit=500) or []
+    for t in tracks:
+        a = first_row("koja_music_artists", {"id": t.get("artist_id")}) if t.get("artist_id") else None
+        t["artist"] = a or {}
+        t["artist_active"] = _music_artist_active(a)
+        t["public_eligible"] = _music_public_track(t)
+        t["media_url"] = _music_media_url(t)
+        t["youtube_embed"] = _music_youtube_embed(t.get("video_url") or t.get("music_video_url") or t.get("visual_url"))
+    return tracks
+
+
+@app.route("/music")
+def koja_music_public():
+    tracks = [t for t in _music_rows() if t.get("public_eligible")]
+    return render_page("KOJA MUSIC", r'''
+<style>
+.music-head{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;border-radius:18px;padding:28px;margin-bottom:18px}
+.music-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.music-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;overflow:hidden}
+.music-card img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:12px;background:#101828}
+.music-card audio{width:100%;margin-top:12px}
+.music-video{width:100%;aspect-ratio:16/9;border:0;border-radius:12px;background:#000}
+.music-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.music-tools button{width:auto;margin:0}
+.data-save{font-size:13px;color:var(--muted)}
+</style>
+<div class="music-head"><h1>KOJA MUSIC</h1><p>Authorised music discovery and playback from KOJA artists.</p><div class="music-tools"><button id="dataSaver" type="button">Data Saver: On</button><span class="data-save">Off-screen media is not loaded until needed.</span></div></div>
+<div class="music-grid" id="musicGrid">
+{% for t in tracks %}
+<article class="music-card" data-music-card>
+{% if t.get('cover_image_url') %}<img loading="lazy" src="{{ t.cover_image_url }}" alt="{{ t.title or 'Track' }} artwork">{% endif %}
+<h3>{{ t.title or 'Untitled' }}</h3><p class="small">{{ t.artist.get('artist_name') or t.artist.get('name') or 'Artist' }}{% if t.genre %} · {{ t.genre }}{% endif %}</p>
+{% if t.youtube_embed %}<iframe class="music-video" loading="lazy" data-src="{{ t.youtube_embed }}" title="{{ t.title or 'Music video' }}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>{% elif t.media_url %}<audio controls preload="none" data-src="{{ t.media_url }}"></audio>{% endif %}
+<button class="btn" type="button" data-play-id="{{ t.id }}">Record Play</button>
+</article>
+{% else %}<div class="card"><h3>No authorised music is published yet.</h3><p>Music appears here only after the artist is active and the track has verified rights.</p></div>{% endfor %}
+</div>
+<script>
+(function(){
+ const cards=[...document.querySelectorAll('[data-music-card]')];
+ let saver=localStorage.getItem('koja_music_data_saver')!=='off';
+ const btn=document.getElementById('dataSaver');
+ function label(){btn.textContent='Data Saver: '+(saver?'On':'Off');}
+ label();
+ btn.onclick=()=>{saver=!saver;localStorage.setItem('koja_music_data_saver',saver?'on':'off');label(); if(!saver)loadVisible();};
+ function load(c){
+   c.querySelectorAll('[data-src]').forEach(el=>{if(!el.src){el.src=el.dataset.src;if(el.tagName==='AUDIO')el.load();}});
+ }
+ function unload(c){
+   c.querySelectorAll('audio').forEach(v=>{try{v.pause();v.removeAttribute('src');v.load();}catch(e){}});
+   c.querySelectorAll('iframe[data-src]').forEach(f=>{if(f.src){f.src='about:blank';}});
+ }
+ function loadVisible(){cards.forEach(c=>{const r=c.getBoundingClientRect(),visible=r.bottom>0&&r.top<innerHeight;if(visible)load(c);else if(saver)unload(c);});}
+ const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)load(e.target);else if(saver)unload(e.target);}),{rootMargin:'250px'});
+ cards.forEach(c=>io.observe(c)); loadVisible();
+ document.querySelectorAll('[data-play-id]').forEach(b=>b.onclick=async()=>{fetch('/api/music/play/'+encodeURIComponent(b.dataset.playId),{method:'POST'}).catch(()=>{});b.textContent='Play recorded';});
+ document.addEventListener('play',e=>{if(e.target.tagName==='AUDIO'){document.querySelectorAll('audio').forEach(v=>{if(v!==e.target){try{v.pause();}catch(_){} }});}},true);
+ window.addEventListener('pagehide',()=>cards.forEach(c=>unload(c)));
+})();
+</script>
+''', tracks=tracks)
+
+
+@app.route("/api/music/play/<track_id>", methods=["POST"])
+def koja_music_play(track_id):
+    track = first_row("koja_music_tracks", {"id": track_id})
+    if not track or not _music_public_track(track):
+        return jsonify(ok=False, error="track_not_public"), 404
+    uid = (current_user() or {}).get("id")
+    payload = {"id": str(uuid.uuid4()), "track_id": track_id, "user_id": uid, "played_at": utc_now()}
+    # Support both existing play-event schemas.
+    row, err = db_insert("koja_music_plays", payload)
+    if err:
+        db_insert("koja_music_play_events", {"id": str(uuid.uuid4()), "track_id": track_id, "user_id": uid, "created_at": utc_now()})
+    return jsonify(ok=True)
+
+
+@app.route("/admin/music")
+@login_required
+def admin_music():
+    if not _music_admin_user():
+        abort(403)
+    artists = db_select("koja_music_artists", order="created_at.desc", limit=500) or []
+    tracks = db_select("koja_music_tracks", order="created_at.desc", limit=500) or []
+    submissions = db_select("koja_music_artist_submissions", order="created_at.desc", limit=300) or []
+    for t in tracks:
+        a = first_row("koja_music_artists", {"id": t.get("artist_id")}) if t.get("artist_id") else None
+        t["artist_name"] = (a or {}).get("artist_name") or (a or {}).get("name") or "Unknown"
+    return render_page("Music Management", r'''
+<div class="hero"><h1>KOJA MUSIC — Music Management</h1><p>Artist activation, track publication and rights verification are controlled here.</p></div>
+<div class="grid">
+<div class="stat"><div class="small">Artists</div><div class="big">{{ artists|length }}</div></div>
+<div class="stat"><div class="small">Tracks</div><div class="big">{{ tracks|length }}</div></div>
+<div class="stat"><div class="small">Pending submissions</div><div class="big">{{ submissions|selectattr('status','equalto','pending')|list|length }}</div></div>
+<div class="stat"><div class="small">Verified rights</div><div class="big">{{ tracks|selectattr('rights_status','equalto','verified')|list|length }}</div></div>
+</div>
+<div class="card"><h2>Artists</h2>{% for a in artists %}<div style="border-top:1px solid var(--border);padding:12px 0"><strong>{{ a.artist_name or a.name or 'Artist' }}</strong><span class="badge">{{ a.status or 'draft' }}</span><span class="badge">Rights: {{ a.rights_status or 'review_required' }}</span><form method="post" action="{{ url_for('admin_music_artist_action',artist_id=a.id) }}" class="actions"><input type="hidden" name="action" value="{% if (a.status or '')|lower in ['active','published','approved'] %}deactivate{% else %}activate{% endif %}"><button class="btn" type="submit">{% if (a.status or '')|lower in ['active','published','approved'] %}Deactivate{% else %}Activate{% endif %}</button></form></div>{% else %}<p>No artists.</p>{% endfor %}</div>
+<div class="card"><h2>Tracks</h2>{% for t in tracks %}<div style="border-top:1px solid var(--border);padding:12px 0"><strong>{{ t.title or 'Untitled' }}</strong><p class="small">{{ t.artist_name }} · status={{ t.status or 'draft' }} · rights={{ t.rights_status or 'review_required' }}</p><form method="post" action="{{ url_for('admin_music_track_action',track_id=t.id) }}" class="actions"><select name="action"><option value="verify">Verify rights</option><option value="publish">Publish</option><option value="unpublish">Unpublish</option><option value="reject">Reject rights</option></select><input name="licence_reference" placeholder="Licence/agreement reference"><button class="btn" type="submit">Apply</button></form></div>{% else %}<p>No tracks.</p>{% endfor %}</div>
+<div class="card"><h2>Artist Applications</h2>{% for s in submissions %}<div style="border-top:1px solid var(--border);padding:12px 0"><strong>{{ s.artist_name }}</strong><p class="small">{{ s.country }} · {{ s.genre or '' }} · {{ s.status }}</p><form method="post" action="{{ url_for('admin_music_submission_action',submission_id=s.id) }}" class="actions"><select name="action"><option value="approve">Approve</option><option value="reject">Reject</option></select><button class="btn" type="submit">Apply</button></form></div>{% else %}<p>No applications.</p>{% endfor %}</div>
+''', artists=artists, tracks=tracks, submissions=submissions)
+
+
+@app.route("/admin/music/artist/<artist_id>", methods=["POST"])
+@login_required
+def admin_music_artist_action(artist_id):
+    if not _music_admin_user(): abort(403)
+    action = clean(request.form.get("action")).lower()
+    if action == "activate":
+        db_update("koja_music_artists", {"id": artist_id}, {"status": "active", "updated_at": utc_now()})
+    elif action == "deactivate":
+        db_update("koja_music_artists", {"id": artist_id}, {"status": "suspended", "updated_at": utc_now()})
+    return redirect(url_for("admin_music"))
+
+
+@app.route("/admin/music/track/<track_id>", methods=["POST"])
+@login_required
+def admin_music_track_action(track_id):
+    if not _music_admin_user(): abort(403)
+    action = clean(request.form.get("action")).lower()
+    ref = clean(request.form.get("licence_reference"))
+    track = first_row("koja_music_tracks", {"id": track_id}) or {}
+    if action == "verify":
+        db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "verified", "licence_reference": ref or track.get("licence_reference") or "KOJA-VERIFIED", "updated_at": utc_now()})
+    elif action == "publish":
+        if _music_track_rights_verified(track):
+            db_update("koja_music_tracks", {"id": track_id}, {"status": "published", "updated_at": utc_now()})
+        else:
+            flash("Track cannot be published until rights are verified.", "danger")
+    elif action == "unpublish":
+        db_update("koja_music_tracks", {"id": track_id}, {"status": "draft", "updated_at": utc_now()})
+    elif action == "reject":
+        db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "rejected", "status": "suspended", "updated_at": utc_now()})
+    return redirect(url_for("admin_music"))
+
+
+@app.route("/admin/music/submission/<submission_id>", methods=["POST"])
+@login_required
+def admin_music_submission_action(submission_id):
+    if not _music_admin_user(): abort(403)
+    action = clean(request.form.get("action")).lower()
+    status = "approved" if action == "approve" else "rejected"
+    db_update("koja_music_artist_submissions", {"id": submission_id}, {"status": status, "reviewer_id": (current_user() or {}).get("id"), "updated_at": utc_now()})
+    return redirect(url_for("admin_music"))
+
+
+@app.route("/admin/music/rights")
+@login_required
+def admin_music_rights():
+    if not _music_admin_user(): abort(403)
+    rights = db_select("koja_music_rights", order="created_at.desc", limit=1000) or []
+    return render_page("KOJA MUSIC Rights", r'''
+<div class="hero"><h1>KOJA MUSIC Rights Centre</h1><p>Only agreements recorded here as verified should allow publication.</p></div>
+<div class="card"><h3>100-song target</h3><p><strong>{{ verified }}</strong> verified published tracks · <strong>{{ remaining }}</strong> remaining to reach 100.</p><p class="small">A song counts only when the applicable rightsholder and licence are recorded and the track passes the publication gate.</p></div>
+<div class="card"><table><tr><th>Track</th><th>Rightsholder</th><th>Master</th><th>Composition</th><th>Territory</th><th>Term</th><th>Status</th></tr>{% for r in rights %}<tr><td>{{ r.track_id }}</td><td>{{ r.rightsholder_name }}</td><td>{{ r.master_rights }}</td><td>{{ r.composition_rights }}</td><td>{{ r.territory }}</td><td>{{ r.term_end or 'Open/unspecified' }}</td><td>{{ r.status }}</td></tr>{% else %}<tr><td colspan="7">No rights records yet.</td></tr>{% endfor %}</table></div>
+''', rights=rights, verified=verified, remaining=max(0,100-verified))
+
+
+@app.route("/api/music/rights/<track_id>", methods=["POST"])
+@login_required
+def admin_music_rights_create(track_id):
+    if not _music_admin_user(): abort(403)
+    d = request.get_json(silent=True) or request.form.to_dict()
+    required = ["rightsholder_name", "master_rights", "composition_rights", "territory", "term_start"]
+    if any(not clean(d.get(k)) for k in required):
+        return jsonify(ok=False, error="Missing rights fields", required=required), 400
+    payload = {
+        "id": str(uuid.uuid4()), "track_id": track_id,
+        "rightsholder_name": clean(d.get("rightsholder_name")),
+        "master_rights": clean(d.get("master_rights")),
+        "composition_rights": clean(d.get("composition_rights")),
+        "territory": clean(d.get("territory")),
+        "term_start": clean(d.get("term_start")),
+        "term_end": clean(d.get("term_end")) or None,
+        "licence_type": clean(d.get("licence_type")) or "non_exclusive_digital_streaming",
+        "agreement_reference": clean(d.get("agreement_reference")),
+        "status": "verified",
+        "verified_by": (current_user() or {}).get("id"),
+        "verified_at": utc_now(), "created_at": utc_now(), "updated_at": utc_now()
+    }
+    row, err = db_insert("koja_music_rights", payload)
+    if err:
+        return jsonify(ok=False, error=err), 500
+    db_update("koja_music_tracks", {"id": track_id}, {"rights_status":"verified", "licence_reference":payload["agreement_reference"] or payload["id"], "updated_at":utc_now()})
+    return jsonify(ok=True, rights=row)
