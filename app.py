@@ -983,6 +983,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu"> Menu</button>
 <div class="nav-links" id="navLinks">
 <a href="{{ url_for('home') }}">Home</a>
+<a href="{{ url_for('news_live_public') }}">Live News</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
 <a href="{{ url_for('services') }}">Services</a>
@@ -1003,7 +1004,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
 <a role="menuitem" href="{{ url_for('music_home') }}">KOJA MUSIC</a>
 {% if user and user.role in ['artist','musician','music_artist'] %}<a role="menuitem" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('music_admin') }}">MUSIC Admin</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('music_admin') }}">MUSIC Admin</a><a role="menuitem" href="{{ url_for('news_live_admin') }}">News Live Studio</a>{% endif %}
 <a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
 <a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
 <a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
@@ -5756,6 +5757,7 @@ def provider_location(provider_id):
 
 PUBLIC_INDEX_ROUTES = [
     "/",
+    "/news/live",
     "/research",
     "/research/notes",
     "/documents",
@@ -14653,6 +14655,670 @@ const nexusAdminRows={{ rows|tojson }};
 function editNexus(id){const r=nexusAdminRows.find(x=>String(x.id)===String(id));if(!r)return;document.getElementById('nxa_id').value=r.id||'';document.getElementById('nxa_name').value=r.name||r.service_name||'';document.getElementById('nxa_code').value=r.country_code||'';document.getElementById('nxa_country').value=r.country_name||'';document.getElementById('nxa_category').value=r.category||'';document.getElementById('nxa_url').value=r.official_url||r.url||'';document.getElementById('nxa_description').value=r.description||'';document.getElementById('nxa_tags').value=(r.tags||[]).join(', ');document.getElementById('nxa_sort').value=r.sort_order||100;document.getElementById('nxa_active').value=(r.active===false||r.is_active===false)?'0':'1';window.scrollTo({top:0,behavior:'smooth'})}
 </script>
 ''', rows=rows, categories=KOJA_WORLD_CATEGORIES, service_name=_world_service_name, verified=_world_verified, active=_world_active)
+
+
+# ============================================================
+# KOJA NEWS LIVE STUDIO
+#   /admin/news/live  (producer)  ->  encoder (OBS / hardware / mobile)
+#   --RTMPS/SRT-->  Cloudflare Stream  --HLS/LL-HLS/DASH-->  /news/live
+# Graphics (ticker, lower third, breaking banner, logo) are HTML overlays
+# driven by one shared state row, so the encoder only sends clean video.
+# Stream keys are fetched from Cloudflare on demand and never stored in the
+# database or exposed on any public endpoint.
+# ============================================================
+
+def _news_env_bool(name, default=False):
+    v = os.getenv(name)
+    if v is None or not v.strip():
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "").strip()
+CF_STREAM_API_TOKEN = os.getenv("CF_STREAM_API_TOKEN", "").strip()
+_CF_CUSTOMER_RAW = os.getenv("CF_STREAM_CUSTOMER_CODE", "").strip()
+KOJA_NEWS_LL_HLS = _news_env_bool("KOJA_NEWS_LL_HLS", False)      # Cloudflare LL-HLS is beta
+KOJA_NEWS_RECORD = _news_env_bool("KOJA_NEWS_RECORD", True)        # keep a replay of each broadcast
+
+NEWS_STATE_TABLE = "koja_news_live_state"
+NEWS_EVENTS_TABLE = "koja_news_live_events"
+NEWS_STATE_ID = "main"
+NEWS_SCENES = [("desk", "Desk"), ("reporter", "Reporter"), ("interview", "Interview"), ("world", "World")]
+NEWS_CATEGORIES = ["Breaking", "Politics", "Business", "Sports", "Entertainment", "Health", "Technology", "World", "Africa"]
+
+NEWS_STATE_DEFAULTS = {
+    "id": NEWS_STATE_ID, "on_air": False, "cf_input_uid": "", "manual_hls_url": "",
+    "scene": "desk", "headline": "", "location": "", "category": "", "presenter": "",
+    "ticker_enabled": False, "ticker_items": [],
+    "lower_third_enabled": False, "lower_third_name": "", "lower_third_title": "",
+    "breaking_enabled": False, "breaking_text": "",
+    "logo_enabled": True, "logo_url": "", "started_at": None, "updated_at": None,
+}
+# Fields a producer may change from the studio (everything else is server-controlled).
+NEWS_PATCH_FIELDS = {
+    "scene", "headline", "location", "category", "presenter",
+    "ticker_enabled", "ticker_items", "lower_third_enabled", "lower_third_name",
+    "lower_third_title", "breaking_enabled", "breaking_text", "logo_enabled",
+    "logo_url", "manual_hls_url",
+}
+
+
+def _cf_customer_code():
+    c = re.sub(r"^https?://", "", _CF_CUSTOMER_RAW).split(".")[0].strip().strip("/")
+    return c[len("customer-"):] if c.startswith("customer-") else c
+
+
+def _cf_configured():
+    return bool(CF_ACCOUNT_ID and CF_STREAM_API_TOKEN)
+
+
+def _cf_stream(method, path, payload=None):
+    """Call the Cloudflare Stream API. Returns (result, error_message)."""
+    if not _cf_configured():
+        return None, "Cloudflare Stream is not configured (CF_ACCOUNT_ID / CF_STREAM_API_TOKEN)."
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/stream{path}"
+    try:
+        r = requests.request(
+            method, url, json=payload, timeout=15,
+            headers={"Authorization": f"Bearer {CF_STREAM_API_TOKEN}", "Content-Type": "application/json"},
+        )
+        data = r.json() if r.content else {}
+    except Exception as exc:
+        logger.warning("Cloudflare Stream request failed: %s", exc)
+        return None, "Could not reach Cloudflare Stream."
+    if not r.ok or data.get("success") is False:
+        errs = data.get("errors") or []
+        msg = "; ".join(str(e.get("message", e)) for e in errs)[:240] if errs else f"HTTP {r.status_code}"
+        return None, "Cloudflare: " + msg
+    return data.get("result"), None
+
+
+# ---- text / value sanitising -------------------------------------------------
+def _news_text(v, n):
+    return clean(v if isinstance(v, str) else ("" if v is None else str(v)))[:n]
+
+
+def _news_https(v):
+    v = _news_text(v, 500)
+    return v if (not v or (v.startswith("https://") and " " not in v)) else None
+
+
+def _news_items(v):
+    if isinstance(v, str):
+        v = v.splitlines()
+    out = []
+    for x in (v or []):
+        t = _news_text(x, 160)
+        if t:
+            out.append(t)
+    return out[:12]
+
+
+def _news_bool(v):
+    return v is True or str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _news_sanitise_patch(raw):
+    """Whitelist + validate a producer patch. Returns (patch, error)."""
+    patch = {}
+    for k, v in (raw or {}).items():
+        if k not in NEWS_PATCH_FIELDS:
+            continue
+        if k == "scene":
+            if v not in dict(NEWS_SCENES):
+                return None, "Unknown scene."
+            patch[k] = v
+        elif k in ("headline", "breaking_text"):
+            patch[k] = _news_text(v, 200)
+        elif k in ("location", "category", "presenter", "lower_third_name", "lower_third_title"):
+            patch[k] = _news_text(v, 120)
+        elif k in ("ticker_enabled", "lower_third_enabled", "breaking_enabled", "logo_enabled"):
+            patch[k] = _news_bool(v)
+        elif k == "ticker_items":
+            patch[k] = _news_items(v)
+        elif k in ("logo_url", "manual_hls_url"):
+            u = _news_https(v)
+            if u is None:
+                return None, "URLs must start with https://"
+            patch[k] = u
+    return patch, None
+
+
+# ---- state storage -----------------------------------------------------------
+def _news_state_load():
+    state = dict(NEWS_STATE_DEFAULTS)
+    try:
+        row = first_row(NEWS_STATE_TABLE, {"id": NEWS_STATE_ID})
+    except Exception as exc:
+        logger.warning("KOJA NEWS state unavailable: %s", exc)
+        row = None
+    if row:
+        state.update({k: row[k] for k in NEWS_STATE_DEFAULTS if k in row and row[k] is not None})
+    state["ticker_items"] = _news_items(state.get("ticker_items"))
+    return state
+
+
+def _news_state_save(patch, user=None):
+    patch = dict(patch)
+    patch["updated_at"] = utc_now()
+    if user and user.get("id"):
+        patch["updated_by"] = str(user.get("id"))
+    try:
+        exists = first_row(NEWS_STATE_TABLE, {"id": NEWS_STATE_ID})
+    except Exception as exc:
+        return str(exc)[:200]
+    if exists:
+        _, err = db_update(NEWS_STATE_TABLE, {"id": NEWS_STATE_ID}, patch)
+    else:
+        row = dict(NEWS_STATE_DEFAULTS); row.update(patch)
+        _, err = db_insert(NEWS_STATE_TABLE, row)
+    _news_cache_clear()
+    return err
+
+
+def _news_log(kind, detail=None, user=None):
+    try:
+        db_insert(NEWS_EVENTS_TABLE, {
+            "id": str(uuid.uuid4()), "kind": kind, "detail": detail or {},
+            "created_by": str((user or {}).get("id") or ""), "created_at": utc_now(),
+        })
+    except Exception as exc:
+        logger.warning("KOJA NEWS event log failed: %s", exc)
+
+
+# ---- playback URLs + encoder status ------------------------------------------
+def _news_hls_url(state):
+    if state.get("manual_hls_url"):
+        return state["manual_hls_url"]
+    uid, code = state.get("cf_input_uid"), _cf_customer_code()
+    if uid and code:
+        url = f"https://customer-{code}.cloudflarestream.com/{uid}/manifest/video.m3u8"
+        return url + "?protocol=llhls" if KOJA_NEWS_LL_HLS else url
+    return ""
+
+
+def _news_dash_url(state):
+    uid, code = state.get("cf_input_uid"), _cf_customer_code()
+    if uid and code and not state.get("manual_hls_url"):
+        return f"https://customer-{code}.cloudflarestream.com/{uid}/manifest/video.mpd"
+    return ""
+
+
+def _news_encoder_live(state):
+    """True/False when Cloudflare can tell us, None when unknown (manual HLS / API error)."""
+    uid, code = state.get("cf_input_uid"), _cf_customer_code()
+    if state.get("manual_hls_url") or not (uid and code):
+        return None
+    try:
+        r = requests.get(f"https://customer-{code}.cloudflarestream.com/{uid}/lifecycle", timeout=5)
+        if r.ok:
+            return bool((r.json() or {}).get("live"))
+    except Exception as exc:
+        logger.warning("KOJA NEWS lifecycle check failed: %s", exc)
+    return None
+
+
+# ---- public payload with a short shared cache --------------------------------
+_news_cache = {"t": 0.0, "payload": None}
+_news_cache_lock = threading.Lock()
+NEWS_CACHE_TTL = 3.0
+
+
+def _news_cache_clear():
+    with _news_cache_lock:
+        _news_cache["t"] = 0.0
+
+
+def _news_public_payload():
+    now = time.time()
+    with _news_cache_lock:
+        if _news_cache["payload"] is not None and now - _news_cache["t"] < NEWS_CACHE_TTL:
+            return _news_cache["payload"]
+    state = _news_state_load()
+    if not state["on_air"]:
+        status = "offline"
+    else:
+        enc = _news_encoder_live(state)
+        status = "starting" if enc is False else "live"   # unknown -> let the player try
+    payload = {
+        "ok": True, "status": status,
+        "hls_url": _news_hls_url(state) if status == "live" else "",
+        "dash_url": _news_dash_url(state) if status == "live" else "",
+        "scene": state["scene"], "scene_label": dict(NEWS_SCENES).get(state["scene"], ""),
+        "headline": state["headline"], "location": state["location"],
+        "category": state["category"], "presenter": state["presenter"],
+        "ticker": {"enabled": state["ticker_enabled"], "items": state["ticker_items"]},
+        "lower_third": {"enabled": state["lower_third_enabled"], "name": state["lower_third_name"], "title": state["lower_third_title"]},
+        "breaking": {"enabled": state["breaking_enabled"], "text": state["breaking_text"]},
+        "logo": {"enabled": state["logo_enabled"], "url": state["logo_url"]},
+        "started_at": state["started_at"], "server_time": utc_now(),
+    }
+    with _news_cache_lock:
+        _news_cache.update(t=now, payload=payload)
+    return payload
+
+
+@app.route("/api/news/live/state")
+def news_live_state_api():
+    resp = jsonify(_news_public_payload())
+    resp.headers["Cache-Control"] = "public, max-age=2"
+    return resp
+
+
+# ---- shared player (public page + embed + studio preview) --------------------
+NEWS_PLAYER_HTML = r'''
+<style>
+.nlp{max-width:1280px;margin:0 auto;color:#fff}
+.nlp-stage{position:relative;aspect-ratio:16/9;background:#050b14;border-radius:14px;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.nlp-stage:fullscreen{border-radius:0;width:100vw;height:100vh;aspect-ratio:auto}
+.nlp-stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.nlp-logo{position:absolute;top:3%;left:2.5%;max-height:9%;max-width:18%;display:none;pointer-events:none}
+.nlp-logo.on{display:block}
+.nlp-badge{position:absolute;top:3%;right:2.5%;padding:.3em .8em;border-radius:6px;font-weight:800;letter-spacing:.08em;font-size:clamp(11px,1.6vw,18px);background:#d62828;color:#fff;display:none;pointer-events:none}
+.nlp-badge.on{display:block}
+.nlp-breaking{position:absolute;top:0;left:0;right:0;transform:translateY(-110%);transition:transform .45s ease;background:#c1121f;color:#fff;font-weight:800;font-size:clamp(14px,2.6vw,32px);padding:.5em 1em;display:flex;gap:.8em;align-items:center;pointer-events:none}
+.nlp-breaking.on{transform:none}
+.nlp-breaking b{background:#fff;color:#c1121f;padding:.05em .6em;border-radius:4px;flex:0 0 auto}
+.nlp-lt{position:absolute;left:3%;bottom:13%;max-width:70%;transform:translateX(-120%);transition:transform .5s ease;background:rgba(7,20,38,.93);border-left:.45em solid #ffb703;padding:.5em 1em;pointer-events:none}
+.nlp-lt.on{transform:none}
+.nlp-lt .n{font-weight:800;font-size:clamp(14px,2.8vw,34px)}
+.nlp-lt .t{opacity:.85;font-size:clamp(11px,1.8vw,22px)}
+.nlp-ticker{position:absolute;left:0;right:0;bottom:0;height:9%;min-height:26px;background:#0b1d36;overflow:hidden;display:none;align-items:center;border-top:2px solid #ffb703;pointer-events:none}
+.nlp-ticker.on{display:flex}
+.nlp-ticker .lbl{flex:0 0 auto;background:#ffb703;color:#111;font-weight:800;padding:0 1em;height:100%;display:flex;align-items:center;font-size:clamp(11px,1.8vw,22px)}
+.nlp-ticker .trk{flex:1;overflow:hidden;white-space:nowrap}
+.nlp-ticker .mv{display:inline-block;padding-left:100%;animation:nlp-scroll var(--dur,30s) linear infinite;font-size:clamp(12px,2vw,24px)}
+@keyframes nlp-scroll{to{transform:translateX(-100%)}}
+.nlp-slate{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.4em;padding:1em;background:radial-gradient(circle at 50% 30%,#10305a,#050b14)}
+.nlp-slate.off{display:none}
+.nlp-slate h2{font-size:clamp(20px,4.5vw,56px);margin:0}
+.nlp-slate p{opacity:.8;font-size:clamp(12px,2vw,24px);margin:0}
+.nlp-ctrl{position:absolute;right:2.5%;bottom:11%;display:flex;gap:8px;z-index:3}
+.nlp-ctrl button{background:rgba(0,0,0,.6);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:8px;padding:.45em .9em;font-size:clamp(12px,1.6vw,18px);cursor:pointer}
+.nlp-ctrl button:focus{outline:3px solid #ffb703}
+.nlp-meta{padding:14px 2px}
+.nlp-meta h1{font-size:clamp(18px,3vw,32px);margin:0 0 8px}
+.nlp-meta .sub{display:flex;gap:8px;flex-wrap:wrap}
+.nlp-meta .sub span{background:rgba(255,255,255,.1);padding:.15em .75em;border-radius:99px;font-size:.9em}
+</style>
+<div class="nlp" id="nlp" data-api="{{ api }}">
+  <div class="nlp-stage" id="nlpStage">
+    <video id="nlpVideo" playsinline muted autoplay></video>
+    <img class="nlp-logo" id="nlpLogo" alt="">
+    <div class="nlp-badge" id="nlpBadge">&#9679; LIVE</div>
+    <div class="nlp-breaking" id="nlpBreaking"><b>BREAKING</b><span id="nlpBreakingText"></span></div>
+    <div class="nlp-lt" id="nlpLt"><div class="n" id="nlpLtName"></div><div class="t" id="nlpLtTitle"></div></div>
+    <div class="nlp-ticker" id="nlpTicker"><div class="lbl">KOJA NEWS</div><div class="trk"><span class="mv" id="nlpTickerMv"></span></div></div>
+    <div class="nlp-slate" id="nlpSlate"><h2 id="nlpSlateTitle">KOJA NEWS</h2><p id="nlpSlateSub">Connecting&hellip;</p></div>
+    <div class="nlp-ctrl"><button type="button" id="nlpMute" hidden>Tap to unmute</button><button type="button" id="nlpFs">Full screen</button></div>
+  </div>
+  <div class="nlp-meta"><h1 id="nlpHeadline"></h1><div class="sub" id="nlpSub"></div></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script>
+(function(){
+  var root=document.getElementById('nlp'), api=root.getAttribute('data-api');
+  var $=function(id){return document.getElementById(id);};
+  var video=$('nlpVideo'), stage=$('nlpStage'), hls=null, curUrl='', lastTicker='', lastLogo='';
+  var safari=/^((?!chrome|chromium|android).)*safari/i.test(navigator.userAgent);
+
+  function stop(){ if(hls){try{hls.destroy();}catch(e){} hls=null;} curUrl=''; try{video.removeAttribute('src');video.load();}catch(e){} }
+  function attach(url){
+    if(!url||url===curUrl) return; stop(); curUrl=url;
+    if(safari && video.canPlayType('application/vnd.apple.mpegurl')){ video.src=url; }
+    else if(window.Hls && Hls.isSupported()){
+      hls=new Hls({lowLatencyMode:true,liveSyncDurationCount:3});
+      hls.loadSource(url); hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR,function(_,d){
+        if(!d.fatal) return;
+        if(d.type===Hls.ErrorTypes.NETWORK_ERROR){ setTimeout(function(){ if(hls) hls.startLoad(); },2000); }
+        else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){ hls.recoverMediaError(); }
+        else { var u=curUrl; stop(); setTimeout(function(){attach(u);},3000); }
+      });
+    } else { video.src=url; }
+    var p=video.play(); if(p&&p.catch) p.catch(function(){});
+  }
+  function set(el,txt){ if(el.textContent!==txt) el.textContent=txt; }
+  function apply(s){
+    var live=s.status==='live';
+    $('nlpBadge').classList.toggle('on',live);
+    var slate=$('nlpSlate'); slate.classList.toggle('off',live);
+    if(live){ attach(s.hls_url); } else {
+      stop();
+      set($('nlpSlateTitle'), s.status==='starting'?'Starting soon':'KOJA NEWS is offline');
+      set($('nlpSlateSub'), s.status==='starting'?'The broadcast will begin shortly.':(s.headline?('Last headline: '+s.headline):'Come back for the next broadcast.'));
+    }
+    var b=s.breaking||{}; set($('nlpBreakingText'),b.text||''); $('nlpBreaking').classList.toggle('on',live&&!!b.enabled&&!!b.text);
+    var l=s.lower_third||{}; set($('nlpLtName'),l.name||''); set($('nlpLtTitle'),l.title||''); $('nlpLt').classList.toggle('on',live&&!!l.enabled&&!!l.name);
+    var t=s.ticker||{}, items=t.items||[], key=JSON.stringify(items);
+    if(key!==lastTicker){ lastTicker=key; var txt=items.join('     \u25C6     '); $('nlpTickerMv').textContent=txt; $('nlpTickerMv').style.setProperty('--dur',Math.max(15,Math.round(txt.length*0.17))+'s'); }
+    $('nlpTicker').classList.toggle('on',live&&!!t.enabled&&items.length>0);
+    var g=s.logo||{}, img=$('nlpLogo'), want=(g.enabled&&g.url)?g.url:'';
+    if(want!==lastLogo){ lastLogo=want; if(want){img.src=want;} else {img.removeAttribute('src');} }
+    img.classList.toggle('on',live&&!!want); img.onerror=function(){img.classList.remove('on');};
+    set($('nlpHeadline'),s.headline||'');
+    var sub=$('nlpSub'); sub.textContent='';
+    [s.scene_label,s.category,s.location,s.presenter].forEach(function(v){ if(v){var e=document.createElement('span'); e.textContent=v; sub.appendChild(e);} });
+  }
+  function poll(){
+    fetch(api,{cache:'no-store'}).then(function(r){return r.json();}).then(apply).catch(function(){})
+      .then(function(){ setTimeout(poll,document.hidden?15000:4000); });
+  }
+  function syncMute(){ $('nlpMute').hidden=!(video.muted&&!video.paused); }
+  $('nlpMute').onclick=function(){ video.muted=false; video.play().catch(function(){}); syncMute(); };
+  video.addEventListener('playing',syncMute); video.addEventListener('volumechange',syncMute);
+  $('nlpFs').onclick=function(){
+    var f=stage.requestFullscreen||stage.webkitRequestFullscreen;
+    if(document.fullscreenElement||document.webkitFullscreenElement){ (document.exitFullscreen||document.webkitExitFullscreen).call(document); }
+    else if(f){ f.call(stage); } else if(video.webkitEnterFullscreen){ video.webkitEnterFullscreen(); }
+  };
+  poll();
+})();
+</script>
+'''
+
+
+@app.route("/news/live")
+def news_live_public():
+    return render_page("KOJA NEWS Live", NEWS_PLAYER_HTML, api=url_for("news_live_state_api"))
+
+
+@app.route("/news/live/embed")
+def news_live_embed():
+    page = ('<!doctype html><html><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>KOJA NEWS Live</title><style>html,body{margin:0;background:#000}.nlp-meta{display:none}'
+            '.nlp-stage{border-radius:0!important}</style></head><body>' + NEWS_PLAYER_HTML + '</body></html>')
+    return render_template_string(page, api=url_for("news_live_state_api"))
+
+
+# ---- producer API (admin only) ------------------------------------------------
+def _news_admin_reply(extra=None, status=200):
+    body = {"ok": status < 400, "state": _news_state_load()}
+    body.update(extra or {})
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp, status
+
+
+def _news_fail(msg, status=400):
+    resp = jsonify({"ok": False, "error": msg})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp, status
+
+
+@app.route("/api/admin/news/live/ingest")
+@admin_required
+def news_live_ingest_api():
+    """Encoder credentials + health. Credentials come straight from Cloudflare, never from our DB."""
+    state = _news_state_load()
+    out = {"ok": True, "configured": _cf_configured(), "customer_code_set": bool(_cf_customer_code()),
+           "uid": state["cf_input_uid"], "manual_hls_url": state["manual_hls_url"],
+           "on_air": state["on_air"], "hls_url": _news_hls_url(state), "dash_url": _news_dash_url(state),
+           "encoder_live": _news_encoder_live(state), "low_latency": KOJA_NEWS_LL_HLS}
+    if state["cf_input_uid"] and _cf_configured():
+        res, err = _cf_stream("GET", f"/live_inputs/{state['cf_input_uid']}")
+        if err:
+            out["ingest_error"] = err
+        elif res:
+            rt, srt = res.get("rtmps") or {}, res.get("srt") or {}
+            out.update(enabled=res.get("enabled"), cf_status=res.get("status") if isinstance(res.get("status"), str) else None,
+                       rtmps={"url": rt.get("url", ""), "key": rt.get("streamKey", "")},
+                       srt={"url": srt.get("url", ""), "stream_id": srt.get("streamId", ""), "passphrase": srt.get("passphrase", "")})
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/admin/news/live/provision", methods=["POST"])
+@admin_required
+def news_live_provision_api():
+    state = _news_state_load()
+    if state["cf_input_uid"]:
+        return _news_fail("A live input is already attached.", 409)
+    if not _cf_configured():
+        return _news_fail("Set CF_ACCOUNT_ID and CF_STREAM_API_TOKEN first, or use a manual HLS URL.")
+    body = {"meta": {"name": "KOJA NEWS Live"}, "enabled": True,
+            "recording": {"mode": "automatic" if KOJA_NEWS_RECORD else "off"}}
+    if KOJA_NEWS_LL_HLS:
+        body["preferLowLatency"] = True
+    res, err = _cf_stream("POST", "/live_inputs", body)
+    if err or not (res or {}).get("uid"):
+        return _news_fail(err or "Cloudflare returned no live input.", 502)
+    user = current_user()
+    save_err = _news_state_save({"cf_input_uid": res["uid"]}, user)
+    if save_err:
+        return _news_fail("Live input created but could not be saved: " + str(save_err)[:160], 500)
+    _news_log("provision", {"uid": res["uid"]}, user)
+    return _news_admin_reply()
+
+
+@app.route("/api/admin/news/live/attach", methods=["POST"])
+@admin_required
+def news_live_attach_api():
+    uid = _news_text((request.get_json(silent=True) or {}).get("uid"), 64).lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+        return _news_fail("A Cloudflare live input ID is 32 hex characters.")
+    res, err = _cf_stream("GET", f"/live_inputs/{uid}")
+    if err or not res:
+        return _news_fail(err or "Live input not found.", 404)
+    user = current_user()
+    save_err = _news_state_save({"cf_input_uid": uid}, user)
+    if save_err:
+        return _news_fail("Could not save: " + str(save_err)[:160], 500)
+    _news_log("attach", {"uid": uid}, user)
+    return _news_admin_reply()
+
+
+@app.route("/api/admin/news/live/state", methods=["POST"])
+@admin_required
+def news_live_update_api():
+    patch, err = _news_sanitise_patch(request.get_json(silent=True) or {})
+    if err:
+        return _news_fail(err)
+    current = _news_state_load()
+    merged = dict(current); merged.update(patch)
+    if merged["breaking_enabled"] and not merged["breaking_text"]:
+        return _news_fail("Write the breaking-news text before putting it on air.")
+    if merged["lower_third_enabled"] and not merged["lower_third_name"]:
+        return _news_fail("Add a name for the lower third before showing it.")
+    if not patch:
+        return _news_admin_reply()
+    user = current_user()
+    save_err = _news_state_save(patch, user)
+    if save_err:
+        return _news_fail("Could not save (is the koja_news_live_state table created?): " + str(save_err)[:160], 500)
+    for k, kind in (("scene", "scene"), ("breaking_enabled", "breaking"), ("headline", "headline")):
+        if k in patch and patch[k] != current.get(k):
+            _news_log(kind, {k: patch[k]}, user)
+    return _news_admin_reply()
+
+
+@app.route("/api/admin/news/live/go-live", methods=["POST"])
+@admin_required
+def news_live_go_live_api():
+    state = _news_state_load()
+    if not _news_hls_url(state):
+        return _news_fail("No playback source yet: provision a live input (and set CF_STREAM_CUSTOMER_CODE) or add a manual HLS URL.")
+    if state["on_air"]:
+        return _news_admin_reply()
+    user = current_user()
+    err = _news_state_save({"on_air": True, "started_at": utc_now()}, user)
+    if err:
+        return _news_fail("Could not go live: " + str(err)[:160], 500)
+    _news_log("go_live", {"headline": state["headline"]}, user)
+    return _news_admin_reply()
+
+
+@app.route("/api/admin/news/live/end", methods=["POST"])
+@admin_required
+def news_live_end_api():
+    user = current_user()
+    # Taking the broadcast off air also clears time-sensitive graphics so they can't reappear next time.
+    err = _news_state_save({"on_air": False, "breaking_enabled": False, "lower_third_enabled": False}, user)
+    if err:
+        return _news_fail("Could not end the broadcast: " + str(err)[:160], 500)
+    _news_log("end", {}, user)
+    return _news_admin_reply()
+
+
+NEWS_STUDIO_HTML = r'''
+<style>
+.nls{max-width:1000px;margin:0 auto}
+.nls .card{margin-bottom:14px}
+.nls .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.nls .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:700px){.nls .grid2{grid-template-columns:1fr}}
+.nls .chip{padding:.35em .9em;border-radius:99px;font-weight:700;font-size:.9em;background:#243247;color:#fff}
+.nls .chip.on{background:#c1121f}.nls .chip.ok{background:#1b8a4b}.nls .chip.warn{background:#b7791f}
+.nls .scene{flex:1 1 120px;padding:16px 10px;border-radius:12px;border:2px solid rgba(255,255,255,.15);background:#0a1422;color:#fff;font-weight:700;cursor:pointer}
+.nls .scene.active{border-color:#ffb703;background:#1a2a44}
+.nls .secret{display:flex;gap:6px;align-items:center}.nls .secret input{flex:1;font-family:monospace}
+.nls small,.nls .hint{opacity:.75}
+.nls .msg{min-height:1.4em;font-weight:600}
+.nls iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:12px;background:#000}
+.nls ul.ev{list-style:none;padding:0;margin:0}.nls ul.ev li{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+</style>
+<div class="nls">
+<div class="hero"><h1>KOJA NEWS Live Studio</h1>
+<p>Encoder &rarr; Cloudflare Stream &rarr; <a href="{{ url_for('news_live_public') }}" target="_blank" rel="noopener">/news/live</a></p>
+<div class="row"><span class="chip" id="chipAir">OFF AIR</span><span class="chip" id="chipEnc">Encoder: &hellip;</span>
+<button class="btn success" type="button" id="btnLive">Go Live</button>
+<button class="btn danger" type="button" id="btnEnd">End Broadcast</button></div>
+<div class="msg" id="msg" role="status"></div></div>
+
+<div class="card"><h2>1 &middot; Encoder &amp; ingest</h2><div id="ingest" class="hint">Loading&hellip;</div></div>
+
+<div class="card"><h2>2 &middot; Scenes</h2><div class="row" id="scenes"></div>
+<p class="hint">Marks the on-air scene for viewers. Switch the actual camera/scene in your encoder (OBS or hardware) at the same time.</p></div>
+
+<div class="card"><h2>3 &middot; Metadata</h2>
+<div class="grid2">
+<div><label>Headline</label><input id="headline" maxlength="200"></div>
+<div><label>Presenter</label><input id="presenter" maxlength="120"></div>
+<div><label>Location</label><input id="location" maxlength="120"></div>
+<div><label>Category</label><input id="category" maxlength="120" list="nlCats"></div></div>
+<datalist id="nlCats">{% for c in categories %}<option value="{{ c }}">{% endfor %}</datalist>
+<div class="row" style="margin-top:10px"><button class="btn" type="button" id="btnMeta">Update metadata</button></div></div>
+
+<div class="card"><h2>4 &middot; Graphics</h2>
+<h3>Breaking banner</h3>
+<input id="breakingText" maxlength="200" placeholder="Breaking news text">
+<div class="row" style="margin-top:8px"><button class="btn danger" type="button" id="btnBreakOn">Send breaking alert</button><button class="btn secondary" type="button" id="btnBreakOff">Clear</button></div>
+<h3>Lower third</h3>
+<div class="grid2"><div><label>Name</label><input id="ltName" maxlength="120"></div><div><label>Title / role</label><input id="ltTitle" maxlength="120"></div></div>
+<div class="row" style="margin-top:8px"><button class="btn" type="button" id="btnLtOn">Show</button><button class="btn secondary" type="button" id="btnLtOff">Hide</button></div>
+<h3>Ticker</h3>
+<textarea id="tickerItems" rows="4" placeholder="One headline per line (max 12)"></textarea>
+<div class="row" style="margin-top:8px"><button class="btn" type="button" id="btnTickerOn">Update &amp; show</button><button class="btn secondary" type="button" id="btnTickerOff">Hide</button></div>
+<h3>Logo</h3>
+<input id="logoUrl" maxlength="500" placeholder="https://&hellip;/logo.png">
+<div class="row" style="margin-top:8px"><button class="btn" type="button" id="btnLogoOn">Show logo</button><button class="btn secondary" type="button" id="btnLogoOff">Hide logo</button></div></div>
+
+<div class="card"><h2>Preview</h2><iframe src="{{ url_for('news_live_embed') }}" title="Live preview" allow="autoplay; fullscreen"></iframe></div>
+<div class="card"><h2>Recent activity</h2><ul class="ev" id="events"></ul></div>
+</div>
+<script id="nlBoot" type="application/json">{{ boot|tojson }}</script>
+<script>
+(function(){
+  var boot=JSON.parse(document.getElementById('nlBoot').textContent), st=boot.state;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var $=function(id){return document.getElementById(id);};
+  function say(t,bad){ var m=$('msg'); m.textContent=t||''; m.style.color=bad?'#ff6b6b':'#6fdc8c'; }
+  function post(url,body){
+    return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body||{})})
+      .then(function(r){return r.json().catch(function(){return {ok:false,error:'Session expired. Reload and sign in again.'};});});
+  }
+  function act(url,body,okMsg){ return post(url,body).then(function(d){ if(d.ok){ if(d.state) st=d.state; paint(); say(okMsg||'Saved.'); refreshIngest(); } else say(d.error||'Failed.',true); return d; }); }
+  function patch(p,okMsg){ return act('/api/admin/news/live/state',p,okMsg); }
+
+  boot.scenes.forEach(function(s){
+    var b=document.createElement('button'); b.type='button'; b.className='scene'; b.dataset.k=s[0]; b.textContent=s[1];
+    b.onclick=function(){ patch({scene:s[0]},'Scene: '+s[1]); }; $('scenes').appendChild(b);
+  });
+  function paint(){
+    $('chipAir').textContent=st.on_air?'ON AIR':'OFF AIR'; $('chipAir').className='chip'+(st.on_air?' on':'');
+    $('btnLive').disabled=!!st.on_air; $('btnEnd').disabled=!st.on_air;
+    Array.prototype.forEach.call(document.querySelectorAll('.scene'),function(b){ b.classList.toggle('active',b.dataset.k===st.scene); });
+    [['headline','headline'],['presenter','presenter'],['location','location'],['category','category'],['breakingText','breaking_text'],['ltName','lower_third_name'],['ltTitle','lower_third_title'],['logoUrl','logo_url']].forEach(function(p){
+      var el=$(p[0]); if(document.activeElement!==el) el.value=st[p[1]]||''; });
+    if(document.activeElement!==$('tickerItems')) $('tickerItems').value=(st.ticker_items||[]).join('\n');
+  }
+  function copyBtn(input){ var b=document.createElement('button'); b.type='button'; b.className='btn secondary'; b.textContent='Copy';
+    b.onclick=function(){ input.select(); try{navigator.clipboard.writeText(input.value);}catch(e){document.execCommand('copy');} b.textContent='Copied'; setTimeout(function(){b.textContent='Copy';},1200); }; return b; }
+  function field(label,value,secret){
+    var w=document.createElement('div'); var l=document.createElement('label'); l.textContent=label; w.appendChild(l);
+    var r=document.createElement('div'); r.className='secret'; var i=document.createElement('input'); i.readOnly=true; i.value=value||''; i.type=secret?'password':'text'; r.appendChild(i);
+    if(secret){ var s=document.createElement('button'); s.type='button'; s.className='btn secondary'; s.textContent='Show'; s.onclick=function(){ i.type=i.type==='password'?'text':'password'; s.textContent=i.type==='password'?'Show':'Hide'; }; r.appendChild(s); }
+    r.appendChild(copyBtn(i)); w.appendChild(r); return w;
+  }
+  function paintIngest(d){
+    var box=$('ingest'); box.textContent='';
+    var enc=$('chipEnc'); enc.className='chip';
+    if(d.encoder_live===true){enc.textContent='Encoder: connected';enc.classList.add('ok');}
+    else if(d.encoder_live===false){enc.textContent='Encoder: not sending';enc.classList.add('warn');}
+    else {enc.textContent='Encoder: unknown';}
+    st.on_air=d.on_air; paint();
+    function p(t){ var e=document.createElement('p'); e.className='hint'; e.textContent=t; box.appendChild(e); return e; }
+    if(d.uid){
+      if(d.ingest_error) p(d.ingest_error);
+      if(d.rtmps){
+        var g=document.createElement('div'); g.className='grid2';
+        g.appendChild(field('RTMPS server (OBS: Settings > Stream > Custom)',d.rtmps.url));
+        g.appendChild(field('Stream key',d.rtmps.key,true));
+        g.appendChild(field('SRT URL (hardware / mobile encoders)',d.srt.url));
+        g.appendChild(field('SRT stream ID',d.srt.stream_id));
+        g.appendChild(field('SRT passphrase',d.srt.passphrase,true));
+        box.appendChild(g);
+      }
+      if(!d.customer_code_set) p('Set CF_STREAM_CUSTOMER_CODE (the xxxx in customer-xxxx.cloudflarestream.com) so viewers can play the stream.');
+      else { box.appendChild(field('HLS playback URL',d.hls_url)); if(d.dash_url) box.appendChild(field('DASH playback URL',d.dash_url)); }
+      p('Keep the stream key private. Start your encoder, wait for "Encoder: connected", then press Go Live.');
+    } else {
+      if(d.configured){
+        p('No live input yet. Create one now, or attach an existing Cloudflare live input.');
+        var r=document.createElement('div'); r.className='row';
+        var b=document.createElement('button'); b.type='button'; b.className='btn success'; b.textContent='Create live input'; b.onclick=function(){ act('/api/admin/news/live/provision',{},'Live input created.'); }; r.appendChild(b);
+        var u=document.createElement('input'); u.placeholder='Existing live input ID'; u.style.flex='1'; r.appendChild(u);
+        var a=document.createElement('button'); a.type='button'; a.className='btn secondary'; a.textContent='Attach'; a.onclick=function(){ act('/api/admin/news/live/attach',{uid:u.value},'Live input attached.'); }; r.appendChild(a);
+        box.appendChild(r);
+      } else p('Cloudflare Stream is not configured (CF_ACCOUNT_ID, CF_STREAM_API_TOKEN). You can still go live with any HTTPS HLS URL below.');
+      var m=document.createElement('div'); var ml=document.createElement('label'); ml.textContent='Manual HLS URL (optional)'; m.appendChild(ml);
+      var mi=document.createElement('input'); mi.value=d.manual_hls_url||''; mi.placeholder='https://\u2026/index.m3u8'; m.appendChild(mi);
+      var mb=document.createElement('button'); mb.type='button'; mb.className='btn secondary'; mb.style.marginTop='8px'; mb.textContent='Save HLS URL'; mb.onclick=function(){ patch({manual_hls_url:mi.value},'HLS URL saved.'); }; m.appendChild(mb);
+      box.appendChild(m);
+    }
+  }
+  var busy=false;
+  function refreshIngest(){ if(busy) return; busy=true; fetch('/api/admin/news/live/ingest',{cache:'no-store'}).then(function(r){return r.json();}).then(paintIngest).catch(function(){}).then(function(){busy=false;}); }
+  function paintEvents(){ var ul=$('events'); ul.textContent=''; (boot.events||[]).forEach(function(e){ var li=document.createElement('li'); li.textContent=(e.created_at||'').replace('T',' ').slice(0,19)+' \u2014 '+e.kind; ul.appendChild(li); }); if(!ul.children.length){var li=document.createElement('li'); li.className='hint'; li.textContent='Nothing yet.'; ul.appendChild(li);} }
+
+  $('btnLive').onclick=function(){ act('/api/admin/news/live/go-live',{},'You are on air.'); };
+  $('btnEnd').onclick=function(){ if(confirm('End the broadcast and take it off air?')) act('/api/admin/news/live/end',{},'Broadcast ended.'); };
+  $('btnMeta').onclick=function(){ patch({headline:$('headline').value,presenter:$('presenter').value,location:$('location').value,category:$('category').value},'Metadata updated.'); };
+  $('btnBreakOn').onclick=function(){ patch({breaking_text:$('breakingText').value,breaking_enabled:true},'Breaking alert on air.'); };
+  $('btnBreakOff').onclick=function(){ patch({breaking_enabled:false},'Breaking alert cleared.'); };
+  $('btnLtOn').onclick=function(){ patch({lower_third_name:$('ltName').value,lower_third_title:$('ltTitle').value,lower_third_enabled:true},'Lower third shown.'); };
+  $('btnLtOff').onclick=function(){ patch({lower_third_enabled:false},'Lower third hidden.'); };
+  $('btnTickerOn').onclick=function(){ patch({ticker_items:$('tickerItems').value,ticker_enabled:true},'Ticker updated.'); };
+  $('btnTickerOff').onclick=function(){ patch({ticker_enabled:false},'Ticker hidden.'); };
+  $('btnLogoOn').onclick=function(){ patch({logo_url:$('logoUrl').value,logo_enabled:true},'Logo shown.'); };
+  $('btnLogoOff').onclick=function(){ patch({logo_enabled:false},'Logo hidden.'); };
+  paint(); paintEvents(); refreshIngest(); setInterval(refreshIngest,6000);
+})();
+</script>
+'''
+
+
+@app.route("/admin/news/live")
+@admin_required
+def news_live_admin():
+    try:
+        events = db_select(NEWS_EVENTS_TABLE, order="created_at.desc", limit=10) or []
+    except Exception:
+        events = []
+    boot = {"state": _news_state_load(), "scenes": NEWS_SCENES,
+            "events": [{"kind": e.get("kind"), "created_at": e.get("created_at")} for e in events]}
+    return render_page("KOJA NEWS Live Studio", NEWS_STUDIO_HTML, boot=boot, categories=NEWS_CATEGORIES)
 
 
 if __name__=="__main__":

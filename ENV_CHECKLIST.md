@@ -57,6 +57,21 @@ KOJA_MARKET_CACHE_TTL, KOJA_MARKET_SYMBOLS, KOJA_MARKET_TIMEOUT,
 KOJA_NEXUS_SERVICES_CACHE_TTL, KOJA_NEXUS_AFRICA_NOW_ENABLED / _INTERVAL /
 _TIMEOUT / _ROTATE_SECONDS / _REGISTRY_BATCH / _EMERGENCY_TTL
 
+## KOJA NEWS LIVE (Cloudflare Stream)
+| Variable | Purpose |
+|---|---|
+| CF_ACCOUNT_ID | Cloudflare account ID |
+| CF_STREAM_API_TOKEN | API token with **Stream: Edit** permission |
+| CF_STREAM_CUSTOMER_CODE | The `xxxx` in `customer-xxxx.cloudflarestream.com` (Stream dashboard) |
+| KOJA_NEWS_LL_HLS | `true` to use Cloudflare's beta Low-Latency HLS (default false) |
+| KOJA_NEWS_RECORD | `true` (default) saves a replay of every broadcast |
+
+Setup: (1) run `koja_news_live_schema.sql`; (2) set the three CF variables;
+(3) open `/admin/news/live` and press **Create live input**; (4) copy the RTMPS
+URL + key into OBS (Settings > Stream > Custom) or the SRT details into a hardware
+or mobile encoder; (5) wait for **Encoder: connected**, then press **Go Live**.
+No Cloudflare? Paste any HTTPS HLS URL into the studio's "Manual HLS URL" field.
+
 ## KOJA MUSIC setup (3 steps)
 1. Run `koja_music_schema.sql` in the Supabase SQL editor (tables + public `koja-files` bucket).
 2. Supabase free plan caps a single file at 50 MB. Raise it in Storage settings
