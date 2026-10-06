@@ -108,6 +108,23 @@ def _rate_limited(key, limit, window=60):
             _rate_hits.pop(k, None)
     return False
 
+# KOJA MUSIC: music videos/audio are far larger than documents, so the
+# upload route gets its own limit. Registered early so it runs before any
+# before_request hook that parses the form (e.g. CSRF), which would otherwise
+# trigger a 413 at the global 15 MB limit.
+KOJA_MUSIC_MAX_MB = int(os.getenv("KOJA_MUSIC_MAX_MB", "100") or 100)
+KOJA_MUSIC_ALLOWED_EXTENSIONS = {
+    "mp4", "webm", "mov",            # music video
+    "mp3", "wav", "m4a", "ogg",      # audio
+    "jpg", "jpeg", "png", "webp",    # artwork
+}
+
+@app.before_request
+def _koja_music_upload_limit():
+    if request.method == "POST" and request.path == "/music/studio/upload":
+        # Needs Flask >= 3.1 (request.max_content_length is settable per request).
+        request.max_content_length = KOJA_MUSIC_MAX_MB * 1024 * 1024 + (2 * 1024 * 1024)
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
     os.getenv("SUPABASE_SECRET_KEY", "")
@@ -505,7 +522,7 @@ def create_local_profile(user_id, email, full_name="", phone=""):
 # STORAGE
 # ============================================================
 
-def upload_storage(file_storage, folder="uploads", public=False):
+def upload_storage(file_storage, folder="uploads", public=False, max_mb=None, allowed=None):
     if not file_storage or not file_storage.filename:
         return None, "No file supplied."
     if not supabase_configured():
@@ -516,12 +533,13 @@ def upload_storage(file_storage, folder="uploads", public=False):
         return None, "Invalid filename."
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in ALLOWED_EXTENSIONS:
+    if ext not in (allowed or ALLOWED_EXTENSIONS):
         return None, f"File type .{ext} is not allowed."
 
+    limit_mb = max_mb or MAX_UPLOAD_MB
     data = file_storage.read()
-    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-        return None, f"Maximum file size is {MAX_UPLOAD_MB} MB."
+    if len(data) > limit_mb * 1024 * 1024:
+        return None, f"Maximum file size is {limit_mb} MB."
 
     path = f"{folder.strip('/')}/{uuid.uuid4().hex}_{filename}"
     mime = file_storage.mimetype or "application/octet-stream"
@@ -534,7 +552,7 @@ def upload_storage(file_storage, folder="uploads", public=False):
                 "x-upsert": "true",
             }),
             data=data,
-            timeout=60,
+            timeout=300 if len(data) > 15 * 1024 * 1024 else 60,
         )
         if not r.ok:
             return None, r.text[:1200]
@@ -6033,13 +6051,16 @@ def _music_count(table, filters=None):
 
 
 def _music_upload(file_storage, folder):
+    """Always returns (info_dict, error_message)."""
     if not file_storage or not getattr(file_storage, 'filename', ''):
-        return None
+        return None, 'No file supplied.'
     try:
-        return upload_storage(file_storage, folder=folder, public=True)
+        return upload_storage(file_storage, folder=folder, public=True,
+                              max_mb=KOJA_MUSIC_MAX_MB,
+                              allowed=KOJA_MUSIC_ALLOWED_EXTENSIONS)
     except Exception as exc:
         logger.warning('Music upload failed: %s', exc)
-        return None
+        return None, 'Upload failed: ' + str(exc)[:200]
 
 
 # Initial KOJA MUSIC discovery catalogue. Official YouTube embeds keep the public feed working while direct rights are being cleared.
@@ -6181,7 +6202,7 @@ def music_home():
 <div class="km-wrap">
 <div class="km-search"><form method="get" action="{{ url_for('music_home') }}"><input name="q" value="{{ q }}" placeholder="Search songs, artists or albums"><button class="btn" type="submit">Search</button></form></div>
 <div class="km-head"><h1>KOJA MUSIC</h1><div class="km-small">Music videos playing now · KOJA catalogue + official external embeds</div></div>
-<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and (user.role in ['artist','musician','music_artist'] or artist_active) %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
+<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and (user.role in ['artist','musician','music_artist'] or artist_active) %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% elif user %}<a class="km-tool" href="{{ url_for('music_artist_new') }}">Become an Artist</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
 <div class="km-feed">
 {% for t in videos %}{% set external=t.get('external_video_provider')=='youtube' %}{% set video=t.video_url or t.music_video_url or t.visual_url %}{% set artist=amap.get(t.artist_id,{}) %}
 <article class="km-item"><div class="km-video-wrap">{% if external %}<iframe class="km-external-frame" data-src="{{ t.external_video_url }}" loading="lazy" title="{{ t.title }} — {{ t.artist }}" allow="accelerometer; autoplay; encrypted-media; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>{% else %}<video class="km-feed-video" data-track="{{ t.id }}" controls playsinline preload="none" loading="lazy" poster="{{ t.cover_image_url or '' }}"><source data-src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon" type="button" onclick="kmLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon" href="{{ video }}" download>↓</a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download><span class="km-mp3">MP3</span></a>{% endif %}</div>{% endif %}</div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ t.artist or artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div>{% if external %}<div class="km-actions"><button class="km-icon km-local-like" type="button" data-id="{{ t.id }}" onclick="kmLocalLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button><a class="km-icon" href="{{ t.source_url }}" target="_blank" rel="noopener">↗</a></div>{% endif %}</div>{% if external %}<p class="km-source">Official video embedded from its YouTube publication. <a href="{{ t.source_url }}" target="_blank" rel="noopener">View on YouTube</a></p>{% endif %}</article>
@@ -6475,7 +6496,7 @@ def _music_user_liked(user_id, track_id):
 
 
 @app.route('/music/artist/new', methods=['GET','POST'])
-@music_artist_required
+@login_required
 def music_artist_new():
     user=current_user()
     if request.method=='POST':

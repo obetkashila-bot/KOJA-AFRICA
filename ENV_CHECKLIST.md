@@ -1,6 +1,6 @@
 # KOJA AFRICA — Environment Variable Checklist
 
-Start command: `gunicorn app:app --workers 2 --threads 4 --timeout 120`
+Start command: `gunicorn app:app --workers 2 --threads 4 --timeout 300`
 (Background threads for Africa Now / AI approval run per worker.)
 
 ## 1. REQUIRED (app will not boot or core features fail)
@@ -50,11 +50,19 @@ RESEARCH_EMAIL, ALPHAVANTAGE_API_KEY, TWELVEDATA_API_KEY,
 EXCHANGE_RATE_API_KEY, FX_API_URL
 
 ## 10. TUNING (all have defaults)
+KOJA_MUSIC_MAX_MB (default 100: max size per music video/audio upload),
 SESSION_COOKIE_SECURE (default true), PORT, KOJA_APP_VERSION, KOJA_CLOUD_API_URL,
 KOJA_HLS_BUCKET, KOJA_HLS_CDN_BASE, KOJA_HLS_PUBLIC_BASE,
 KOJA_MARKET_CACHE_TTL, KOJA_MARKET_SYMBOLS, KOJA_MARKET_TIMEOUT,
 KOJA_NEXUS_SERVICES_CACHE_TTL, KOJA_NEXUS_AFRICA_NOW_ENABLED / _INTERVAL /
 _TIMEOUT / _ROTATE_SECONDS / _REGISTRY_BATCH / _EMERGENCY_TTL
+
+## KOJA MUSIC setup (3 steps)
+1. Run `koja_music_schema.sql` in the Supabase SQL editor (tables + public `koja-files` bucket).
+2. Supabase free plan caps a single file at 50 MB. Raise it in Storage settings
+   or keep KOJA_MUSIC_MAX_MB at 50 or less.
+3. Use gunicorn `--timeout 300` (large uploads) and at least 1 GB RAM:
+   uploads are buffered in memory before being sent to Supabase.
 
 ## Database (not in app.py)
 ~150 Supabase tables are referenced; only ~30 have embedded `create table`
