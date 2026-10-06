@@ -13746,6 +13746,25 @@ def _music_external_videos():
         r["_kind"] = "external"
     return [r for r in rows if r.get("_embed_url")]
 
+@app.route("/admin/music/real-videos/search")
+def admin_music_real_videos_search():
+    if not _music_is_admin(): abort(403)
+    q=clean(request.args.get("q"))
+    results=[]
+    key=clean(os.environ.get("YOUTUBE_API_KEY"))
+    if q and key:
+        try:
+            rr=requests.get("https://www.googleapis.com/youtube/v3/search",params={"part":"snippet","q":q,"type":"video","maxResults":25,"videoCategoryId":"10","key":key},timeout=20)
+            if rr.ok:
+                for x in (rr.json().get("items") or []):
+                    vid=((x.get("id") or {}).get("videoId"))
+                    sn=x.get("snippet") or {}
+                    if not vid: continue
+                    results.append({"id":vid,"title":sn.get("title") or "Untitled","artist":sn.get("channelTitle") or "Unknown artist","thumbnail":((sn.get("thumbnails") or {}).get("medium") or {}).get("url"),"url":"https://www.youtube.com/watch?v="+vid})
+        except Exception:
+            logger.exception("KOJA MUSIC YouTube search failed")
+    return jsonify({"ok":True,"configured":bool(key),"query":q,"results":results})
+
 @app.route("/admin/music/real-videos", methods=["GET", "POST"])
 def admin_music_real_videos():
     if not _music_is_admin(): abort(403)
@@ -13758,7 +13777,13 @@ def admin_music_real_videos():
         flash("Real music video added to KOJA MUSIC." if not err else f"Could not add video: {err}","success" if not err else "danger")
         return redirect(url_for("admin_music_real_videos"))
     videos=db_select("koja_music_external_videos",order="created_at.desc",limit=500)
-    return render_page("KOJA MUSIC Real Videos", """<div class='card'><h2>KOJA MUSIC — Real Music Videos</h2><form method='post'><label>Song title</label><input name='title' required><label>Artist</label><input name='artist_name' required><label>Country</label><input name='country'><label>Official video URL</label><input name='video_url' type='url' required><label>Source</label><input name='source' value='YouTube'><button class='btn' type='submit'>Add &amp; publish video</button></form></div><div class='card'><h3>Real videos</h3>{% for v in videos %}<div style='padding:10px 0;border-bottom:1px solid var(--border)'><strong>{{ v.title }}</strong> — {{ v.artist_name }}{% if v.country %} · {{ v.country }}{% endif %}</div>{% else %}<p>No external videos yet.</p>{% endfor %}</div>""", videos=videos)
+    return render_page("KOJA MUSIC Real Videos", r"""
+<style>.km-search{display:flex;gap:8px;align-items:center}.km-search input{flex:1}.km-results{display:grid;gap:10px}.km-result{display:flex;gap:12px;align-items:center;padding:10px;border:1px solid var(--border);border-radius:10px}.km-result img{width:120px;height:68px;object-fit:cover;border-radius:7px}.km-result-main{flex:1}.km-result small{display:block;color:#8b96a8;margin-top:3px}</style>
+<div class='card'><h2>KOJA MUSIC — Search &amp; Add Real Music Videos</h2><p>Search official music videos and add them to the KOJA MUSIC feed.</p><div class='km-search'><input id='kmq' placeholder='Search artist or song, e.g. Zambian Afrobeats'><button class='btn' type='button' onclick='kmSearch()'>Search</button></div><div id='kmstatus' class='small' style='margin-top:8px'></div><div id='kmresults' class='km-results' style='margin-top:12px'></div></div>
+<div class='card'><h3>Manual URL</h3><form method='post'><label>Song title</label><input name='title' required><label>Artist</label><input name='artist_name' required><label>Country</label><input name='country'><label>Official video URL</label><input name='video_url' type='url' required><label>Source</label><input name='source' value='YouTube'><button class='btn' type='submit'>Add &amp; publish video</button></form></div>
+<div class='card'><h3>Added videos</h3>{% for v in videos %}<div style='padding:10px 0;border-bottom:1px solid var(--border)'><strong>{{ v.title }}</strong> — {{ v.artist_name }}{% if v.country %} · {{ v.country }}{% endif %}</div>{% else %}<p>No external videos yet.</p>{% endfor %}</div>
+<script>async function kmSearch(){const q=document.getElementById('kmq').value.trim(),out=document.getElementById('kmresults'),st=document.getElementById('kmstatus');if(!q)return;st.textContent='Searching...';out.innerHTML='';try{const r=await fetch('/admin/music/real-videos/search?q='+encodeURIComponent(q));const d=await r.json();if(!d.configured){st.textContent='Set YOUTUBE_API_KEY on Render to enable in-app search.';return}st.textContent=(d.results||[]).length+' results';(d.results||[]).forEach(v=>{const el=document.createElement('div');el.className='km-result';el.innerHTML='<img src="'+(v.thumbnail||'')+'"><div class="km-result-main"><strong>'+esc(v.title)+'</strong><small>'+esc(v.artist)+'</small></div><button class="btn" type="button">Add</button>';el.querySelector('button').onclick=()=>kmAdd(v);out.appendChild(el)})}catch(e){st.textContent='Search failed.'}}function esc(x){return String(x||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function kmAdd(v){const f=new FormData();f.append('title',v.title);f.append('artist_name',v.artist);f.append('country','');f.append('video_url',v.url);f.append('source','YouTube');const r=await fetch('/admin/music/real-videos',{method:'POST',body:f});if(r.ok)location.reload();}</script>
+""", videos=videos)
 
 
 @app.route("/music")
@@ -13784,36 +13809,26 @@ def koja_music_home():
 
     return render_page("KOJA MUSIC", r"""
 <style>
-html,body{background:#000!important}.koja-music-feed-shell nav,.koja-music-feed-shell footer{display:none!important}
-nav,footer{display:none!important}.container{width:100%!important;max-width:none!important;margin:0!important;padding:0!important}
-.koja-music-feed-shell{width:100vw;max-width:none;margin:0;padding:0;background:#000}
-.koja-music-feed{width:100%;height:100vh;min-height:520px;overflow-y:auto;overflow-x:hidden;scroll-snap-type:y mandatory;background:#000;overscroll-behavior-y:contain}
-.koja-music-item{position:relative;width:100%;height:100vh;min-height:520px;background:#000;scroll-snap-align:start;scroll-snap-stop:always;overflow:hidden}
-.koja-music-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
-.koja-music-shade{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.82) 0%,rgba(0,0,0,.28) 25%,transparent 52%);pointer-events:none}
-.koja-music-info{position:absolute;left:14px;right:82px;bottom:18px;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.8);z-index:4}
-.koja-music-title{font-size:15px;font-weight:800;line-height:1.25;margin:0 0 4px;max-width:85%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.koja-music-artist{font-size:12px;line-height:1.25;margin:0 0 4px;font-weight:600;opacity:.94;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.koja-music-streamers{font-size:10px;line-height:1.2;opacity:.82;margin:0}
-.koja-music-actions{position:absolute;left:10px;bottom:17px;z-index:5;display:flex;flex-direction:row;align-items:center;gap:10px}
-.koja-music-action{width:48px;height:48px;border:0;border-radius:50%;background:rgba(0,0,0,.46);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 14px rgba(0,0,0,.3);font-size:21px}
-.koja-music-action.like.active{color:#ff496f}
-.koja-music-download-wrap{position:relative}
-.koja-music-download-menu{display:none;position:absolute;left:0;bottom:56px;min-width:132px;background:rgba(8,14,24,.96);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:6px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
-.koja-music-download-menu.open{display:block}
-.koja-music-download-menu a{display:block;color:#fff;text-decoration:none;font-size:12px;font-weight:700;padding:10px 12px;border-radius:8px;white-space:nowrap}
-.koja-music-download-menu a:hover{background:rgba(255,255,255,.1)}
-.koja-music-empty{height:calc(100vh - 68px);min-height:520px;display:grid;place-items:center;color:#fff;text-align:center;padding:30px;background:#000}
-.koja-music-empty h2{font-size:20px;margin:0 0 8px}.koja-music-empty p{font-size:12px;color:#aab4c2;margin:0}
-@media(min-width:900px){.koja-music-feed{max-width:560px;margin:0 auto;border-left:1px solid #111;border-right:1px solid #111}}
-@media(max-width:560px){.koja-music-feed,.koja-music-item,.koja-music-empty{height:100vh;min-height:480px}.koja-music-info{left:10px;bottom:13px}.koja-music-actions{left:7px;bottom:13px}.koja-music-action{width:44px;height:44px;font-size:19px}.koja-music-title{font-size:14px}.koja-music-artist{font-size:11px}.koja-music-streamers{font-size:9px}}
+html,body{background:#0a0d12!important}.koja-music-feed-shell nav,.koja-music-feed-shell footer{display:none!important}
+.koja-music-feed-shell{width:100%;max-width:760px;margin:0 auto;padding:10px;background:#0a0d12}
+.koja-music-feed{width:100%;display:flex;flex-direction:column;gap:10px;background:#0a0d12}
+.koja-music-item{position:relative;width:100%;background:#10151d;border:1px solid #1e2733;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.28)}
+.koja-music-video-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#000}.koja-music-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;border:0}
+.koja-music-info{padding:8px 10px 9px;color:#fff}.koja-music-title{font-size:14px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.koja-music-artist{font-size:11px;color:#aeb8c7;margin-top:3px}.koja-music-streamers{font-size:9px;color:#7f8b9b;margin-top:2px}
+.koja-music-actions{position:absolute;right:8px;bottom:58px;display:flex;gap:7px;z-index:5}.koja-music-action{width:36px;height:36px;border:0;border-radius:50%;background:rgba(0,0,0,.72);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:17px}.koja-music-action.like.active{color:#ff496f}.koja-music-download-wrap{position:relative}.koja-music-download-menu{display:none;position:absolute;right:0;bottom:42px;min-width:132px;background:#101722;border:1px solid #273243;border-radius:9px;padding:5px}.koja-music-download-menu.open{display:block}.koja-music-download-menu a{display:block;color:#fff;text-decoration:none;font-size:11px;font-weight:700;padding:9px 10px}.koja-music-empty{padding:60px 20px;color:#fff;text-align:center}.koja-music-empty h2{font-size:18px}.koja-music-empty p{font-size:12px;color:#aab4c2}
+.koja-music-search{position:sticky;top:0;z-index:20;background:#0a0d12;padding:7px 0}.koja-music-search form{display:flex;gap:7px}.koja-music-search input{flex:1;background:#151b24;border:1px solid #293444;color:#fff;border-radius:20px;padding:10px 14px;font-size:13px}.koja-music-search button{border:0;border-radius:20px;padding:0 16px;background:#1769e0;color:#fff;font-weight:700}
+@media(min-width:900px){.koja-music-feed-shell{max-width:820px}.koja-music-video-wrap{aspect-ratio:16/8.5}}
 </style>
+
 <div class="koja-music-feed-shell">
+  <div class="koja-music-search"><form method="get" action="/music"><input name="q" value="{{ request.args.get('q','') }}" placeholder="Search music or artist"><button type="submit">Search</button></form></div>
   <div class="koja-music-feed" id="kojaMusicFeed">
   {% if tracks %}
     {% for t in tracks %}
     <article class="koja-music-item" data-track-id="{{ t.id }}">
+      <div class="koja-music-video-wrap">
       {% if t._kind == 'external' and t._is_youtube %}<iframe class="koja-music-video" data-src="{{ t._embed_url }}" title="{{ t.title }} — {{ t.artist_name }}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen loading="lazy" style="border:0"></iframe>{% elif t._kind == 'external' %}<video class="koja-music-video" playsinline webkit-playsinline controls preload="metadata" data-src="{{ t._embed_url }}"></video>{% else %}<video class="koja-music-video" playsinline webkit-playsinline loop muted preload="metadata" data-src="{{ t._video_url }}" poster="{{ url_for('music_artwork', track_id=t.id) if t.artwork_path else '' }}"></video>{% endif %}
+      </div>
       <div class="koja-music-shade"></div>
       <div class="koja-music-info"><div class="koja-music-title">{{ t.title }}</div><div class="koja-music-artist">{{ t.artist_name }}</div><div class="koja-music-streamers">{% if t._kind == 'external' %}Real video · {{ t.country or 'Africa' }}{% else %}{{ (t.plays or 0)|int }} streamers{% endif %}</div></div>
       <div class="koja-music-actions">
