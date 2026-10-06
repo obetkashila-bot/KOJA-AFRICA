@@ -13736,7 +13736,7 @@ function editNexus(id){const r=nexusAdminRows.find(x=>String(x.id)===String(id))
 # Additive module: preserves the existing KOJA AFRICA application.
 # ============================================================
 
-KOJA_MUSIC_RIGHTS_VERSION = "2026.10.06-RIGHTS-100-V1"
+KOJA_MUSIC_RIGHTS_VERSION = "2026.10.06-RIGHTS-100-V2"
 
 
 def _music_admin_user():
@@ -13915,7 +13915,13 @@ def admin_music_track_action(track_id):
     ref = clean(request.form.get("licence_reference"))
     track = first_row("koja_music_tracks", {"id": track_id}) or {}
     if action == "verify":
-        db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "verified", "licence_reference": ref or track.get("licence_reference") or "KOJA-VERIFIED", "updated_at": utc_now()})
+        rights = db_select("koja_music_rights", filters={"track_id": track_id, "status": "verified"}, limit=10) or []
+        if not rights:
+            flash("Track cannot be marked rights-verified until a verified rights/licence record exists in the Rights Centre.", "danger")
+            return redirect(url_for("admin_music"))
+        right = rights[0]
+        licence_ref = ref or right.get("agreement_reference") or right.get("id") or track.get("licence_reference")
+        db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "verified", "licence_reference": licence_ref, "updated_at": utc_now()})
     elif action == "publish":
         if _music_track_rights_verified(track):
             db_update("koja_music_tracks", {"id": track_id}, {"status": "published", "updated_at": utc_now()})
@@ -13949,6 +13955,29 @@ def admin_music_rights():
 <div class="card"><table><tr><th>Track</th><th>Rightsholder</th><th>Master</th><th>Composition</th><th>Territory</th><th>Term</th><th>Status</th></tr>{% for r in rights %}<tr><td>{{ r.track_id }}</td><td>{{ r.rightsholder_name }}</td><td>{{ r.master_rights }}</td><td>{{ r.composition_rights }}</td><td>{{ r.territory }}</td><td>{{ r.term_end or 'Open/unspecified' }}</td><td>{{ r.status }}</td></tr>{% else %}<tr><td colspan="7">No rights records yet.</td></tr>{% endfor %}</table></div>
 ''', rights=rights, verified=verified, remaining=max(0,100-verified))
 
+
+@app.route('/music/apply', methods=['GET', 'POST'])
+def music_artist_apply():
+    if request.method == 'POST':
+        uid = (current_user() or {}).get('id')
+        d = request.form
+        artist_name = clean(d.get('artist_name')); country = clean(d.get('country')); catalogue_links = clean(d.get('catalogue_links'))
+        if not artist_name or not country or not catalogue_links:
+            flash('Artist name, country and catalogue links are required.', 'danger')
+        else:
+            row, err = db_insert('koja_music_artist_submissions', {'id':str(uuid.uuid4()),'user_id':uid,'artist_name':artist_name,'country':country,'genre':clean(d.get('genre')),'website':clean(d.get('website')),'bio':clean(d.get('bio')),'catalogue_links':catalogue_links,'rights_declaration':bool(d.get('rights_declaration')),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash('Application could not be saved: ' + str(err)[:500], 'danger')
+            else: flash('Artist application submitted for review.', 'success')
+    return render_page('KOJA MUSIC Artist Application', r'''<div class="hero"><h1>Join KOJA MUSIC</h1><p>Submit an artist or catalogue for review. Publication requires rights verification before streaming.</p></div><div class="card" style="max-width:820px;margin:auto"><form method="post"><label>Artist name</label><input name="artist_name" required maxlength="180"><label>Country</label><input name="country" required maxlength="100"><label>Genre</label><input name="genre" maxlength="100"><label>Website / official profile</label><input name="website" type="url"><label>Catalogue links</label><textarea name="catalogue_links" required rows="4"></textarea><label>Biography</label><textarea name="bio" rows="4"></textarea><label><input type="checkbox" name="rights_declaration" value="1"> I confirm I am authorised to submit this catalogue for rights review.</label><button class="btn" type="submit">Submit for Review</button></form></div>''')
+
+@app.route('/admin/music/100')
+@login_required
+def admin_music_100():
+    if not _music_admin_user(): abort(403)
+    tracks = _music_rows()
+    public = [t for t in tracks if t.get('public_eligible')]
+    pending = [t for t in tracks if not t.get('public_eligible')]
+    return render_page('KOJA MUSIC 100-Song Target', r'''<div class="hero"><h1>KOJA MUSIC — 100 Authorised Songs</h1><p>Catalogue readiness uses the same publication gate as the public Music feed.</p></div><div class="grid"><div class="stat"><div class="small">Authorised</div><div class="big">{{ public|length }}</div></div><div class="stat"><div class="small">Remaining</div><div class="big">{{ [100-(public|length),0]|max }}</div></div><div class="stat"><div class="small">Catalogue records</div><div class="big">{{ tracks|length }}</div></div></div><div class="card"><h2>Authorised catalogue</h2>{% for t in public %}<div style="border-top:1px solid var(--border);padding:10px 0"><strong>{{ t.title or 'Untitled' }}</strong><div class="small">{{ t.artist.get('artist_name') or t.artist.get('name') or 'Artist' }} · rights verified · {{ t.status }}</div></div>{% else %}<p>No authorised songs yet.</p>{% endfor %}</div><div class="card"><h2>Not yet publishable</h2>{% for t in pending %}<div style="border-top:1px solid var(--border);padding:10px 0"><strong>{{ t.title or 'Untitled' }}</strong><div class="small">{{ t.artist.get('artist_name') or t.artist.get('name') or 'Artist' }} · track={{ t.status or 'draft' }} · rights={{ t.rights_status or 'review_required' }} · artist={{ t.artist.status or 'missing' }}</div></div>{% else %}<p>All catalogue records currently pass the public gate.</p>{% endfor %}</div>''', tracks=tracks, public=public, pending=pending)
 
 @app.route("/api/music/rights/<track_id>", methods=["POST"])
 @login_required
