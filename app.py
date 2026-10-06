@@ -13737,6 +13737,30 @@ def _music_status_label(row):
     return str(row.get("rights_status") or row.get("status") or "PENDING").replace("_", " ").upper()
 
 
+def _music_external_videos():
+    rows = db_select("koja_music_external_videos", {"status": "published"}, order="published_at.desc", limit=500)
+    for r in rows:
+        u = clean(r.get("video_url"))
+        r["_embed_url"] = youtube_embed_url(u) if u and ("youtube.com" in u or "youtu.be/" in u) else u
+        r["_is_youtube"] = bool(r["_embed_url"] and "youtube.com/embed/" in r["_embed_url"])
+        r["_kind"] = "external"
+    return [r for r in rows if r.get("_embed_url")]
+
+@app.route("/admin/music/real-videos", methods=["GET", "POST"])
+def admin_music_real_videos():
+    if not _music_is_admin(): abort(403)
+    if request.method == "POST":
+        title=clean(request.form.get("title")); artist=clean(request.form.get("artist_name")); country=clean(request.form.get("country")); video_url=clean(request.form.get("video_url")); source=clean(request.form.get("source")) or "YouTube"
+        if not title or not artist or not video_url: flash("Title, artist and video URL are required.","danger"); return redirect(url_for("admin_music_real_videos"))
+        embed=youtube_embed_url(video_url) if ("youtube.com" in video_url or "youtu.be/" in video_url) else video_url
+        if not embed: flash("Unsupported music-video URL.","danger"); return redirect(url_for("admin_music_real_videos"))
+        _,err=db_insert("koja_music_external_videos",{"id":str(uuid.uuid4()),"title":title,"artist_name":artist,"country":country,"video_url":video_url,"provider":source,"status":"published","published_at":utc_now(),"created_at":utc_now(),"updated_at":utc_now()})
+        flash("Real music video added to KOJA MUSIC." if not err else f"Could not add video: {err}","success" if not err else "danger")
+        return redirect(url_for("admin_music_real_videos"))
+    videos=db_select("koja_music_external_videos",order="created_at.desc",limit=500)
+    return render_page("KOJA MUSIC Real Videos", """<div class='card'><h2>KOJA MUSIC — Real Music Videos</h2><form method='post'><label>Song title</label><input name='title' required><label>Artist</label><input name='artist_name' required><label>Country</label><input name='country'><label>Official video URL</label><input name='video_url' type='url' required><label>Source</label><input name='source' value='YouTube'><button class='btn' type='submit'>Add &amp; publish video</button></form></div><div class='card'><h3>Real videos</h3>{% for v in videos %}<div style='padding:10px 0;border-bottom:1px solid var(--border)'><strong>{{ v.title }}</strong> — {{ v.artist_name }}{% if v.country %} · {{ v.country }}{% endif %}</div>{% else %}<p>No external videos yet.</p>{% endfor %}</div>""", videos=videos)
+
+
 @app.route("/music")
 def koja_music_home():
     # KOJA MUSIC vertical video-first feed. Only rights-cleared tracks with an authorised video are shown.
@@ -13754,7 +13778,9 @@ def koja_music_home():
         t["_audio_url"] = url_for("music_stream", track_id=t.get("id"))
         t["_download_video_url"] = url_for("music_download", track_id=t.get("id"), kind="video")
         t["_download_audio_url"] = url_for("music_download", track_id=t.get("id"), kind="audio")
+        t["_kind"] = "licensed"
         visible.append(t)
+    visible.extend(_music_external_videos())
 
     return render_page("KOJA MUSIC", r"""
 <style>
@@ -13787,12 +13813,11 @@ nav,footer{display:none!important}.container{width:100%!important;max-width:none
   {% if tracks %}
     {% for t in tracks %}
     <article class="koja-music-item" data-track-id="{{ t.id }}">
-      <video class="koja-music-video" playsinline webkit-playsinline loop muted preload="metadata" data-src="{{ t._video_url }}" poster="{{ url_for('music_artwork', track_id=t.id) if t.artwork_path else '' }}"></video>
+      {% if t._kind == 'external' and t._is_youtube %}<iframe class="koja-music-video" data-src="{{ t._embed_url }}" title="{{ t.title }} — {{ t.artist_name }}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen loading="lazy" style="border:0"></iframe>{% elif t._kind == 'external' %}<video class="koja-music-video" playsinline webkit-playsinline controls preload="metadata" data-src="{{ t._embed_url }}"></video>{% else %}<video class="koja-music-video" playsinline webkit-playsinline loop muted preload="metadata" data-src="{{ t._video_url }}" poster="{{ url_for('music_artwork', track_id=t.id) if t.artwork_path else '' }}"></video>{% endif %}
       <div class="koja-music-shade"></div>
-      <div class="koja-music-info"><div class="koja-music-title">{{ t.title }}</div><div class="koja-music-artist">{{ t.artist_name }}</div><div class="koja-music-streamers">{{ (t.plays or 0)|int }} streamers</div></div>
+      <div class="koja-music-info"><div class="koja-music-title">{{ t.title }}</div><div class="koja-music-artist">{{ t.artist_name }}</div><div class="koja-music-streamers">{% if t._kind == 'external' %}Real video · {{ t.country or 'Africa' }}{% else %}{{ (t.plays or 0)|int }} streamers{% endif %}</div></div>
       <div class="koja-music-actions">
-        <div class="koja-music-download-wrap"><button class="koja-music-action" type="button" aria-label="Download" onclick="toggleMusicDownload(this)">↓</button><div class="koja-music-download-menu"><a href="{{ t._download_video_url }}">Download video</a><a href="{{ t._download_audio_url }}">Download audio</a></div></div>
-        <button class="koja-music-action like" type="button" aria-label="Like" data-track="{{ t.id }}">♡</button>
+        {% if t._kind != 'external' %}<div class="koja-music-download-wrap"><button class="koja-music-action" type="button" aria-label="Download" onclick="toggleMusicDownload(this)">↓</button><div class="koja-music-download-menu"><a href="{{ t._download_video_url }}">Download video</a><a href="{{ t._download_audio_url }}">Download audio</a></div></div><button class="koja-music-action like" type="button" aria-label="Like" data-track="{{ t.id }}">♡</button>{% endif %}
       </div>
     </article>
     {% endfor %}
@@ -13805,8 +13830,8 @@ nav,footer{display:none!important}.container{width:100%!important;max-width:none
 (function(){
   const feed=document.getElementById('kojaMusicFeed'); if(!feed)return;
   const items=[...feed.querySelectorAll('.koja-music-item')];
-  function load(v){if(!v||v.dataset.loaded)return;v.src=v.dataset.src;v.dataset.loaded='1';v.load();}
-  function playItem(item){const v=item.querySelector('video');items.forEach(x=>{const ov=x.querySelector('video');if(x!==item&&ov)ov.pause();});load(v);const p=v.play();if(p&&p.catch)p.catch(()=>{});fetch('/api/music/stream/'+encodeURIComponent(item.dataset.trackId),{method:'POST',credentials:'same-origin'}).catch(()=>{});}
+  function load(v){if(!v||v.dataset.loaded)return;v.src=v.dataset.src;v.dataset.loaded='1';if(v.tagName==='VIDEO')v.load();}
+  function playItem(item){const media=item.querySelector('video,iframe');items.forEach(x=>{if(x!==item){const ov=x.querySelector('video');if(ov)ov.pause();const oi=x.querySelector('iframe');if(oi)oi.src='about:blank';}});load(media);if(media&&media.tagName==='VIDEO'){const p=media.play();if(p&&p.catch)p.catch(()=>{});}if(item.dataset.kind==='licensed'&&item.dataset.trackId)fetch('/api/music/stream/'+encodeURIComponent(item.dataset.trackId),{method:'POST',credentials:'same-origin'}).catch(()=>{});}
   const io=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting&&e.intersectionRatio>=.72)playItem(e.target)}),{root:feed,threshold:[.72,.9]});
   items.forEach(item=>{io.observe(item);const v=item.querySelector('video');if(v)v.addEventListener('click',()=>{if(v.paused)v.play().catch(()=>{});else v.pause()});});
   if(items[0])playItem(items[0]);
@@ -14031,6 +14056,86 @@ def music_artist_tracks():
 """, artist=artist, tracks=tracks)
 
 
+
+
+AFRICA_54_COUNTRIES = [
+    "Algeria", "Angola", "Benin", "Botswana", "Burkina Faso", "Burundi",
+    "Cabo Verde", "Cameroon", "Central African Republic", "Chad", "Comoros",
+    "Republic of the Congo", "Democratic Republic of the Congo", "Côte d'Ivoire",
+    "Djibouti", "Egypt", "Equatorial Guinea", "Eritrea", "Eswatini", "Ethiopia",
+    "Gabon", "Gambia", "Ghana", "Guinea", "Guinea-Bissau", "Kenya", "Lesotho",
+    "Liberia", "Libya", "Madagascar", "Malawi", "Mali", "Mauritania", "Mauritius",
+    "Morocco", "Mozambique", "Namibia", "Niger", "Nigeria", "Rwanda",
+    "São Tomé and Príncipe", "Senegal", "Seychelles", "Sierra Leone", "Somalia",
+    "South Africa", "South Sudan", "Sudan", "Tanzania", "Togo", "Tunisia", "Uganda",
+    "Zambia", "Zimbabwe"
+]
+
+@app.route("/admin/music/africa-catalogue", methods=["GET", "POST"])
+@admin_required
+def admin_music_africa_catalogue():
+    """Manage the 54-country / 20-song-per-country acquisition target.
+
+    This creates catalogue slots only. It deliberately does not fabricate songs or
+    bypass copyright/licensing. A slot becomes playable only when a real track is
+    linked to it and passes the existing KOJA rights gate.
+    """
+    if request.method == "POST":
+        action = clean(request.form.get("action"))
+        if action == "seed":
+            for country in AFRICA_54_COUNTRIES:
+                for slot in range(1, 21):
+                    existing = db_select("koja_music_country_slots", {"country": country, "slot_number": slot}, limit=1)
+                    if existing:
+                        continue
+                    db_insert("koja_music_country_slots", {
+                        "id": str(uuid.uuid4()),
+                        "country": country,
+                        "slot_number": slot,
+                        "status": "awaiting_rights",
+                        "created_at": utc_now(),
+                        "updated_at": utc_now(),
+                    })
+            flash("KOJA MUSIC Africa catalogue target created: 54 countries × 20 slots = 1,080 songs.", "success")
+        elif action == "refresh":
+            flash("Catalogue status refreshed.", "success")
+        return redirect(url_for("admin_music_africa_catalogue"))
+
+    slots = db_select("koja_music_country_slots", order="country.asc,slot_number.asc", limit=2000)
+    by_country = {}
+    for row in slots:
+        by_country.setdefault(row.get("country"), []).append(row)
+    countries = []
+    for country in AFRICA_54_COUNTRIES:
+        rows = by_country.get(country, [])
+        live = 0
+        licensed = 0
+        for r in rows:
+            if r.get("track_id"):
+                t = _music_track(r.get("track_id"))
+                if t and _music_can_publish(t):
+                    live += 1
+                    licensed += 1
+            elif r.get("status") == "licensed":
+                licensed += 1
+        countries.append({"country": country, "slots": len(rows), "licensed": licensed, "live": live})
+    total_slots = sum(x["slots"] for x in countries)
+    total_live = sum(x["live"] for x in countries)
+    total_licensed = sum(x["licensed"] for x in countries)
+    return render_page("KOJA MUSIC AFRICA CATALOGUE", r"""
+<style>
+.kac{max-width:1180px;margin:auto}.kac-hero{background:linear-gradient(135deg,#071426,#0d2b55);color:#fff;border-radius:18px;padding:24px;margin-bottom:18px}.kac-hero h1{margin:0 0 8px;font-size:28px}.kac-hero p{margin:0;color:#cbd8ea;line-height:1.6}.kac-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.kac-stat{background:#fff;border:1px solid #dfe5ee;border-radius:14px;padding:16px}.kac-stat strong{display:block;font-size:24px;color:#071426}.kac-stat span{font-size:12px;color:#68758a}.kac-actions{display:flex;gap:8px;flex-wrap:wrap;margin:15px 0}.kac-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dfe5ee;border-radius:14px;overflow:hidden}.kac-table th,.kac-table td{padding:10px 12px;border-bottom:1px solid #edf0f5;text-align:left;font-size:13px}.kac-table th{background:#f7f9fc}.kac-bar{height:7px;background:#edf1f7;border-radius:99px;overflow:hidden}.kac-fill{height:100%;background:#1769e0}.kac-note{background:#fff7e6;border:1px solid #f0d59a;border-radius:12px;padding:13px;font-size:13px;line-height:1.5;color:#5f4700}
+@media(max-width:700px){.kac-stats{grid-template-columns:repeat(2,1fr)}.kac-table th:nth-child(3),.kac-table td:nth-child(3){display:none}}
+</style>
+<div class="kac">
+  <div class="kac-hero"><h1>KOJA MUSIC — Africa 1,080 Song Catalogue</h1><p>Target: 54 African countries × 20 songs each. These are acquisition slots, not fabricated or unlicensed tracks. Only real music with verified rights and an active signed licence can enter public playback.</p></div>
+  <div class="kac-note"><strong>Legal playback gate:</strong> KOJA does not mark a song as licensed merely because a country slot exists. Each actual recording must have the rightsholder/authority verified, master and composition rights addressed, territory/term confirmed, signed licence stored, and KOJA's existing rights gate passed.</div>
+  <div class="kac-stats"><div class="kac-stat"><strong>{{ total_slots }}</strong><span>Catalogue slots</span></div><div class="kac-stat"><strong>54</strong><span>Countries</span></div><div class="kac-stat"><strong>{{ total_licensed }}</strong><span>Licensed / linked</span></div><div class="kac-stat"><strong>{{ total_live }}</strong><span>Playable now</span></div></div>
+  <div class="kac-actions"><form method="post"><input type="hidden" name="action" value="seed"><button class="btn" type="submit">Create / complete 1,080 slots</button></form><form method="post"><input type="hidden" name="action" value="refresh"><button class="btn secondary" type="submit">Refresh status</button></form></div>
+  <table class="kac-table"><thead><tr><th>Country</th><th>Target</th><th>Licensed / linked</th><th>Playable</th><th>Progress</th></tr></thead><tbody>{% for c in countries %}<tr><td><strong>{{ c.country }}</strong></td><td>{{ c.slots }}/20</td><td>{{ c.licensed }}/20</td><td>{{ c.live }}/20</td><td><div class="kac-bar"><div class="kac-fill" style="width:{{ (c.live * 5) if c.live <= 20 else 100 }}%"></div></div></td></tr>{% endfor %}</tbody></table>
+</div>
+""", countries=countries, total_slots=total_slots, total_licensed=total_licensed, total_live=total_live)
+
 @app.route("/admin/music/acquisition", methods=["GET", "POST"])
 @admin_required
 def admin_music_acquisition():
@@ -14237,7 +14342,7 @@ def admin_music():
 </style>
 <div class="mra"><div class="hero"><h1>KOJA MUSIC Rights Administration</h1><p>Control artist onboarding, rights evidence, signed licences, verification and the first 100 authorised songs.</p></div>
 <div class="mstats"><div class="mstat"><b>{{ stats.authorised }}</b>Authorised songs</div><div class="mstat"><b>{{ stats.remaining }}</b>Remaining to 100</div><div class="mstat"><b>{{ stats.pending_tracks }}</b>Tracks pending</div><div class="mstat"><b>{{ stats.pending_artists }}</b>Artists pending</div><div class="mstat"><b>{{ stats.tracks }}</b>Total submissions</div></div>
-<div class="card"><strong>Publication rule:</strong> KOJA publishes a recording only after the complete rights checklist, a signed active streaming licence, and the artist/rightsholder declaration are verified. Uploading a file alone never grants KOJA rights.</div><div class="actions"><a class="btn secondary" href="{{ url_for('admin_music_acquisition') }}">Rights Acquisition Pipeline</a></div>
+<div class="card"><strong>Publication rule:</strong> KOJA publishes a recording only after the complete rights checklist, a signed active streaming licence, and the artist/rightsholder declaration are verified. Uploading a file alone never grants KOJA rights.</div><div class="actions"><a class="btn secondary" href="{{ url_for('admin_music_acquisition') }}">Rights Acquisition Pipeline</a></div><div class="actions"><a class="btn" href="{{ url_for('admin_music_africa_catalogue') }}">Africa 54 × 20 Catalogue</a></div>
 <div class="mra-grid"><div class="card mra-list"><h2>Artists</h2>{% for a in artists %}<div class="mra-item"><strong>{{ a.artist_name }}</strong> · {{ a.country }} <span class="mra-badge">{{ a.status|upper }}</span><div class="small">{{ a.genre or '—' }}</div>{% if a.status=='pending' %}<form method="post" style="display:flex;gap:6px;margin-top:7px"><input type="hidden" name="artist_id" value="{{ a.id }}"><button class="btn" name="action" value="approve_artist">Approve</button><button class="btn secondary" name="action" value="reject_artist">Reject</button></form>{% endif %}</div>{% else %}<p>No artist applications.</p>{% endfor %}</div>
 <div><div class="card mra-list"><h2>Catalogue</h2>{% for t in tracks %}<div class="mra-item"><a href="{{ url_for('admin_music',track=t.id) }}">{{ t.title }}</a> — {{ t.artist_name }} <span class="mra-badge {{ 'mra-live' if t.status=='published' and t.rights_status=='verified' else 'mra-warn' }}">{{ status_label(t) }}</span><div class="small">{{ t.created_at }}</div></div>{% else %}<p>No tracks.</p>{% endfor %}</div>{% if selected %}<div class="card"><h2>Rights file: {{ selected.title }}</h2><p><strong>Artist:</strong> {{ selected.artist_name }} · <strong>ISRC:</strong> {{ selected.isrc or selected.rights.isrc or '—' }}</p><form method="post" class="mra-form"><input type="hidden" name="track_id" value="{{ selected.id }}"><div><label>Master owner</label><input name="master_owner" required value="{{ selected.rights.master_owner or '' }}"></div><div><label>Composition / publishing owner</label><input name="composition_owner" required value="{{ selected.rights.composition_owner or '' }}"></div><div><label>Publisher</label><input name="publisher" value="{{ selected.rights.publisher or '' }}"></div><div><label>Label</label><input name="label_name" value="{{ selected.rights.label_name or '' }}"></div><div><label>Producer</label><input name="producer" value="{{ selected.rights.producer or '' }}"></div><div><label>Featured artists</label><input name="featured_artists" value="{{ selected.rights.featured_artists or '' }}"></div><div><label>Samples</label><select name="sample_disclosure"><option value="none" {% if selected.rights.sample_disclosure=='none' %}selected{% endif %}>None declared</option><option value="cleared" {% if selected.rights.sample_disclosure=='cleared' %}selected{% endif %}>Samples exist and are cleared</option><option value="unknown" {% if not selected.rights.sample_disclosure or selected.rights.sample_disclosure=='unknown' %}selected{% endif %}>Unknown / investigate</option></select></div><div><label>ISRC</label><input name="isrc" value="{{ selected.rights.isrc or selected.isrc or '' }}"></div><div class="full"><label>Rights notes</label><textarea name="rights_notes" rows="3">{{ selected.rights.rights_notes or '' }}</textarea></div><div class="full"><strong>Verification checklist</strong><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin-top:8px"><label><input type="checkbox" name="identity_verified" value="1" {% if selected.rights.identity_verified %}checked{% endif %}> Identity verified</label><label><input type="checkbox" name="authority_verified" value="1" {% if selected.rights.authority_verified %}checked{% endif %}> Authority to license verified</label><label><input type="checkbox" name="master_verified" value="1" {% if selected.rights.master_verified %}checked{% endif %}> Master rights verified</label><label><input type="checkbox" name="composition_verified" value="1" {% if selected.rights.composition_verified %}checked{% endif %}> Composition/publishing verified</label><label><input type="checkbox" name="sample_verified" value="1" {% if selected.rights.sample_verified %}checked{% endif %}> Samples/clearances verified</label><label><input type="checkbox" name="metadata_verified" value="1" {% if selected.rights.metadata_verified %}checked{% endif %}> Metadata verified</label><label><input type="checkbox" name="territory_verified" value="1" {% if selected.rights.territory_verified %}checked{% endif %}> Territory verified</label><label><input type="checkbox" name="licence_terms_verified" value="1" {% if selected.rights.licence_terms_verified %}checked{% endif %}> Licence terms verified</label></div></div><div class="full"><button class="btn" name="action" value="save_rights">Save rights record & checklist</button></div></form>
 <div class="card" style="margin-top:12px"><h3>Signed licence</h3><form method="post" enctype="multipart/form-data" class="mra-form"><input type="hidden" name="track_id" value="{{ selected.id }}"><div><label>Licence type</label><select name="licence_type"><option value="non_exclusive_zero_upfront_pilot">Non-exclusive zero-upfront pilot</option><option value="non_exclusive_revenue_share">Non-exclusive revenue share</option><option value="commercial_licence">Commercial licence</option></select></div><div><label>Territory</label><input name="territory" value="Worldwide subject to rights"></div><div><label>Start date</label><input type="date" name="start_date"></div><div><label>End date</label><input type="date" name="end_date"></div><div><label>Royalty type</label><input name="royalty_type" value="zero_upfront_pilot"></div><div><label>Royalty rate / share</label><input name="royalty_rate" value="0"></div><div><label>Licensor / rights holder</label><input name="licensor_name"></div><div><label>Licensor email</label><input type="email" name="licensor_email"></div><div><label>Signed by</label><input name="signed_by"></div><div><label>Signature method</label><select name="signature_method"><option value="signed_document">Signed document</option><option value="e_signature">E-signature</option><option value="other">Other documented signature</option></select></div><label><input type="checkbox" name="streaming_allowed" value="1" required> Streaming allowed</label><label><input type="checkbox" name="promotion_allowed" value="1" checked> Promotion allowed</label><label><input type="checkbox" name="download_allowed" value="1"> Downloads allowed</label><div class="full"><label>Signed agreement file (required)</label><input type="file" name="agreement" required accept=".pdf,.doc,.docx,.txt"></div><div class="full"><button class="btn" name="action" value="create_licence">Record signed licence</button></div></form>{% for l in selected.licences %}<p class="small"><strong>{{ l.licence_number }}</strong> · {{ l.status|upper }} · {{ l.territory }} · <a target="_blank" rel="noopener" href="{{ l.agreement_url }}">Agreement</a></p>{% endfor %}</div>
