@@ -10087,9 +10087,6 @@ def oauth_session():
         logger.exception('OAuth session bridge failed')
         return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
 
-if __name__=="__main__":
-    port=int(os.getenv("PORT","5000"))
-    app.run(host="0.0.0.0",port=port,debug=False)
 
 @app.route('/business/<business_id>/intelligence-v3', methods=['GET','POST'])
 @login_required
@@ -12571,21 +12568,6 @@ def koja_core_service_event_api():
 
 
 # ============================================================
-# CORE-AWARE SERVICE STATUS FOR THE EXISTING PLATFORM CENTER
-# ============================================================
-@app.route("/api/platform/core-status")
-def koja_platform_core_status_v2():
-    services = [_core_service_status(s) for s in KOJA_CORE_SERVICES]
-    return jsonify({
-        "ok": True,
-        "core_version": KOJA_CORE_VERSION,
-        "operating_layer": "KOJA CORE",
-        "services": services,
-        "country": "ZM",
-        "currency": "ZMW",
-    })
-
-# ============================================================
 # KOJA CORE REMAINING CONTROL-PLANE LAYER
 # Africa-wide: FX, tax, payments, delivery, notifications, billing,
 # cross-border commerce, observability and KOJA CLOUD links.
@@ -14339,23 +14321,6 @@ def _world_rows(include_inactive=False):
         _schedule_nexus_services_cache_refresh(force=True)
     return [r for r in rows if _world_active(r)]
 
-def _world_matches(row, query="", country="", category=""):
-    query, country, category = clean(query).lower(), clean(country).lower(), clean(category).lower()
-    if country and country not in str(row.get("country_code") or "").lower() and country not in str(row.get("country_name") or "").lower():
-        return False
-    if category and category != str(row.get("category") or "").lower():
-        return False
-    if query:
-        haystack = " ".join([
-            str(row.get("country_code") or ""), str(row.get("country_name") or ""),
-            str(row.get("service_name") or ""), str(row.get("name") or ""),
-            str(row.get("category") or ""), str(row.get("description") or ""),
-            " ".join(str(x) for x in (row.get("tags") or [])),
-        ]).lower()
-        if query not in haystack:
-            return False
-    return True
-
 @app.route("/world")
 def koja_world():
     rows = _world_rows()
@@ -14667,3 +14632,8 @@ const nexusAdminRows={{ rows|tojson }};
 function editNexus(id){const r=nexusAdminRows.find(x=>String(x.id)===String(id));if(!r)return;document.getElementById('nxa_id').value=r.id||'';document.getElementById('nxa_name').value=r.name||r.service_name||'';document.getElementById('nxa_code').value=r.country_code||'';document.getElementById('nxa_country').value=r.country_name||'';document.getElementById('nxa_category').value=r.category||'';document.getElementById('nxa_url').value=r.official_url||r.url||'';document.getElementById('nxa_description').value=r.description||'';document.getElementById('nxa_tags').value=(r.tags||[]).join(', ');document.getElementById('nxa_sort').value=r.sort_order||100;document.getElementById('nxa_active').value=(r.active===false||r.is_active===false)?'0':'1';window.scrollTo({top:0,behavior:'smooth'})}
 </script>
 ''', rows=rows, categories=KOJA_WORLD_CATEGORIES, service_name=_world_service_name, verified=_world_verified, active=_world_active)
+
+
+if __name__=="__main__":
+    port=int(os.getenv("PORT","5000"))
+    app.run(host="0.0.0.0",port=port,debug=False)

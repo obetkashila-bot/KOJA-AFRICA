@@ -1,5 +1,13 @@
-Flask>=3.0,<4
-requests>=2.31,<3
-Werkzeug>=3.0,<4
-gunicorn>=22,<24
-python-dotenv>=1.0,<2
+# KOJA AFRICA — generated from imports in app.py
+Flask>=3.0
+Werkzeug>=3.0
+requests>=2.31
+python-dotenv>=1.0
+gunicorn>=21.2
+
+# Optional features (app still boots without them)
+livekit-api>=0.6          # Live Shopping tokens (NOT the "livekit" package)
+pypdf>=4.0                # PDF text extraction for KOJA AI / Research
+python-docx>=1.1          # DOCX text extraction
+pywebpush>=2.0            # Web push notifications (VAPID)
+google-auth>=2.29         # Google Search Console (GSC_SERVICE_ACCOUNT_JSON)
