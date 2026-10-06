@@ -13746,24 +13746,124 @@ def _music_external_videos():
         r["_kind"] = "external"
     return [r for r in rows if r.get("_embed_url")]
 
+def _koja_music_public_youtube_search(query, limit=20):
+    """Search public YouTube results without the YouTube Data API.
+
+    This uses YouTube's public search page only; KOJA does not download or
+    re-host the returned recordings. Results are external video previews.
+    """
+    q=clean(query)
+    if not q:
+        return []
+    try:
+        from json import JSONDecoder
+        from urllib.parse import quote_plus
+        url="https://www.youtube.com/results?search_query=" + quote_plus(q)
+        rr=requests.get(url, headers={
+            "User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36",
+            "Accept-Language":"en-US,en;q=0.9",
+            "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }, timeout=20)
+        if not rr.ok:
+            return []
+        html=rr.text
+        data=None
+        markers=("var ytInitialData = ", "ytInitialData = ")
+        for marker in markers:
+            pos=html.find(marker)
+            if pos < 0:
+                continue
+            start=html.find("{", pos + len(marker))
+            if start < 0:
+                continue
+            try:
+                data,_=JSONDecoder().raw_decode(html[start:])
+                break
+            except Exception:
+                continue
+
+        results=[]
+        seen=set()
+
+        def text_value(v):
+            if isinstance(v, dict):
+                if isinstance(v.get("simpleText"), str):
+                    return v["simpleText"]
+                runs=v.get("runs")
+                if isinstance(runs, list):
+                    return "".join(str(x.get("text") or "") for x in runs if isinstance(x,dict))
+            return str(v) if isinstance(v,str) else ""
+
+        def walk(node):
+            if len(results) >= limit:
+                return
+            if isinstance(node, dict):
+                vr=node.get("videoRenderer")
+                if isinstance(vr, dict):
+                    vid=clean(vr.get("videoId"))
+                    if vid and vid not in seen:
+                        title=text_value(vr.get("title")) or "Untitled"
+                        owner=text_value(vr.get("ownerText")) or text_value(vr.get("longBylineText")) or "Unknown artist"
+                        thumbs=vr.get("thumbnail",{}).get("thumbnails") if isinstance(vr.get("thumbnail"),dict) else []
+                        thumb=(thumbs[-1].get("url") if thumbs and isinstance(thumbs[-1],dict) else "")
+                        seen.add(vid)
+                        results.append({
+                            "id":vid,
+                            "title":title,
+                            "artist":owner,
+                            "thumbnail":thumb,
+                            "url":"https://www.youtube.com/watch?v="+vid,
+                            "source":"YouTube",
+                            "external":True,
+                        })
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+                    if len(results) >= limit:
+                        break
+
+        if data is not None:
+            walk(data)
+
+        # Lightweight fallback for a changed YouTube page structure.
+        if not results:
+            import re
+            ids=[]
+            for vid in re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', html):
+                if vid not in ids:
+                    ids.append(vid)
+                if len(ids) >= limit:
+                    break
+            for vid in ids:
+                results.append({
+                    "id":vid,
+                    "title":"YouTube music video",
+                    "artist":"YouTube",
+                    "thumbnail":"https://i.ytimg.com/vi/%s/hqdefault.jpg" % vid,
+                    "url":"https://www.youtube.com/watch?v="+vid,
+                    "source":"YouTube",
+                    "external":True,
+                })
+        return results
+    except Exception:
+        logger.exception("KOJA MUSIC public YouTube search failed")
+        return []
+
+
 @app.route("/admin/music/real-videos/search")
 def admin_music_real_videos_search():
     if not _music_is_admin(): abort(403)
     q=clean(request.args.get("q"))
-    results=[]
-    key=clean(os.environ.get("YOUTUBE_API_KEY"))
-    if q and key:
-        try:
-            rr=requests.get("https://www.googleapis.com/youtube/v3/search",params={"part":"snippet","q":q,"type":"video","maxResults":25,"videoCategoryId":"10","key":key},timeout=20)
-            if rr.ok:
-                for x in (rr.json().get("items") or []):
-                    vid=((x.get("id") or {}).get("videoId"))
-                    sn=x.get("snippet") or {}
-                    if not vid: continue
-                    results.append({"id":vid,"title":sn.get("title") or "Untitled","artist":sn.get("channelTitle") or "Unknown artist","thumbnail":((sn.get("thumbnails") or {}).get("medium") or {}).get("url"),"url":"https://www.youtube.com/watch?v="+vid})
-        except Exception:
-            logger.exception("KOJA MUSIC YouTube search failed")
-    return jsonify({"ok":True,"configured":bool(key),"query":q,"results":results})
+    results=_koja_music_public_youtube_search(q, limit=20) if q else []
+    return jsonify({
+        "ok":True,
+        "configured":True,
+        "api_key_required":False,
+        "query":q,
+        "results":results,
+    })
 
 @app.route("/admin/music/real-videos", methods=["GET", "POST"])
 def admin_music_real_videos():
@@ -13779,10 +13879,10 @@ def admin_music_real_videos():
     videos=db_select("koja_music_external_videos",order="created_at.desc",limit=500)
     return render_page("KOJA MUSIC Real Videos", r"""
 <style>.km-search{display:flex;gap:8px;align-items:center}.km-search input{flex:1}.km-results{display:grid;gap:10px}.km-result{display:flex;gap:12px;align-items:center;padding:10px;border:1px solid var(--border);border-radius:10px}.km-result img{width:120px;height:68px;object-fit:cover;border-radius:7px}.km-result-main{flex:1}.km-result small{display:block;color:#8b96a8;margin-top:3px}</style>
-<div class='card'><h2>KOJA MUSIC — Search &amp; Add Real Music Videos</h2><p>Search official music videos and add them to the KOJA MUSIC feed.</p><div class='km-search'><input id='kmq' placeholder='Search artist or song, e.g. Zambian Afrobeats'><button class='btn' type='button' onclick='kmSearch()'>Search</button></div><div id='kmstatus' class='small' style='margin-top:8px'></div><div id='kmresults' class='km-results' style='margin-top:12px'></div></div>
+<div class='card'><h2>KOJA MUSIC — Search &amp; Add Real Music Videos</h2><p>Search public music videos and add them to the KOJA MUSIC feed. No YouTube API key is required.</p><div class='km-search'><input id='kmq' placeholder='Search artist or song, e.g. Zambian Afrobeats'><button class='btn' type='button' onclick='kmSearch()'>Search</button></div><div id='kmstatus' class='small' style='margin-top:8px'></div><div id='kmresults' class='km-results' style='margin-top:12px'></div></div>
 <div class='card'><h3>Manual URL</h3><form method='post'><label>Song title</label><input name='title' required><label>Artist</label><input name='artist_name' required><label>Country</label><input name='country'><label>Official video URL</label><input name='video_url' type='url' required><label>Source</label><input name='source' value='YouTube'><button class='btn' type='submit'>Add &amp; publish video</button></form></div>
 <div class='card'><h3>Added videos</h3>{% for v in videos %}<div style='padding:10px 0;border-bottom:1px solid var(--border)'><strong>{{ v.title }}</strong> — {{ v.artist_name }}{% if v.country %} · {{ v.country }}{% endif %}</div>{% else %}<p>No external videos yet.</p>{% endfor %}</div>
-<script>async function kmSearch(){const q=document.getElementById('kmq').value.trim(),out=document.getElementById('kmresults'),st=document.getElementById('kmstatus');if(!q)return;st.textContent='Searching...';out.innerHTML='';try{const r=await fetch('/admin/music/real-videos/search?q='+encodeURIComponent(q));const d=await r.json();if(!d.configured){st.textContent='Set YOUTUBE_API_KEY on Render to enable in-app search.';return}st.textContent=(d.results||[]).length+' results';(d.results||[]).forEach(v=>{const el=document.createElement('div');el.className='km-result';el.innerHTML='<img src="'+(v.thumbnail||'')+'"><div class="km-result-main"><strong>'+esc(v.title)+'</strong><small>'+esc(v.artist)+'</small></div><button class="btn" type="button">Add</button>';el.querySelector('button').onclick=()=>kmAdd(v);out.appendChild(el)})}catch(e){st.textContent='Search failed.'}}function esc(x){return String(x||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function kmAdd(v){const f=new FormData();f.append('title',v.title);f.append('artist_name',v.artist);f.append('country','');f.append('video_url',v.url);f.append('source','YouTube');const r=await fetch('/admin/music/real-videos',{method:'POST',body:f});if(r.ok)location.reload();}</script>
+<script>async function kmSearch(){const q=document.getElementById('kmq').value.trim(),out=document.getElementById('kmresults'),st=document.getElementById('kmstatus');if(!q)return;st.textContent='Searching...';out.innerHTML='';try{const r=await fetch('/admin/music/real-videos/search?q='+encodeURIComponent(q));const d=await r.json();if(!d.configured){st.textContent='No API key required. Searching public YouTube results...';return}st.textContent=(d.results||[]).length+' results';(d.results||[]).forEach(v=>{const el=document.createElement('div');el.className='km-result';el.innerHTML='<img src="'+(v.thumbnail||'')+'"><div class="km-result-main"><strong>'+esc(v.title)+'</strong><small>'+esc(v.artist)+'</small></div><button class="btn" type="button">Add</button>';el.querySelector('button').onclick=()=>kmAdd(v);out.appendChild(el)})}catch(e){st.textContent='Search failed.'}}function esc(x){return String(x||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function kmAdd(v){const f=new FormData();f.append('title',v.title);f.append('artist_name',v.artist);f.append('country','');f.append('video_url',v.url);f.append('source','YouTube');const r=await fetch('/admin/music/real-videos',{method:'POST',body:f});if(r.ok)location.reload();}</script>
 """, videos=videos)
 
 
