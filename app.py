@@ -19,7 +19,7 @@ from urllib.parse import urlparse, parse_qs, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote, quote_plus
+from urllib.parse import quote, unquote
 
 import requests
 from dotenv import load_dotenv
@@ -956,6 +956,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('research') }}">Research</a>
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
+<a href="{{ url_for('koja_music_home') }}">KOJA MUSIC</a>
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
@@ -977,7 +978,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
 <a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_music') }}">KOJA MUSIC Rights</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
 {% else %}
@@ -12860,96 +12861,76 @@ def koja_nexus_jobs_api():
 
 
 def _africa_now_panel_html():
-    # AFRICA NOW is a single Africa information hub. KOJA Media is intentionally
-    # not used here; only media attached to an Africa Now source is rendered.
+    # Render a real cached item on the server so first paint does not depend on JavaScript.
     initial_rows = []
     try:
-        initial_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=40) or []
+        initial_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=30) or []
     except Exception:
         initial_rows = []
-
-    def _safe(value):
-        return escape(str(value or ""), quote=True)
-
-    # Prefer a live item, otherwise the highest-scoring non-job story.
-    initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False and r.get("is_live") and r.get("category") != "Jobs & Opportunities"), None)
-    if initial is None:
-        initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False and r.get("category") != "Jobs & Opportunities"), None)
+    initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False and r.get("category") != "Jobs & Opportunities"), None)
     if initial is None:
         initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False), None)
-
+    def _safe(value):
+        return escape(str(value or ""), quote=True)
     if initial:
-        live = bool(initial.get("is_live"))
-        if initial.get("video_url"):
-            media = '<video src="' + _safe(initial.get("video_url")) + '" muted playsinline controls preload="metadata"></video>'
-        elif initial.get("image_url"):
+        is_job = initial.get("category") == "Jobs & Opportunities"
+        if initial.get("image_url"):
             media = '<img src="' + _safe(initial.get("image_url")) + '" alt="" loading="eager">'
+        elif initial.get("video_url"):
+            media = '<video src="' + _safe(initial.get("video_url")) + '" muted playsinline controls preload="metadata"></video>'
         else:
-            media = '<div class="anx-generated anx-boot"><span class="anx-orbit"></span><strong>KOJA VISUAL</strong><small>AFRICA NOW · VISUAL STORY</small></div>'
+            media = '<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>'
         href = _safe(initial.get("url"))
-        title = _safe(initial.get("title") or "Top Africa story")
-        category = _safe(initial.get("category") or "Top Stories")
+        title = _safe(initial.get("title") or "Latest report")
+        category = _safe(initial.get("category") or "Africa News")
         country = _safe(initial.get("country") or "Africa")
         summary = _safe(initial.get("summary") or ("Latest report from " + str(initial.get("source_name") or "source")))
-        live_badge = '<span class="anx-live">● LIVE</span>' if live else ''
-        first_html = media + '<div class="anx-overlay"><div class="anx-kicker">' + live_badge + ' ' + category + ' · ' + country + '</div><div class="anx-title">' + title + '</div><div class="anx-summary">' + summary + '</div><a class="anx-open" href="' + href + '" target="_blank" rel="noopener noreferrer">' + ('Watch / Open Live Story' if live else 'Open Story') + '</a></div>'
+        label = "Open original vacancy" if is_job else "Open story"
+        first_html = media + '<div class="anx-overlay"><div class="anx-kicker">' + category + ' · ' + country + '</div><div class="anx-title">' + title + '</div><div class="anx-summary">' + summary + '</div><a class="anx-open" href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + '</a></div>'
     else:
-        first_html = '<div class="anx-generated anx-boot"><span class="anx-orbit"></span><strong>AFRICA NOW</strong><small>Collecting the latest stories across Africa…</small></div>'
-
+        first_html = '<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Stories are being collected. This screen will update automatically.</span></div>'
     template = r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
-<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">TOP STORIES · BUSINESS · JOBS · HEALTH · TECHNOLOGY · EDUCATION · SPORTS · MORE</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
-<div class="anx-screen" id="anxScreen">
-  <div class="anx-main" id="anxMain">__AFRICA_NOW_FIRST_STORY__</div>
-  <div class="anx-section anx-top" id="anxTopSection"><div class="anx-section-head"><div><strong>TOP STORIES</strong><span>Major developments across Africa</span></div><span class="anx-count" id="anxTopCount"></span></div><div class="anx-row" id="anxTop"></div></div>
-  <div class="anx-section" id="anxBusinessSection"><div class="anx-section-head"><div><strong>BUSINESS & ECONOMY</strong><span>Companies · markets · investment · trade</span></div><span class="anx-count" id="anxBusinessCount"></span></div><div class="anx-row" id="anxBusiness"></div></div>
-  <div class="anx-section" id="anxJobsSection"><div class="anx-section-head"><div><strong>JOBS & OPPORTUNITIES</strong><span>Jobs · internships · scholarships · grants · opportunities</span></div><span class="anx-count" id="anxJobsCount"></span></div><div class="anx-row" id="anxJobs"></div></div>
-  <div class="anx-section" id="anxHealthSection"><div class="anx-section-head"><div><strong>HEALTH</strong><span>Health · healthcare · public health</span></div><span class="anx-count" id="anxHealthCount"></span></div><div class="anx-row" id="anxHealth"></div></div>
-  <div class="anx-section" id="anxTechnologySection"><div class="anx-section-head"><div><strong>TECHNOLOGY</strong><span>AI · digital · telecoms · innovation</span></div><span class="anx-count" id="anxTechnologyCount"></span></div><div class="anx-row" id="anxTechnology"></div></div>
-  <div class="anx-section" id="anxEducationSection"><div class="anx-section-head"><div><strong>EDUCATION</strong><span>Universities · research · scholarships</span></div><span class="anx-count" id="anxEducationCount"></span></div><div class="anx-row" id="anxEducation"></div></div>
-  <div class="anx-section" id="anxPoliticsSection"><div class="anx-section-head"><div><strong>POLITICS & GOVERNMENT</strong><span>Governments · elections · policy</span></div><span class="anx-count" id="anxPoliticsCount"></span></div><div class="anx-row" id="anxPolitics"></div></div>
-  <div class="anx-section" id="anxSportsSection"><div class="anx-section-head"><div><strong>SPORTS</strong><span>Football · athletics · major sporting events</span></div><span class="anx-count" id="anxSportsCount"></span></div><div class="anx-row" id="anxSports"></div></div>
-  <div class="anx-section" id="anxScienceSection"><div class="anx-section-head"><div><strong>SCIENCE & RESEARCH</strong><span>Science · discoveries · environment</span></div><span class="anx-count" id="anxScienceCount"></span></div><div class="anx-row" id="anxScience"></div></div>
-  <div class="anx-section" id="anxCultureSection"><div class="anx-section-head"><div><strong>CULTURE & TRAVEL</strong><span>Culture · tourism · arts · entertainment</span></div><span class="anx-count" id="anxCultureCount"></span></div><div class="anx-row" id="anxCulture"></div></div>
-</div>
-<div class="anx-foot"><span>AFRICA NOW · Source media only · KOJA-generated visuals are clearly labelled</span><span id="anxProgress">0 stories</span></div>
+<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">NEWS · JOBS · OPPORTUNITIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Cached story ready · Updating automatically…</div></div>
+<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain">__AFRICA_NOW_FIRST_STORY__</div></div>
+<div class="anx-foot"><span>Stories update automatically</span><span id="anxProgress">1 / 1</span></div>
 </section>
 <style>
 .anx-panel{display:block!important;visibility:visible!important;opacity:1!important;position:relative;z-index:2;width:100%;box-sizing:border-box;margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}
-.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.06em}.anx-updated{font-size:10px;color:#91a4b8;white-space:nowrap}.anx-screen{background:#06101b}.anx-main{position:relative;min-height:410px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:410px;object-fit:cover;display:block}.anx-main video{background:#000}.anx-placeholder{height:410px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3;padding:24px;box-sizing:border-box}.anx-overlay{position:absolute;inset:auto 0 0;padding:25px;background:linear-gradient(transparent,rgba(0,0,0,.96));padding-top:145px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.anx-live{color:#ff7777;font-weight:900}.anx-title{font-size:clamp(22px,4vw,40px);line-height:1.12;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:950px;line-height:1.5;max-height:76px;overflow:auto}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 13px;border-radius:8px;font-size:11px;font-weight:800}.anx-section{padding:18px 16px 3px}.anx-top{padding-top:20px}.anx-section-head{display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:10px}.anx-section-head strong{font-size:15px;letter-spacing:.02em}.anx-section-head span:not(.anx-count){display:block;color:#71879d;font-size:10px;margin-top:3px}.anx-count{font-size:10px;color:#7891a8;white-space:nowrap}.anx-row{display:flex;gap:11px;overflow-x:auto;scrollbar-width:thin;padding:1px 1px 11px;scroll-snap-type:x proximity}.anx-card{flex:0 0 245px;min-height:225px;border:1px solid rgba(255,255,255,.10);border-radius:14px;overflow:hidden;background:#0b1a2a;scroll-snap-align:start;display:flex;flex-direction:column}.anx-card-media{height:128px;background:#02070d;position:relative;overflow:hidden}.anx-card-media img,.anx-card-media video{width:100%;height:100%;object-fit:cover;display:block}.anx-card-body{padding:10px 11px;display:flex;flex-direction:column;gap:5px;flex:1}.anx-card-kicker{font-size:9px;color:#69bdd3;font-weight:800;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.anx-card-title{font-size:13px;font-weight:800;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.anx-card-summary{font-size:10px;color:#9dafc0;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.anx-card-link{margin-top:auto;color:#a9d9ed;text-decoration:none;font-size:10px;font-weight:800}.anx-generated{height:100%;min-height:128px;display:grid;place-content:center;text-align:center;gap:5px;position:relative;overflow:hidden;background:radial-gradient(circle at 50% 45%,#174c67 0,#0b2439 34%,#030a12 76%)}.anx-generated strong{font-size:15px;letter-spacing:.08em;position:relative;z-index:2}.anx-generated small{font-size:8px;color:#91b5c8;letter-spacing:.08em;position:relative;z-index:2}.anx-orbit{position:absolute;width:70px;height:70px;border:1px solid rgba(105,189,211,.5);border-radius:50%;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:0 0 28px rgba(58,170,210,.2);animation:anxOrbit 4s linear infinite}.anx-orbit:after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:#69bdd3;left:-3px;top:31px;box-shadow:0 0 12px #69bdd3}.anx-live-dot{position:absolute;right:8px;top:8px;background:#d33b3b;color:#fff;border-radius:999px;padding:4px 6px;font-size:8px;font-weight:900}.anx-video-tag{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.72);border-radius:6px;padding:4px 6px;font-size:8px;font-weight:800}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:9px}
-@keyframes anxOrbit{to{transform:translate(-50%,-50%) rotate(360deg)}}
-@media(max-width:700px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0}.anx-updated{white-space:normal}.anx-main{min-height:320px}.anx-main img,.anx-main video{height:320px}.anx-overlay{padding:18px;padding-top:105px}.anx-title{font-size:25px}.anx-section{padding-left:12px;padding-right:12px}.anx-card{flex-basis:215px;min-height:215px}.anx-card-media{height:112px}}
+.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{min-height:390px}.anx-main{position:relative;min-height:390px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:390px;object-fit:cover;display:block}.anx-main video{background:#000}.anx-placeholder{height:390px;min-height:390px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3;padding:24px;box-sizing:border-box}.anx-placeholder strong{font-size:clamp(25px,5vw,46px);letter-spacing:.05em;color:#fff}.anx-placeholder span{font-size:11px;color:#74879b}.anx-overlay{position:absolute;inset:auto 0 0;padding:24px;background:linear-gradient(transparent,rgba(0,0,0,.95));padding-top:120px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800}.anx-title{font-size:clamp(21px,4vw,38px);line-height:1.15;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:900px;line-height:1.5;max-height:90px;overflow:auto}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-video-link{display:inline-block;margin-left:7px;margin-top:11px;background:rgba(255,255,255,.14);color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-boot{background:linear-gradient(135deg,#07111e,#102b45)}
+@media(max-width:650px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0 0}.anx-screen,.anx-main{min-height:310px}.anx-main img,.anx-main video{height:310px}.anx-placeholder{min-height:310px;height:310px}.anx-overlay{padding:18px;padding-top:100px}.anx-title{font-size:24px}.anx-foot{font-size:9px}}
 </style>
 <script>
 (function(){
  const main=document.getElementById('anxMain'),updated=document.getElementById('anxUpdated'),progress=document.getElementById('anxProgress');
  if(!main)return;
- const groups={
-   business:{section:'anxBusinessSection',row:'anxBusiness',count:'anxBusinessCount',keys:['Business & Economy','Business','Markets','Economy']},
-   jobs:{section:'anxJobsSection',row:'anxJobs',count:'anxJobsCount',keys:['Jobs & Opportunities']},
-   health:{section:'anxHealthSection',row:'anxHealth',count:'anxHealthCount',keys:['Health']},
-   technology:{section:'anxTechnologySection',row:'anxTechnology',count:'anxTechnologyCount',keys:['Technology','Tech']},
-   education:{section:'anxEducationSection',row:'anxEducation',count:'anxEducationCount',keys:['Education']},
-   politics:{section:'anxPoliticsSection',row:'anxPolitics',count:'anxPoliticsCount',keys:['Politics & Government','Politics','Government']},
-   sports:{section:'anxSportsSection',row:'anxSports',count:'anxSportsCount',keys:['Sports']},
-   science:{section:'anxScienceSection',row:'anxScience',count:'anxScienceCount',keys:['Science & Research','Science','Research','Environment']},
-   culture:{section:'anxCultureSection',row:'anxCulture',count:'anxCultureCount',keys:['Culture & Travel','Culture','Travel','Arts','Entertainment']}
- };
- function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
- function categoryOf(h){const c=String(h.category||'').trim();const low=c.toLowerCase();if(low.includes('job')||low.includes('opportun'))return'jobs';if(low.includes('business')||low.includes('econom')||low.includes('market'))return'business';if(low.includes('health')||low.includes('medical'))return'health';if(low.includes('tech')||low.includes('digital')||low.includes('ai'))return'technology';if(low.includes('education')||low.includes('university')||low.includes('scholar'))return'education';if(low.includes('politic')||low.includes('government')||low.includes('election'))return'politics';if(low.includes('sport')||low.includes('football')||low.includes('athlet'))return'sports';if(low.includes('science')||low.includes('research')||low.includes('environment'))return'science';if(low.includes('culture')||low.includes('travel')||low.includes('tour')||low.includes('art')||low.includes('entertain'))return'culture';return null;}
- function isTop(h){return !h.is_live && categoryOf(h)!=='jobs' && !categoryOf(h);}
- function generatedVisual(h){return '<div class="anx-generated"><span class="anx-orbit"></span><strong>KOJA VISUAL</strong><small>'+esc((h.category||'AFRICA NOW').toUpperCase())+' · GENERATED VISUAL</small></div>';}
- function mediaHtml(h){let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video><span class="anx-video-tag">SOURCE VIDEO</span>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="lazy">';}else{media=generatedVisual(h);}if(h.is_live)media+='<span class="anx-live-dot">● LIVE</span>';return media;}
- function renderLead(h){if(!h)return;let media=mediaHtml(h);const live=!!h.is_live;main.innerHTML='<div class="anx-card-media" style="height:100%">'+media+'</div><div class="anx-overlay"><div class="anx-kicker">'+(live?'<span class="anx-live">● LIVE</span> ':'')+esc(h.category||'Top Stories')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Top Africa story')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(live?'Watch / Open Live Story':'Open Story')+'</a></div>'}
- function renderCard(h){return '<article class="anx-card"><div class="anx-card-media">'+mediaHtml(h)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(h.category||'Africa')+' · '+esc(h.country||'Africa')+'</div><div class="anx-card-title">'+esc(h.title||'Africa story')+'</div><div class="anx-card-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-card-link" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(h.category==='Jobs & Opportunities'?'VIEW OPPORTUNITY':'READ STORY')+' →</a></div></article>';}
- function put(groupKey,arr){const g=groups[groupKey],sec=document.getElementById(g.section),row=document.getElementById(g.row),count=document.getElementById(g.count);if(!g||!sec||!row)return;if(!arr.length){sec.style.display='none';return;}sec.style.display='block';row.innerHTML=arr.slice(0,10).map(renderCard).join('');if(count)count.textContent=arr.length+' available';}
- function renderSections(items){const top=items.filter(isTop).slice(0,10);const live=items.filter(h=>h.is_live&&categoryOf(h)!=='jobs');const topAll=[...live,...top.filter(h=>!live.includes(h))].slice(0,10);put('business',items.filter(h=>categoryOf(h)==='business'));put('jobs',items.filter(h=>categoryOf(h)==='jobs'));put('health',items.filter(h=>categoryOf(h)==='health'));put('technology',items.filter(h=>categoryOf(h)==='technology'));put('education',items.filter(h=>categoryOf(h)==='education'));put('politics',items.filter(h=>categoryOf(h)==='politics'));put('sports',items.filter(h=>categoryOf(h)==='sports'));put('science',items.filter(h=>categoryOf(h)==='science'));put('culture',items.filter(h=>categoryOf(h)==='culture'));const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');if(topAll.length){ts.style.display='block';tr.innerHTML=topAll.map(renderCard).join('');tc.textContent=topAll.length+' available';}else{ts.style.display='none';}progress.textContent=items.length+' stories';}
- async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){const live=items.find(x=>x.is_live&&categoryOf(x)!=='jobs');const lead=live||items.find(x=>categoryOf(x)!=='jobs')||items[0];renderLead(lead);renderSections(items);updated.textContent=(live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached Africa story shown · retrying feed';}finally{clearTimeout(timer);}}
- load();setInterval(load,60000);
+ let items=[], index=0, rotateTimer=null;
+ function esc(v){return String(v||'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));}
+ function renderItem(){
+   if(!items.length)return;
+   const h=items[index%items.length]||{}; let media='';
+   if(h.video_url)media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>';
+   else if(h.image_url)media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';
+   const isJob=(h.category||'')==='Jobs & Opportunities';
+   const fallback=media?'':'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>';
+   main.innerHTML=(media||fallback)+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Latest report')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">'+(isJob?'Open original vacancy':'Open story')+'</a></div>';
+   if(progress)progress.textContent=(index+1)+' / '+items.length;
+ }
+ function startRotation(){clearInterval(rotateTimer);if(items.length>1)rotateTimer=setInterval(()=>{index=(index+1)%items.length;renderItem();},30000);}
+ async function load(){
+   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);
+   try{const r=await fetch('/api/nexus/africa-now?limit=20',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();items=Array.isArray(d.items)?d.items:[];
+     if(items.length){index=0;renderItem();startRotation();updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}
+     else{updated.textContent='Waiting for fresh stories…';}
+   }catch(e){updated.textContent='Cached story shown · retrying live feed';}
+   finally{clearTimeout(timer);}
+ }
+ async function poll(){await load();setTimeout(poll,items.length?60000:7000);}poll();
 })();
 </script>
 """
     return template.replace("__AFRICA_NOW_FIRST_STORY__", first_html)
+
 
 
 _start_africa_now_worker()
@@ -13013,37 +12994,9 @@ def _twelve_quote(symbol):
         return None
     return {"symbol":symbol,"price":body.get("close"),"change":body.get("change"),"change_percent":body.get("percent_change"),"volume":body.get("volume"),"previous_close":body.get("previous_close"),"latest_trading_day":body.get("datetime"),"provider":"Twelve Data","freshness":"Provider quote; exchange delay/entitlement depends on market/plan","source_url":"https://twelvedata.com/"}
 
-def _yahoo_quote(symbol):
-    """Public fallback quote feed used when configured providers are unavailable."""
-    symbol = clean(symbol).upper()
-    if not symbol:
-        return None
-    try:
-        body = _market_http_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}", {"range":"5d","interval":"1d","events":"div,splits"})
-        result = ((body or {}).get("chart") or {}).get("result") or []
-        meta = (result[0].get("meta") or {}) if result else {}
-        price = meta.get("regularMarketPrice")
-        prev = meta.get("previousClose") or meta.get("chartPreviousClose")
-        if price is None and result:
-            closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
-            closes = [float(x) for x in closes if x is not None]
-            if closes:
-                price = closes[-1]
-                prev = prev or (closes[-2] if len(closes) > 1 else None)
-        if price is None:
-            return None
-        change = (float(price) - float(prev)) if prev not in (None, "") else None
-        pct = (change / float(prev) * 100.0) if change is not None and float(prev) else None
-        return {"symbol":symbol,"price":price,"change":change,"change_percent":pct,"volume":meta.get("regularMarketVolume"),"previous_close":prev,"latest_trading_day":meta.get("regularMarketTime"),"provider":"Public market fallback","freshness":"Public delayed/market-feed fallback","source_url":"https://finance.yahoo.com/"}
-    except Exception as exc:
-        logger.warning("Public market fallback failed for %s: %s", symbol, exc)
-        return None
-
 def _market_quote(symbol):
     symbol = clean(symbol).upper()
-    if not symbol:
-        return None
-    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
+    return _alpha_quote(symbol) or _twelve_quote(symbol) if symbol else None
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13120,7 +13073,7 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
@@ -13188,33 +13141,6 @@ def _twelve_fx_rate(symbol):
         return None
     return rate
 
-def _yahoo_time_series(symbol, interval="1day", outputsize=30):
-    symbol=clean(symbol).upper()
-    if not symbol:
-        return []
-    interval_map={"1day":"1d","1week":"1wk","1month":"1mo"}
-    yint=interval_map.get(interval,"1d")
-    try:
-        period2=int(time.time())
-        span={"1d":"1y","1wk":"5y","1mo":"10y"}.get(yint,"1y")
-        import datetime as _dt
-        days={"1y":365,"5y":1825,"10y":3650}.get(span,365)
-        period1=period2-days*86400
-        body=_market_http_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}", {"period1":period1,"period2":period2,"interval":yint,"events":"div,splits"})
-        result=((body or {}).get("chart") or {}).get("result") or []
-        if not result:
-            return []
-        r=result[0]; times=r.get("timestamp") or []
-        closes=((((r.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
-        out=[]
-        for ts,close in zip(times,closes):
-            if close is not None:
-                out.append({"datetime":_dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime("%Y-%m-%d"),"close":close})
-        return out[-max(1,min(int(outputsize),100)): ]
-    except Exception as exc:
-        logger.warning("Public chart fallback failed for %s: %s", symbol, exc)
-        return []
-
 @app.route('/api/markets/chart')
 def koja_market_chart_api():
     symbol=clean(request.args.get('symbol') or 'AAPL').upper()
@@ -13231,39 +13157,7 @@ def koja_market_chart_api():
     if not values and TWELVEDATA_API_KEY:
         values=_twelve_time_series(symbol,interval,outputsize)
         if values: provider="Twelve Data"
-    if not values:
-        values=_yahoo_time_series(symbol,interval,outputsize)
-        if values: provider="Public market fallback"
     return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
-
-def _public_fx_rates(pairs):
-    """Public FX fallback using ECB-derived rates via Frankfurter."""
-    try:
-        symbols=[]
-        for pair,_,_ in pairs:
-            base,quote=pair.split('/',1)
-            if base != "USD":
-                symbols.append(base)
-            if quote != "USD":
-                symbols.append(quote)
-        symbols=sorted(set(symbols))
-        params={"base":"USD","symbols":",".join(symbols)}
-        body=_market_http_json("https://api.frankfurter.app/latest",params) or {}
-        rates={"USD":1.0}
-        for k,v in (body.get("rates") or {}).items():
-            try: rates[k]=float(v)
-            except Exception: pass
-        out=[]
-        for symbol,base_name,quote_name in pairs:
-            base,quote=symbol.split('/',1)
-            if base not in rates or quote not in rates:
-                continue
-            rate=rates[quote]/rates[base]
-            out.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Public FX fallback','freshness':'ECB-derived public reference rate'})
-        return out
-    except Exception as exc:
-        logger.warning("Public FX fallback failed: %s", exc)
-        return []
 
 @app.route('/api/markets/fx')
 def koja_market_fx_api():
@@ -13293,31 +13187,13 @@ def koja_market_fx_api():
             _koja_fx_cache['updated_at']=now
         return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':None})
     if cached:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
-    public_rates=_public_fx_rates(KOJA_FX_PAIRS)
-    if public_rates:
-        with _koja_market_lock:
-            _koja_fx_cache['rates']={x['symbol']:x for x in public_rates}
-            _koja_fx_cache['updated_at']=now
-        return jsonify({'rates':public_rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':None})
-    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':_koja_market_diag.get('last_error') or 'Market data temporarily unavailable.'})
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
+    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':_koja_market_diag.get('last_error') or 'No financial-data provider is configured. Add TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY in Render Environment.'})
 
 
 # ============================================================
 # KOJA NEXUS — PUBLIC AFRICA SERVICE DIRECTORY
 # ============================================================
-KOJA_AFRICA_54 = [
-    ("DZ","Algeria"),("AO","Angola"),("BJ","Benin"),("BW","Botswana"),("BF","Burkina Faso"),("BI","Burundi"),
-    ("CV","Cabo Verde"),("CM","Cameroon"),("CF","Central African Republic"),("TD","Chad"),("KM","Comoros"),("CG","Republic of the Congo"),
-    ("CI","Côte d’Ivoire"),("CD","Democratic Republic of the Congo"),("DJ","Djibouti"),("EG","Egypt"),("GQ","Equatorial Guinea"),("ER","Eritrea"),
-    ("SZ","Eswatini"),("ET","Ethiopia"),("GA","Gabon"),("GM","The Gambia"),("GH","Ghana"),("GN","Guinea"),("GW","Guinea-Bissau"),
-    ("KE","Kenya"),("LS","Lesotho"),("LR","Liberia"),("LY","Libya"),("MG","Madagascar"),("MW","Malawi"),("ML","Mali"),("MR","Mauritania"),
-    ("MU","Mauritius"),("MA","Morocco"),("MZ","Mozambique"),("NA","Namibia"),("NE","Niger"),("NG","Nigeria"),("RW","Rwanda"),
-    ("ST","São Tomé and Príncipe"),("SN","Senegal"),("SC","Seychelles"),("SL","Sierra Leone"),("SO","Somalia"),("ZA","South Africa"),
-    ("SS","South Sudan"),("SD","Sudan"),("TZ","Tanzania"),("TG","Togo"),("TN","Tunisia"),("UG","Uganda"),("ZM","Zambia"),("ZW","Zimbabwe")
-]
-KOJA_WORLD_COUNTRIES = dict(KOJA_AFRICA_54)
-
 KOJA_WORLD_CATEGORIES = [
     "Government Services", "Health & Medical", "Universities & Education",
     "Defence & Armed Forces", "Jobs & Labour", "Business & Company Registration",
@@ -13426,7 +13302,7 @@ def koja_world():
     query, country, category = clean(request.args.get("q")), clean(request.args.get("country")), clean(request.args.get("category"))
     filtered = [r for r in rows if _world_matches(r, query, country, category)]
     filtered.sort(key=lambda r: (str(r.get("country_name") or ""), int(r.get("sort_order") or 100), _world_service_name(r)))
-    countries = dict(KOJA_WORLD_COUNTRIES)
+    countries = {}
     for r in rows:
         code = clean(r.get("country_code")).upper()
         if code: countries[code] = _world_country(r)
@@ -13440,33 +13316,13 @@ def koja_world():
 .kw-hero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.kw-hero p{margin:0;max-width:900px;color:rgba(255,255,255,.86);line-height:1.6}.kw-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.kw-stat{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:15px;padding:14px}.kw-stat strong{display:block;font-size:25px}.kw-stat span{font-size:12px;color:rgba(255,255,255,.72)}
 .kw-filter{display:grid;grid-template-columns:1.7fr 1fr 1.2fr auto;gap:10px;align-items:end;margin-bottom:18px}.kw-filter label{font-size:12px;font-weight:700;display:block;margin-bottom:6px}.kw-filter input,.kw-filter select{width:100%;box-sizing:border-box}.kw-section{margin-top:18px}.kw-section h2{margin-bottom:5px}.kw-muted{color:#758397;font-size:13px}.kw-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px}.kw-card{border:1px solid rgba(90,110,135,.24);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.07)}
 .kw-country{font-size:11px;font-weight:800;letter-spacing:.08em;color:#0b4ea2;text-transform:uppercase}.kw-card h3{margin:7px 0 5px;font-size:18px}.kw-card p{font-size:13px;line-height:1.55;color:#657386}.kw-badges{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0}.kw-badge{font-size:10px;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;font-weight:800}.kw-badge.pending{background:#fff4dc;color:#8a5b00}.kw-actions{display:flex;gap:8px;flex-wrap:wrap}.kw-actions .btn{font-size:12px}.kw-cat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kw-cat{display:block;border:1px solid rgba(90,110,135,.20);border-radius:14px;padding:14px;text-decoration:none;color:inherit;background:var(--card-bg,#fff)}.kw-cat strong{display:block}.kw-cat span{font-size:12px;color:#718096}.kw-empty{padding:35px;text-align:center;border:1px dashed #9aa8b8;border-radius:16px}
-.kw-spotlight{border:1px solid rgba(11,78,162,.15);border-radius:20px;padding:18px;background:linear-gradient(180deg,rgba(11,78,162,.045),transparent)}.kw-spot-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.kw-spot-head h2{margin:0 0 4px}.kw-spot-head>strong{font-size:12px;letter-spacing:.08em;color:#0b4ea2;white-space:nowrap}
 @media(max-width:1000px){.kw-grid{grid-template-columns:repeat(2,1fr)}.kw-cat-grid{grid-template-columns:repeat(2,1fr)}.kw-filter{grid-template-columns:1fr 1fr}.kw-filter .kw-search{grid-column:1/-1}.kw-stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.kw-grid,.kw-cat-grid,.kw-filter{grid-template-columns:1fr}.kw-filter .kw-search{grid-column:auto}.kw-stats{grid-template-columns:1fr 1fr}.kw-hero{padding:21px}}
 </style>
 <div class="kw-shell">{{ africa_now_panel|safe }}{{ market_data_panel|safe }}<section class="kw-hero"><h1>KOJA NEXUS</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
-<section class="kw-section kw-spotlight">
-  <div class="kw-spot-head"><div><h2>AFRICA COUNTRY SPOTLIGHT</h2><p class="kw-muted">KOJA NEXUS rotates through all 54 African countries automatically. Services shown come from the KOJA directory; official providers remain responsible for the service.</p></div><strong id="kwSpotCountry">AFRICA</strong></div>
-  <div id="kwSpotGrid" class="kw-grid"><div class="kw-empty" style="grid-column:1/-1">Loading country resources…</div></div>
-</section>
 <form method="get" class="card kw-filter"><div class="kw-search"><label for="kwq">Search KOJA NEXUS</label><input id="kwq" name="q" value="{{ query }}" placeholder="e.g. immigration, university, tax, health, jobs"></div><div><label for="kwcountry">Country</label><select id="kwcountry" name="country"><option value="">All countries</option>{% for code,name in countries|dictsort %}<option value="{{ code }}" {% if country|upper==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select></div><div><label for="kwcategory">Category</label><select id="kwcategory" name="category"><option value="">All categories</option>{% for cat in categories %}<option value="{{ cat }}" {% if category|lower==cat|lower %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div><div><button class="btn" type="submit">Search</button></div></form>
 {% if not query and not country and not category %}<section class="kw-section"><h2>Browse by service</h2><div class="kw-cat-grid">{% for cat in categories %}<a class="kw-cat" href="{{ url_for('koja_world',category=cat) }}"><strong>{{ cat }}</strong><span>{{ category_counts.get(cat,0) }} services</span></a>{% endfor %}</div></section>{% endif %}
 <section class="kw-section"><h2>{% if query or country or category %}Search results{% else %}All public services{% endif %}</h2><p class="kw-muted">{{ filtered|length }} service{% if filtered|length != 1 %}s{% endif %} shown. Verification pending services remain visible so users can discover them, but KOJA does not represent them as verified.</p><div class="kw-grid">{% for s in filtered %}<article class="kw-card"><div class="kw-country">{{ s.country_code or '' }} · {{ s.country_name or 'Africa' }}</div><h3>{{ service_name(s) }}</h3><div class="kw-muted">{{ s.category or 'Public Service' }}</div><p>{{ s.description or 'Official public service available through the listed provider.' }}</p><div class="kw-badges">{% if verified(s) %}<span class="kw-badge">Verified</span>{% else %}<span class="kw-badge pending">Verification pending</span>{% endif %}<span class="kw-badge">Official provider</span></div><div class="kw-actions"><a class="btn" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open service</a>{% if s.country_code %}<a class="btn secondary" href="{{ url_for('koja_world',country=s.country_code) }}">More {{ s.country_code }}</a>{% endif %}</div></article>{% else %}<div class="kw-empty" style="grid-column:1/-1"><h3>No matching services</h3><p>Try another country, category or search term.</p><a class="btn" href="{{ url_for('koja_world') }}">Show all KOJA NEXUS</a></div>{% endfor %}</div></section></div>
 <script>
-(function(){
-  var countries={{ KOJA_AFRICA_54|tojson }};
-  var spotGrid=document.getElementById('kwSpotGrid'), spotCountry=document.getElementById('kwSpotCountry'), index=0;
-  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
-  function renderCountry(code,name){
-    spotCountry.textContent=name.toUpperCase()+' · '+code;
-    fetch('{{ url_for("koja_world_services_api") }}?country='+encodeURIComponent(code)+'&limit=6',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
-      var rows=d.services||[];
-      if(!rows.length){spotGrid.innerHTML='<div class="kw-empty" style="grid-column:1/-1"><h3>'+esc(name)+'</h3><p>No KOJA-indexed public services are available for this country yet.</p><a class="btn secondary" href="{{ url_for("koja_world") }}?country='+encodeURIComponent(code)+'">Open country directory</a></div>';return;}
-      spotGrid.innerHTML=rows.slice(0,3).map(function(x){return '<article class="kw-card"><div class="kw-country">'+esc(x.country_code)+' · '+esc(x.country_name)+'</div><h3>'+esc(x.name)+'</h3><div class="kw-muted">'+esc(x.category||'Public Service')+'</div><p>'+esc(x.description||'Official public service available through the listed provider.')+'</p><div class="kw-actions"><a class="btn" href="'+esc(x.open_url)+'">Open service</a></div></article>';}).join('');
-    }).catch(function(){spotGrid.innerHTML='<div class="kw-empty" style="grid-column:1/-1">Country resources temporarily unavailable.</div>';});
-  }
-  function next(){var item=countries[index % countries.length];index++;renderCountry(item[0],item[1]);}
-  next(); setInterval(next,8000);
-})();
 (function(){
   var serviceCount={{ service_count|tojson }};
   if(serviceCount===0){
@@ -13481,7 +13337,7 @@ def koja_world():
   }
 })();
 </script>
-''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, KOJA_AFRICA_54=KOJA_AFRICA_54, africa_now_panel=_africa_now_panel_html(), market_data_panel=_market_panel_html())
+''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, africa_now_panel=_africa_now_panel_html(), market_data_panel=_market_panel_html())
 
 @app.route("/world/open/<service_id>")
 def koja_world_open(service_id):
@@ -13731,278 +13587,580 @@ const nexusAdminRows={{ rows|tojson }};
 function editNexus(id){const r=nexusAdminRows.find(x=>String(x.id)===String(id));if(!r)return;document.getElementById('nxa_id').value=r.id||'';document.getElementById('nxa_name').value=r.name||r.service_name||'';document.getElementById('nxa_code').value=r.country_code||'';document.getElementById('nxa_country').value=r.country_name||'';document.getElementById('nxa_category').value=r.category||'';document.getElementById('nxa_url').value=r.official_url||r.url||'';document.getElementById('nxa_description').value=r.description||'';document.getElementById('nxa_tags').value=(r.tags||[]).join(', ');document.getElementById('nxa_sort').value=r.sort_order||100;document.getElementById('nxa_active').value=(r.active===false||r.is_active===false)?'0':'1';window.scrollTo({top:0,behavior:'smooth'})}
 </script>
 ''', rows=rows, categories=KOJA_WORLD_CATEGORIES, service_name=_world_service_name, verified=_world_verified, active=_world_active)
+
+
 # ============================================================
-# KOJA MUSIC + RIGHTS CONTROL LAYER
-# Additive module: preserves the existing KOJA AFRICA application.
+# KOJA MUSIC RIGHTS & 100-SONG AUTHORISATION WORKFLOW V1
+# Additive module. Copyright/licensing status is explicit: a song
+# is never published merely because an artist uploaded it.
 # ============================================================
 
-KOJA_MUSIC_RIGHTS_VERSION = "2026.10.06-RIGHTS-100-V2"
+MUSIC_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".webm"}
+MUSIC_ARTWORK_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MUSIC_AGREEMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt"}
+MUSIC_GOAL = 100
 
 
-def _music_admin_user():
-    u = current_user() or {}
-    return bool(u.get("is_admin"))
+def _music_user_id():
+    return str((current_user() or {}).get("id") or "")
 
 
-def _music_artist_active(artist):
-    if not artist:
-        return False
-    return str(artist.get("status") or "").lower() in {"active", "published", "approved"} and not artist.get("suspended", False)
-
-
-def _music_track_rights_verified(track):
-    return str(track.get("rights_status") or "review_required").lower() == "verified"
-
-
-def _music_public_track(track):
-    artist = first_row("koja_music_artists", {"id": track.get("artist_id")}) if track.get("artist_id") else None
-    if not _music_artist_active(artist):
-        return False
-    status = str(track.get("status") or "draft").lower()
-    if status not in {"published", "active"}:
-        return False
-    # Rights verification is the final publication gate.
-    if not _music_track_rights_verified(track):
-        return False
-    return bool(first_nonempty(track.get("audio_url"), track.get("stream_url"), track.get("file_url"), track.get("video_url"), track.get("music_video_url"), track.get("visual_url")))
-
-
-def _music_media_url(track):
-    return first_nonempty(track.get("audio_url"), track.get("stream_url"), track.get("file_url"), track.get("video_url"), track.get("music_video_url"), track.get("visual_url"))
-
-
-def _music_youtube_embed(url):
-    u = clean(url)
-    if not u:
+def _music_public_url(path):
+    path = clean(path)
+    if not path or not SUPABASE_URL:
         return ""
+    prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/"
+    if path.startswith(prefix):
+        return path
+    return prefix + quote(path, safe="/")
+
+
+def _music_upload(file_obj, folder, allowed_exts):
+    if not file_obj or not file_obj.filename:
+        return None, "No file supplied."
+    filename = secure_filename(file_obj.filename) or f"upload-{uuid.uuid4().hex}"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in allowed_exts:
+        return None, f"Unsupported file type: {ext or 'unknown'}."
+    data = file_obj.read()
+    if not data:
+        return None, "The uploaded file is empty."
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        return None, f"File exceeds the {MAX_UPLOAD_MB} MB upload limit."
+    path = f"music/{folder}/{uuid.uuid4().hex}{ext}"
+    mime = file_obj.mimetype or "application/octet-stream"
     try:
-        p = urlparse(u)
-        host = (p.netloc or "").lower()
-        if "youtube.com" in host:
-            q = parse_qs(p.query).get("v", [""])[0]
-            if q:
-                return f"https://www.youtube.com/embed/{quote(q, safe='')}"
-            if p.path.startswith("/embed/"):
-                return u
-        if "youtu.be" in host:
-            vid = p.path.strip("/").split("/")[0]
-            if vid:
-                return f"https://www.youtube.com/embed/{quote(vid, safe='')}"
-    except Exception:
-        pass
-    return ""
+        r = requests.post(
+            sb_storage_url(path),
+            headers=sb_headers({"Content-Type": mime, "x-upsert": "false"}),
+            data=data,
+            timeout=90,
+        )
+        if not r.ok:
+            return None, r.text[:700]
+        return {"path": path, "url": _music_public_url(path), "mime": mime, "size": len(data)}, None
+    except Exception as exc:
+        logger.exception("KOJA MUSIC storage upload failed")
+        return None, str(exc)
 
 
-def _music_rows():
-    tracks = db_select("koja_music_tracks", order="created_at.desc", limit=500) or []
-    for t in tracks:
-        a = first_row("koja_music_artists", {"id": t.get("artist_id")}) if t.get("artist_id") else None
-        t["artist"] = a or {}
-        t["artist_active"] = _music_artist_active(a)
-        t["public_eligible"] = _music_public_track(t)
-        t["media_url"] = _music_media_url(t)
-        t["youtube_embed"] = _music_youtube_embed(t.get("video_url") or t.get("music_video_url") or t.get("visual_url"))
-    return tracks
+def _music_artist_for_user(uid, include_all=False):
+    if not uid:
+        return None
+    rows = db_select("koja_music_artists", {"user_id": uid}, limit=1)
+    if not rows:
+        return None
+    row = rows[0]
+    if not include_all and row.get("status") != "approved":
+        return row
+    return row
+
+
+def _music_track(track_id):
+    rows = db_select("koja_music_tracks", {"id": track_id}, limit=1)
+    return rows[0] if rows else None
+
+
+def _music_active_licence(track_id):
+    rows = db_select("koja_music_licences", {"track_id": track_id, "status": "active"}, order="created_at.desc", limit=10)
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        end = clean(r.get("end_date"))
+        if end:
+            try:
+                if datetime.fromisoformat(end.replace("Z", "+00:00")).date() < now.date():
+                    continue
+            except Exception:
+                pass
+        if as_bool(r.get("streaming_allowed")) and clean(r.get("agreement_path")):
+            return r
+    return None
+
+
+def _music_can_publish(track):
+    if not track:
+        return False
+    licence = _music_active_licence(track.get("id"))
+    return bool(
+        licence
+        and track.get("rights_status") == "verified"
+        and as_bool(track.get("rights_declaration"))
+    )
+
+
+def _music_rights(track_id):
+    rows = db_select("koja_music_rights", {"track_id": track_id}, limit=1)
+    return rows[0] if rows else {}
+
+
+def _music_rights_checklist(track_id):
+    r = _music_rights(track_id)
+    checks = {
+        "identity_verified": as_bool(r.get("identity_verified")),
+        "authority_verified": as_bool(r.get("authority_verified")),
+        "master_verified": as_bool(r.get("master_verified")),
+        "composition_verified": as_bool(r.get("composition_verified")),
+        "sample_verified": as_bool(r.get("sample_verified")),
+        "metadata_verified": as_bool(r.get("metadata_verified")),
+        "territory_verified": as_bool(r.get("territory_verified")),
+        "licence_terms_verified": as_bool(r.get("licence_terms_verified")),
+    }
+    return checks
+
+
+def _music_verification_missing(track):
+    if not track:
+        return ["track"]
+    rights = _music_rights(track.get("id"))
+    licence = _music_active_licence(track.get("id"))
+    missing = []
+    if not as_bool(track.get("rights_declaration")): missing.append("artist/rightsholder declaration")
+    if not rights or not clean(rights.get("master_owner")): missing.append("master owner")
+    if not rights or not clean(rights.get("composition_owner")): missing.append("composition/publishing owner")
+    if not rights or not as_bool(rights.get("identity_verified")): missing.append("identity verification")
+    if not rights or not as_bool(rights.get("authority_verified")): missing.append("authority-to-license verification")
+    if not rights or not as_bool(rights.get("master_verified")): missing.append("master-right verification")
+    if not rights or not as_bool(rights.get("composition_verified")): missing.append("composition/publishing verification")
+    if not rights or not as_bool(rights.get("sample_verified")): missing.append("sample/clearance verification")
+    if not rights or not as_bool(rights.get("metadata_verified")): missing.append("metadata verification")
+    if not rights or not as_bool(rights.get("territory_verified")): missing.append("territory verification")
+    if not rights or not as_bool(rights.get("licence_terms_verified")): missing.append("licence-terms verification")
+    if not licence: missing.append("active signed streaming licence")
+    return missing
+
+
+def _music_status_label(row):
+    if not row:
+        return "NOT FOUND"
+    if row.get("status") == "published" and row.get("rights_status") == "verified":
+        return "LIVE"
+    return str(row.get("rights_status") or row.get("status") or "PENDING").replace("_", " ").upper()
 
 
 @app.route("/music")
-def koja_music_public():
-    tracks = [t for t in _music_rows() if t.get("public_eligible")]
-    return render_page("KOJA MUSIC", r'''
-<style>
-.music-head{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;border-radius:18px;padding:28px;margin-bottom:18px}
-.music-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
-.music-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;overflow:hidden}
-.music-card img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:12px;background:#101828}
-.music-card audio{width:100%;margin-top:12px}
-.music-video{width:100%;aspect-ratio:16/9;border:0;border-radius:12px;background:#000}
-.music-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.music-tools button{width:auto;margin:0}
-.data-save{font-size:13px;color:var(--muted)}
-</style>
-<div class="music-head"><h1>KOJA MUSIC</h1><p>Authorised music discovery and playback from KOJA artists.</p><div class="music-tools"><button id="dataSaver" type="button">Data Saver: On</button><span class="data-save">Off-screen media is not loaded until needed.</span></div></div>
-<div class="music-grid" id="musicGrid">
-{% for t in tracks %}
-<article class="music-card" data-music-card>
-{% if t.get('cover_image_url') %}<img loading="lazy" src="{{ t.cover_image_url }}" alt="{{ t.title or 'Track' }} artwork">{% endif %}
-<h3>{{ t.title or 'Untitled' }}</h3><p class="small">{{ t.artist.get('artist_name') or t.artist.get('name') or 'Artist' }}{% if t.genre %} · {{ t.genre }}{% endif %}</p>
-{% if t.youtube_embed %}<iframe class="music-video" loading="lazy" data-src="{{ t.youtube_embed }}" title="{{ t.title or 'Music video' }}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>{% elif t.media_url %}<audio controls preload="none" data-src="{{ t.media_url }}"></audio>{% endif %}
-<button class="btn" type="button" data-play-id="{{ t.id }}">Record Play</button>
-</article>
-{% else %}<div class="card"><h3>No authorised music is published yet.</h3><p>Music appears here only after the artist is active and the track has verified rights.</p></div>{% endfor %}
-</div>
-<script>
-(function(){
- const cards=[...document.querySelectorAll('[data-music-card]')];
- let saver=localStorage.getItem('koja_music_data_saver')!=='off';
- const btn=document.getElementById('dataSaver');
- function label(){btn.textContent='Data Saver: '+(saver?'On':'Off');}
- label();
- btn.onclick=()=>{saver=!saver;localStorage.setItem('koja_music_data_saver',saver?'on':'off');label(); if(!saver)loadVisible();};
- function load(c){
-   c.querySelectorAll('[data-src]').forEach(el=>{if(!el.src){el.src=el.dataset.src;if(el.tagName==='AUDIO')el.load();}});
- }
- function unload(c){
-   c.querySelectorAll('audio').forEach(v=>{try{v.pause();v.removeAttribute('src');v.load();}catch(e){}});
-   c.querySelectorAll('iframe[data-src]').forEach(f=>{if(f.src){f.src='about:blank';}});
- }
- function loadVisible(){cards.forEach(c=>{const r=c.getBoundingClientRect(),visible=r.bottom>0&&r.top<innerHeight;if(visible)load(c);else if(saver)unload(c);});}
- const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)load(e.target);else if(saver)unload(e.target);}),{rootMargin:'250px'});
- cards.forEach(c=>io.observe(c)); loadVisible();
- document.querySelectorAll('[data-play-id]').forEach(b=>b.onclick=async()=>{fetch('/api/music/play/'+encodeURIComponent(b.dataset.playId),{method:'POST'}).catch(()=>{});b.textContent='Play recorded';});
- document.addEventListener('play',e=>{if(e.target.tagName==='AUDIO'){document.querySelectorAll('audio').forEach(v=>{if(v!==e.target){try{v.pause();}catch(_){} }});}},true);
- window.addEventListener('pagehide',()=>cards.forEach(c=>unload(c)));
-})();
-</script>
-''', tracks=tracks)
-
-
-@app.route("/api/music/play/<track_id>", methods=["POST"])
-def koja_music_play(track_id):
-    track = first_row("koja_music_tracks", {"id": track_id})
-    if not track or not _music_public_track(track):
-        return jsonify(ok=False, error="track_not_public"), 404
-    uid = (current_user() or {}).get("id")
-    payload = {"id": str(uuid.uuid4()), "track_id": track_id, "user_id": uid, "played_at": utc_now()}
-    # Support both existing play-event schemas.
-    row, err = db_insert("koja_music_plays", payload)
-    if err:
-        db_insert("koja_music_play_events", {"id": str(uuid.uuid4()), "track_id": track_id, "user_id": uid, "created_at": utc_now()})
-    return jsonify(ok=True)
-
-
-@app.route("/admin/music")
-@login_required
-def admin_music():
-    if not _music_admin_user():
-        abort(403)
-    artists = db_select("koja_music_artists", order="created_at.desc", limit=500) or []
-    tracks = db_select("koja_music_tracks", order="created_at.desc", limit=500) or []
-    submissions = db_select("koja_music_artist_submissions", order="created_at.desc", limit=300) or []
+def koja_music_home():
+    # Public catalogue: only songs with verified rights + an active signed licence
+    # are visible. Recruitment prospects and pending uploads are deliberately excluded.
+    tracks = db_select(
+        "koja_music_tracks",
+        {"status": "published", "rights_status": "verified"},
+        order="published_at.desc",
+        limit=200,
+    )
+    visible = []
     for t in tracks:
-        a = first_row("koja_music_artists", {"id": t.get("artist_id")}) if t.get("artist_id") else None
-        t["artist_name"] = (a or {}).get("artist_name") or (a or {}).get("name") or "Unknown"
-    return render_page("Music Management", r'''
-<div class="hero"><h1>KOJA MUSIC — Music Management</h1><p>Artist activation, track publication and rights verification are controlled here.</p></div>
-<div class="grid">
-<div class="stat"><div class="small">Artists</div><div class="big">{{ artists|length }}</div></div>
-<div class="stat"><div class="small">Tracks</div><div class="big">{{ tracks|length }}</div></div>
-<div class="stat"><div class="small">Pending submissions</div><div class="big">{{ submissions|selectattr('status','equalto','pending')|list|length }}</div></div>
-<div class="stat"><div class="small">Verified rights</div><div class="big">{{ tracks|selectattr('rights_status','equalto','verified')|list|length }}</div></div>
+        if _music_active_licence(t.get("id")):
+            t["_stream_url"] = url_for("music_stream", track_id=t.get("id"))
+            t["_art_url"] = url_for("music_artwork", track_id=t.get("id")) if t.get("artwork_path") else ""
+            visible.append(t)
+    return render_page("KOJA MUSIC", r"""
+<style>
+.kmusic{max-width:1250px;margin:auto}.kmusic-hero{padding:28px;border-radius:22px;background:linear-gradient(135deg,#071b36,#0d4f9c);color:#fff}.kmusic-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.kmusic-track{padding:16px}.kmusic-art{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:14px;background:#e9eef5}.kmusic-meta{display:flex;justify-content:space-between;gap:8px;align-items:center}.kmusic-player{width:100%;margin-top:10px}.kmusic-badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#e7f5ed;color:#146c43;font-size:11px;font-weight:800}.kmusic-empty{text-align:center;padding:42px}.kmusic-note{font-size:13px;color:var(--muted)}@media(max-width:850px){.kmusic-grid{grid-template-columns:1fr 1fr}}@media(max-width:560px){.kmusic-grid{grid-template-columns:1fr}}
+</style>
+<div class="kmusic">
+  <div class="kmusic-hero"><h1>KOJA MUSIC</h1><p>Authorised music discovery from artists and rights holders who have granted KOJA permission to stream and promote their recordings.</p>{% if user %}<div class="actions"><a class="btn" href="{{ url_for('music_artist_apply') }}">Artist / Rights Holder</a>{% if user.is_admin %}<a class="btn secondary" href="{{ url_for('admin_music') }}">Music Rights Administration</a>{% endif %}</div>{% endif %}</div>
+  <div class="card"><strong>{{ tracks|length }}</strong> authorised tracks currently published <span class="kmusic-note">• KOJA's 100-song target is tracked internally; uploads are not published until rights are verified.</span></div>
+  {% if tracks %}<div class="kmusic-grid">{% for t in tracks %}<article class="card kmusic-track"><img class="kmusic-art" src="{{ t._art_url }}" alt="{{ t.title }} artwork" onerror="this.style.display='none'"><div class="kmusic-meta"><h3>{{ t.title }}</h3><span class="kmusic-badge">AUTHORISED</span></div><p><strong>{{ t.artist_name }}</strong>{% if t.album %} · {{ t.album }}{% endif %}</p>{% if t.genre %}<p class="kmusic-note">{{ t.genre }}{% if t.country %} · {{ t.country }}{% endif %}</p>{% endif %}<audio class="kmusic-player" controls preload="none" src="{{ t._stream_url }}"></audio></article>{% endfor %}</div>{% else %}<div class="card kmusic-empty"><h2>No authorised music published yet.</h2><p>KOJA MUSIC is ready for rights-cleared catalogue onboarding.</p></div>{% endif %}
 </div>
-<div class="card"><h2>Artists</h2>{% for a in artists %}<div style="border-top:1px solid var(--border);padding:12px 0"><strong>{{ a.artist_name or a.name or 'Artist' }}</strong><span class="badge">{{ a.status or 'draft' }}</span><span class="badge">Rights: {{ a.rights_status or 'review_required' }}</span><form method="post" action="{{ url_for('admin_music_artist_action',artist_id=a.id) }}" class="actions"><input type="hidden" name="action" value="{% if (a.status or '')|lower in ['active','published','approved'] %}deactivate{% else %}activate{% endif %}"><button class="btn" type="submit">{% if (a.status or '')|lower in ['active','published','approved'] %}Deactivate{% else %}Activate{% endif %}</button></form></div>{% else %}<p>No artists.</p>{% endfor %}</div>
-<div class="card"><h2>Tracks</h2>{% for t in tracks %}<div style="border-top:1px solid var(--border);padding:12px 0"><strong>{{ t.title or 'Untitled' }}</strong><p class="small">{{ t.artist_name }} · status={{ t.status or 'draft' }} · rights={{ t.rights_status or 'review_required' }}</p><form method="post" action="{{ url_for('admin_music_track_action',track_id=t.id) }}" class="actions"><select name="action"><option value="verify">Verify rights</option><option value="publish">Publish</option><option value="unpublish">Unpublish</option><option value="reject">Reject rights</option></select><input name="licence_reference" placeholder="Licence/agreement reference"><button class="btn" type="submit">Apply</button></form></div>{% else %}<p>No tracks.</p>{% endfor %}</div>
-<div class="card"><h2>Artist Applications</h2>{% for s in submissions %}<div style="border-top:1px solid var(--border);padding:12px 0"><strong>{{ s.artist_name }}</strong><p class="small">{{ s.country }} · {{ s.genre or '' }} · {{ s.status }}</p><form method="post" action="{{ url_for('admin_music_submission_action',submission_id=s.id) }}" class="actions"><select name="action"><option value="approve">Approve</option><option value="reject">Reject</option></select><button class="btn" type="submit">Apply</button></form></div>{% else %}<p>No applications.</p>{% endfor %}</div>
-''', artists=artists, tracks=tracks, submissions=submissions)
+""", tracks=visible)
 
 
-@app.route("/admin/music/artist/<artist_id>", methods=["POST"])
+@app.route("/music/stream/<track_id>")
+def music_stream(track_id):
+    track = _music_track(track_id)
+    if not track or track.get("status") != "published" or track.get("rights_status") != "verified" or not _music_active_licence(track_id):
+        abort(404)
+    path = clean(track.get("audio_path"))
+    if not path or not supabase_configured():
+        abort(404)
+    try:
+        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=90)
+        if not r.ok:
+            abort(404)
+        response = Response(r.content, mimetype=r.headers.get("Content-Type") or track.get("audio_mime") or "audio/mpeg")
+        response.headers["Cache-Control"] = "public, max-age=300"
+        response.headers["Accept-Ranges"] = "bytes"
+        response.headers["Content-Length"] = str(len(r.content))
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except Exception:
+        logger.exception("KOJA MUSIC stream read failed")
+        abort(404)
+
+
+@app.route("/music/artwork/<track_id>")
+def music_artwork(track_id):
+    track = _music_track(track_id)
+    if not track or track.get("status") != "published" or track.get("rights_status") != "verified" or not _music_active_licence(track_id):
+        abort(404)
+    path = clean(track.get("artwork_path"))
+    if not path or not supabase_configured():
+        abort(404)
+    try:
+        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=30)
+        if not r.ok:
+            abort(404)
+        response = Response(r.content, mimetype=r.headers.get("Content-Type") or "image/jpeg")
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except Exception:
+        logger.exception("KOJA MUSIC artwork read failed")
+        abort(404)
+
+
+@app.route("/music/artist/apply", methods=["GET", "POST"])
 @login_required
-def admin_music_artist_action(artist_id):
-    if not _music_admin_user(): abort(403)
-    action = clean(request.form.get("action")).lower()
-    if action == "activate":
-        db_update("koja_music_artists", {"id": artist_id}, {"status": "active", "updated_at": utc_now()})
-    elif action == "deactivate":
-        db_update("koja_music_artists", {"id": artist_id}, {"status": "suspended", "updated_at": utc_now()})
-    return redirect(url_for("admin_music"))
-
-
-@app.route("/admin/music/track/<track_id>", methods=["POST"])
-@login_required
-def admin_music_track_action(track_id):
-    if not _music_admin_user(): abort(403)
-    action = clean(request.form.get("action")).lower()
-    ref = clean(request.form.get("licence_reference"))
-    track = first_row("koja_music_tracks", {"id": track_id}) or {}
-    if action == "verify":
-        rights = db_select("koja_music_rights", filters={"track_id": track_id, "status": "verified"}, limit=10) or []
-        if not rights:
-            flash("Track cannot be marked rights-verified until a verified rights/licence record exists in the Rights Centre.", "danger")
-            return redirect(url_for("admin_music"))
-        right = rights[0]
-        licence_ref = ref or right.get("agreement_reference") or right.get("id") or track.get("licence_reference")
-        db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "verified", "licence_reference": licence_ref, "updated_at": utc_now()})
-    elif action == "publish":
-        if _music_track_rights_verified(track):
-            db_update("koja_music_tracks", {"id": track_id}, {"status": "published", "updated_at": utc_now()})
-        else:
-            flash("Track cannot be published until rights are verified.", "danger")
-    elif action == "unpublish":
-        db_update("koja_music_tracks", {"id": track_id}, {"status": "draft", "updated_at": utc_now()})
-    elif action == "reject":
-        db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "rejected", "status": "suspended", "updated_at": utc_now()})
-    return redirect(url_for("admin_music"))
-
-
-@app.route("/admin/music/submission/<submission_id>", methods=["POST"])
-@login_required
-def admin_music_submission_action(submission_id):
-    if not _music_admin_user(): abort(403)
-    action = clean(request.form.get("action")).lower()
-    status = "approved" if action == "approve" else "rejected"
-    db_update("koja_music_artist_submissions", {"id": submission_id}, {"status": status, "reviewer_id": (current_user() or {}).get("id"), "updated_at": utc_now()})
-    return redirect(url_for("admin_music"))
-
-
-@app.route("/admin/music/rights")
-@login_required
-def admin_music_rights():
-    if not _music_admin_user(): abort(403)
-    rights = db_select("koja_music_rights", order="created_at.desc", limit=1000) or []
-    return render_page("KOJA MUSIC Rights", r'''
-<div class="hero"><h1>KOJA MUSIC Rights Centre</h1><p>Only agreements recorded here as verified should allow publication.</p></div>
-<div class="card"><h3>100-song target</h3><p><strong>{{ verified }}</strong> verified published tracks · <strong>{{ remaining }}</strong> remaining to reach 100.</p><p class="small">A song counts only when the applicable rightsholder and licence are recorded and the track passes the publication gate.</p></div>
-<div class="card"><table><tr><th>Track</th><th>Rightsholder</th><th>Master</th><th>Composition</th><th>Territory</th><th>Term</th><th>Status</th></tr>{% for r in rights %}<tr><td>{{ r.track_id }}</td><td>{{ r.rightsholder_name }}</td><td>{{ r.master_rights }}</td><td>{{ r.composition_rights }}</td><td>{{ r.territory }}</td><td>{{ r.term_end or 'Open/unspecified' }}</td><td>{{ r.status }}</td></tr>{% else %}<tr><td colspan="7">No rights records yet.</td></tr>{% endfor %}</table></div>
-''', rights=rights, verified=verified, remaining=max(0,100-verified))
-
-
-@app.route('/music/apply', methods=['GET', 'POST'])
 def music_artist_apply():
-    if request.method == 'POST':
-        uid = (current_user() or {}).get('id')
-        d = request.form
-        artist_name = clean(d.get('artist_name')); country = clean(d.get('country')); catalogue_links = clean(d.get('catalogue_links'))
-        if not artist_name or not country or not catalogue_links:
-            flash('Artist name, country and catalogue links are required.', 'danger')
+    uid = _music_user_id()
+    existing = _music_artist_for_user(uid, include_all=True)
+    if request.method == "POST":
+        artist_name = clean(request.form.get("artist_name"))
+        country = clean(request.form.get("country"))
+        genre = clean(request.form.get("genre"))
+        bio = clean(request.form.get("bio"))
+        social_url = clean(request.form.get("social_url"))
+        rights_declared = as_bool(request.form.get("rights_declaration"))
+        if not artist_name or not country or not rights_declared:
+            flash("Artist name, country and the rights declaration are required.", "danger")
+            return redirect(url_for("music_artist_apply"))
+        payload = {
+            "user_id": uid, "artist_name": artist_name, "country": country,
+            "genre": genre, "bio": bio, "social_url": social_url,
+            "rights_declaration": True, "rights_declaration_at": utc_now(),
+            "status": "pending", "updated_at": utc_now(),
+        }
+        if existing:
+            _, err = db_update("koja_music_artists", {"id": existing["id"]}, payload)
         else:
-            row, err = db_insert('koja_music_artist_submissions', {'id':str(uuid.uuid4()),'user_id':uid,'artist_name':artist_name,'country':country,'genre':clean(d.get('genre')),'website':clean(d.get('website')),'bio':clean(d.get('bio')),'catalogue_links':catalogue_links,'rights_declaration':bool(d.get('rights_declaration')),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
-            if err: flash('Application could not be saved: ' + str(err)[:500], 'danger')
-            else: flash('Artist application submitted for review.', 'success')
-    return render_page('KOJA MUSIC Artist Application', r'''<div class="hero"><h1>Join KOJA MUSIC</h1><p>Submit an artist or catalogue for review. Publication requires rights verification before streaming.</p></div><div class="card" style="max-width:820px;margin:auto"><form method="post"><label>Artist name</label><input name="artist_name" required maxlength="180"><label>Country</label><input name="country" required maxlength="100"><label>Genre</label><input name="genre" maxlength="100"><label>Website / official profile</label><input name="website" type="url"><label>Catalogue links</label><textarea name="catalogue_links" required rows="4"></textarea><label>Biography</label><textarea name="bio" rows="4"></textarea><label><input type="checkbox" name="rights_declaration" value="1"> I confirm I am authorised to submit this catalogue for rights review.</label><button class="btn" type="submit">Submit for Review</button></form></div>''')
+            payload.update({"id": str(uuid.uuid4()), "created_at": utc_now()})
+            _, err = db_insert("koja_music_artists", payload)
+        if err:
+            flash(f"Artist application could not be saved: {err}", "danger")
+        else:
+            flash("KOJA MUSIC artist application submitted. Rights declaration recorded; this is not licence approval.", "success")
+        return redirect(url_for("music_artist_apply"))
+    return render_page("KOJA MUSIC Artist / Rights Holder", r"""
+<div class="card" style="max-width:850px;margin:auto"><h2>KOJA MUSIC Artist / Rights Holder</h2><p>Register your identity and catalogue interest. Registration does <strong>not</strong> grant KOJA rights to stream your music. A separate written licence and rights verification are required before publication.</p>{% if existing %}<p><strong>Status:</strong> {{ existing.status|upper }}</p>{% endif %}<form method="post"><label>Artist / rights-holder name</label><input name="artist_name" required value="{{ existing.artist_name if existing else '' }}"><label>Country</label><input name="country" required value="{{ existing.country if existing else '' }}"><label>Genre</label><input name="genre" value="{{ existing.genre if existing else '' }}"><label>Official website or social profile</label><input name="social_url" value="{{ existing.social_url if existing else '' }}"><label>Short biography</label><textarea name="bio" rows="4">{{ existing.bio if existing else '' }}</textarea><label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="rights_declaration" value="1" required style="width:auto"> I confirm that I will only submit recordings for which I own or control, or am authorised to represent, the relevant rights. I understand that KOJA will verify rights before publishing music.</label><button class="btn" type="submit">Submit artist application</button></form></div>
+""", existing=existing)
 
-@app.route('/admin/music/100')
-@login_required
-def admin_music_100():
-    if not _music_admin_user(): abort(403)
-    tracks = _music_rows()
-    public = [t for t in tracks if t.get('public_eligible')]
-    pending = [t for t in tracks if not t.get('public_eligible')]
-    return render_page('KOJA MUSIC 100-Song Target', r'''<div class="hero"><h1>KOJA MUSIC — 100 Authorised Songs</h1><p>Catalogue readiness uses the same publication gate as the public Music feed.</p></div><div class="grid"><div class="stat"><div class="small">Authorised</div><div class="big">{{ public|length }}</div></div><div class="stat"><div class="small">Remaining</div><div class="big">{{ [100-(public|length),0]|max }}</div></div><div class="stat"><div class="small">Catalogue records</div><div class="big">{{ tracks|length }}</div></div></div><div class="card"><h2>Authorised catalogue</h2>{% for t in public %}<div style="border-top:1px solid var(--border);padding:10px 0"><strong>{{ t.title or 'Untitled' }}</strong><div class="small">{{ t.artist.get('artist_name') or t.artist.get('name') or 'Artist' }} · rights verified · {{ t.status }}</div></div>{% else %}<p>No authorised songs yet.</p>{% endfor %}</div><div class="card"><h2>Not yet publishable</h2>{% for t in pending %}<div style="border-top:1px solid var(--border);padding:10px 0"><strong>{{ t.title or 'Untitled' }}</strong><div class="small">{{ t.artist.get('artist_name') or t.artist.get('name') or 'Artist' }} · track={{ t.status or 'draft' }} · rights={{ t.rights_status or 'review_required' }} · artist={{ t.artist.status or 'missing' }}</div></div>{% else %}<p>All catalogue records currently pass the public gate.</p>{% endfor %}</div>''', tracks=tracks, public=public, pending=pending)
 
-@app.route("/api/music/rights/<track_id>", methods=["POST"])
+@app.route("/music/artist/tracks", methods=["GET", "POST"])
 @login_required
-def admin_music_rights_create(track_id):
-    if not _music_admin_user(): abort(403)
-    d = request.get_json(silent=True) or request.form.to_dict()
-    required = ["rightsholder_name", "master_rights", "composition_rights", "territory", "term_start"]
-    if any(not clean(d.get(k)) for k in required):
-        return jsonify(ok=False, error="Missing rights fields", required=required), 400
-    payload = {
-        "id": str(uuid.uuid4()), "track_id": track_id,
-        "rightsholder_name": clean(d.get("rightsholder_name")),
-        "master_rights": clean(d.get("master_rights")),
-        "composition_rights": clean(d.get("composition_rights")),
-        "territory": clean(d.get("territory")),
-        "term_start": clean(d.get("term_start")),
-        "term_end": clean(d.get("term_end")) or None,
-        "licence_type": clean(d.get("licence_type")) or "non_exclusive_digital_streaming",
-        "agreement_reference": clean(d.get("agreement_reference")),
-        "status": "verified",
-        "verified_by": (current_user() or {}).get("id"),
-        "verified_at": utc_now(), "created_at": utc_now(), "updated_at": utc_now()
+def music_artist_tracks():
+    uid = _music_user_id()
+    artist = _music_artist_for_user(uid, include_all=True)
+    if not artist or artist.get("status") != "approved":
+        flash("Your KOJA MUSIC artist/rightsholder application must be approved before uploading catalogue files.", "warning")
+        return redirect(url_for("music_artist_apply"))
+    if request.method == "POST":
+        title = clean(request.form.get("title"))
+        album = clean(request.form.get("album"))
+        genre = clean(request.form.get("genre"))
+        release_date = clean(request.form.get("release_date")) or None
+        isrc = clean(request.form.get("isrc"))
+        if not title:
+            flash("Song title is required.", "danger")
+            return redirect(url_for("music_artist_tracks"))
+        audio, err = _music_upload(request.files.get("audio"), "audio", MUSIC_AUDIO_EXTENSIONS)
+        if err:
+            flash(f"Audio upload failed: {err}", "danger")
+            return redirect(url_for("music_artist_tracks"))
+        artwork = None
+        if request.files.get("artwork") and request.files.get("artwork").filename:
+            artwork, err = _music_upload(request.files.get("artwork"), "artwork", MUSIC_ARTWORK_EXTENSIONS)
+            if err:
+                flash(f"Artwork upload failed: {err}", "danger")
+                try: delete_storage_path(audio["path"])
+                except Exception: pass
+                return redirect(url_for("music_artist_tracks"))
+        track_id = str(uuid.uuid4())
+        payload = {
+            "id": track_id, "artist_id": artist["id"], "user_id": uid,
+            "artist_name": artist["artist_name"], "country": artist["country"],
+            "title": title, "album": album, "genre": genre,
+            "release_date": release_date, "isrc": isrc,
+            "audio_path": audio["path"], "audio_url": audio["url"],
+            "audio_mime": audio["mime"], "audio_size": audio["size"],
+            "artwork_path": artwork["path"] if artwork else None,
+            "artwork_url": artwork["url"] if artwork else None,
+            "rights_status": "pending_review", "status": "pending_review",
+            "rights_declaration": True, "rights_declaration_at": utc_now(),
+            "created_at": utc_now(), "updated_at": utc_now(),
+        }
+        row, err = db_insert("koja_music_tracks", payload)
+        if err:
+            try: delete_storage_path(audio["path"])
+            except Exception: pass
+            if artwork:
+                try: delete_storage_path(artwork["path"])
+                except Exception: pass
+            flash(f"Track could not be saved: {err}", "danger")
+        else:
+            db_insert("koja_music_rights", {
+                "id": str(uuid.uuid4()), "track_id": track_id,
+                "master_owner": artist["artist_name"], "composition_owner": "",
+                "publisher": "", "label_name": "", "producer": "",
+                "featured_artists": "", "sample_disclosure": "unknown",
+                "rights_notes": "Awaiting KOJA rights verification.",
+                "created_at": utc_now(), "updated_at": utc_now(),
+            })
+            flash("Track submitted for rights review. It is not public yet.", "success")
+        return redirect(url_for("music_artist_tracks"))
+    tracks = db_select("koja_music_tracks", {"artist_id": artist["id"]}, order="created_at.desc", limit=200)
+    for t in tracks:
+        t["licence"] = _music_active_licence(t.get("id"))
+        t["rights"] = _music_rights(t.get("id"))
+    return render_page("KOJA MUSIC Catalogue", r"""
+<div class="card"><h2>{{ artist.artist_name }} Catalogue</h2><p>Upload only recordings you are authorised to license. Every submission remains private until KOJA completes rights verification.</p></div>
+<div class="card"><h3>Submit a recording</h3><form method="post" enctype="multipart/form-data"><label>Song title</label><input name="title" required><label>Album / EP / Single</label><input name="album"><label>Genre</label><input name="genre"><label>Release date</label><input type="date" name="release_date"><label>ISRC (if available)</label><input name="isrc"><label>Audio (max 15 MB)</label><input type="file" name="audio" required accept="audio/*"><label>Cover artwork</label><input type="file" name="artwork" accept="image/*"><button class="btn" type="submit">Submit for rights review</button></form></div>
+<div class="card"><h3>Submitted recordings</h3>{% for t in tracks %}<div style="padding:14px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong> — {{ t.status|upper }} / {{ t.rights_status|upper }}<div class="small">Licence: {{ 'ACTIVE' if t.licence else 'NOT ACTIVE' }} · Rights notes: {{ t.rights.rights_notes or '—' }}</div></div>{% else %}<p>No recordings submitted.</p>{% endfor %}</div>
+""", artist=artist, tracks=tracks)
+
+
+@app.route("/admin/music/acquisition", methods=["GET", "POST"])
+@admin_required
+def admin_music_acquisition():
+    if request.method == "POST":
+        action = clean(request.form.get("action"))
+        target_id = clean(request.form.get("target_id"))
+        now = utc_now()
+        if action == "save_target":
+            payload = {
+                "artist_name": clean(request.form.get("artist_name")),
+                "country": clean(request.form.get("country")),
+                "source_url": clean(request.form.get("source_url")),
+                "priority": int(request.form.get("priority") or 2),
+                "status": clean(request.form.get("status")) or "not_contacted",
+                "contact_name": clean(request.form.get("contact_name")),
+                "contact_email": clean(request.form.get("contact_email")),
+                "contact_url": clean(request.form.get("contact_url")),
+                "outreach_channel": clean(request.form.get("outreach_channel")),
+                "last_contacted_at": clean(request.form.get("last_contacted_at")) or None,
+                "next_followup_at": clean(request.form.get("next_followup_at")) or None,
+                "notes": clean(request.form.get("notes")),
+                "updated_at": now,
+            }
+            if not payload["artist_name"] or not payload["country"]:
+                flash("Artist name and country are required.", "danger")
+                return redirect(url_for("admin_music_acquisition"))
+            if target_id:
+                _, err = db_update("koja_music_recruitment_targets", {"id": target_id}, payload)
+            else:
+                payload.update({"id": str(uuid.uuid4()), "created_at": now})
+                _, err = db_insert("koja_music_recruitment_targets", payload)
+            flash("Acquisition record saved." if not err else f"Could not save acquisition record: {err}", "success" if not err else "danger")
+            return redirect(url_for("admin_music_acquisition"))
+        if action == "advance" and target_id:
+            target = first_row("koja_music_recruitment_targets", {"id": target_id})
+            stages = ["not_contacted","contacted","interested","applied","licensed","declined","unverified"]
+            if target:
+                current = target.get("status") or "not_contacted"
+                try: nxt = stages[min(stages.index(current) + 1, len(stages)-1)]
+                except ValueError: nxt = "contacted"
+                db_update("koja_music_recruitment_targets", {"id": target_id}, {"status": nxt, "last_contacted_at": now, "updated_at": now})
+                flash(f"Acquisition stage moved to {nxt.replace('_',' ')}.", "success")
+            return redirect(url_for("admin_music_acquisition"))
+        if action == "delete" and target_id:
+            db_delete("koja_music_recruitment_targets", {"id": target_id})
+            flash("Acquisition record removed.", "success")
+            return redirect(url_for("admin_music_acquisition"))
+
+    targets = db_select("koja_music_recruitment_targets", order="priority.asc,created_at.desc", limit=1000)
+    stage_counts = {k: sum(1 for t in targets if t.get("status") == k) for k in ["not_contacted","contacted","interested","applied","licensed","declined","unverified"]}
+    return render_page("KOJA MUSIC Rights Acquisition", r"""
+<style>
+.mqa{max-width:1500px;margin:auto}.mqa-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.mqa-stat{padding:15px;border:1px solid var(--border);border-radius:14px}.mqa-stat b{display:block;font-size:25px}.mqa-grid{display:grid;grid-template-columns:1fr 1.5fr;gap:14px}.mqa-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mqa-form .full{grid-column:1/-1}.mqa-form input,.mqa-form select,.mqa-form textarea{width:100%;box-sizing:border-box}.mqa-item{padding:13px 0;border-bottom:1px solid var(--border)}.mqa-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#edf2f8;font-size:10px;font-weight:800}.mqa-flow{font-size:12px;line-height:1.7}@media(max-width:900px){.mqa-grid{grid-template-columns:1fr}.mqa-stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.mqa-form{grid-template-columns:1fr}.mqa-form .full{grid-column:auto}.mqa-stats{grid-template-columns:1fr}}
+</style>
+<div class="mqa"><div class="hero"><h1>KOJA MUSIC Rights Acquisition</h1><p>Move prospective artists and labels from outreach to signed licence, then into the rights-verification queue. A prospect is never treated as licensed until the licence and verification checks pass.</p></div>
+<div class="mqa-stats"><div class="mqa-stat"><b>{{ counts.not_contacted }}</b>Not contacted</div><div class="mqa-stat"><b>{{ counts.contacted }}</b>Contacted</div><div class="mqa-stat"><b>{{ counts.interested }}</b>Interested</div><div class="mqa-stat"><b>{{ counts.applied }}</b>Applied</div><div class="mqa-stat"><b>{{ counts.licensed }}</b>Licensed</div></div>
+<div class="card mqa-flow"><strong>Acquisition flow:</strong> Prospect → Contacted → Interested → Application/Catalogue → Rights evidence → Signed licence → Verification → Published. “Licensed” in this outreach tracker means the commercial/licensing conversation reached that stage; publication still requires the track-level signed agreement and full verification checklist in Music Rights Administration.</div>
+<div class="mqa-grid"><div class="card"><h2>Add / update prospect</h2><form method="post" class="mqa-form"><input type="hidden" name="action" value="save_target"><input type="hidden" name="target_id" value=""><div><label>Artist / label</label><input name="artist_name" required></div><div><label>Country</label><input name="country" required></div><div><label>Contact person</label><input name="contact_name"></div><div><label>Contact email</label><input type="email" name="contact_email"></div><div><label>Contact / licensing URL</label><input type="url" name="contact_url"></div><div><label>Outreach channel</label><select name="outreach_channel"><option value="email">Email</option><option value="website">Website form</option><option value="management">Management</option><option value="label">Label</option><option value="social">Social contact</option><option value="other">Other</option></select></div><div><label>Priority</label><select name="priority"><option value="1">1 — High</option><option value="2" selected>2 — Normal</option><option value="3">3 — Low</option></select></div><div><label>Stage</label><select name="status"><option value="not_contacted">Not contacted</option><option value="contacted">Contacted</option><option value="interested">Interested</option><option value="applied">Applied</option><option value="licensed">Licensed</option><option value="declined">Declined</option><option value="unverified">Unverified</option></select></div><div><label>Last contacted</label><input type="datetime-local" name="last_contacted_at"></div><div><label>Next follow-up</label><input type="datetime-local" name="next_followup_at"></div><div class="full"><label>Source URL</label><input type="url" name="source_url"></div><div class="full"><label>Notes</label><textarea name="notes" rows="4"></textarea></div><div class="full"><button class="btn" type="submit">Save acquisition record</button></div></form></div>
+<div class="card"><h2>Acquisition pipeline</h2>{% for t in targets %}<div class="mqa-item"><strong>{{ t.artist_name }}</strong> · {{ t.country }} <span class="mqa-pill">{{ (t.status or 'not_contacted').replace('_',' ')|upper }}</span><div class="small">Priority {{ t.priority or 2 }}{% if t.contact_name %} · {{ t.contact_name }}{% endif %}{% if t.contact_email %} · {{ t.contact_email }}{% endif %}</div>{% if t.notes %}<div class="small">{{ t.notes }}</div>{% endif %}<div class="actions"><form method="post"><input type="hidden" name="target_id" value="{{ t.id }}"><button class="btn secondary" name="action" value="advance">Advance stage</button></form>{% if t.source_url %}<a class="btn secondary" href="{{ t.source_url }}" target="_blank" rel="noopener">Source</a>{% endif %}</div></div>{% else %}<p>No acquisition prospects.</p>{% endfor %}</div></div>
+<div class="card"><a class="btn" href="{{ url_for('admin_music') }}">Open Music Rights Administration</a></div></div>
+""", targets=targets, counts=stage_counts)
+
+
+@app.route("/admin/music", methods=["GET", "POST"])
+@admin_required
+def admin_music():
+    if request.method == "POST":
+        action = clean(request.form.get("action"))
+        track_id = clean(request.form.get("track_id"))
+        artist_id = clean(request.form.get("artist_id"))
+        now = utc_now()
+        if action in {"approve_artist", "reject_artist"} and artist_id:
+            status = "approved" if action == "approve_artist" else "rejected"
+            db_update("koja_music_artists", {"id": artist_id}, {"status": status, "reviewed_by": _music_user_id(), "reviewed_at": now, "updated_at": now})
+            flash(f"Artist application {status}.", "success")
+            return redirect(url_for("admin_music"))
+        if action == "save_rights" and track_id:
+            track = _music_track(track_id)
+            if not track:
+                flash("Track not found.", "danger")
+                return redirect(url_for("admin_music"))
+            rights = _music_rights(track_id)
+            payload = {
+                "track_id": track_id,
+                "master_owner": clean(request.form.get("master_owner")),
+                "composition_owner": clean(request.form.get("composition_owner")),
+                "publisher": clean(request.form.get("publisher")),
+                "label_name": clean(request.form.get("label_name")),
+                "producer": clean(request.form.get("producer")),
+                "featured_artists": clean(request.form.get("featured_artists")),
+                "sample_disclosure": clean(request.form.get("sample_disclosure")) or "unknown",
+                "rights_notes": clean(request.form.get("rights_notes")),
+                "isrc": clean(request.form.get("isrc")),
+                "identity_verified": as_bool(request.form.get("identity_verified")),
+                "authority_verified": as_bool(request.form.get("authority_verified")),
+                "master_verified": as_bool(request.form.get("master_verified")),
+                "composition_verified": as_bool(request.form.get("composition_verified")),
+                "sample_verified": as_bool(request.form.get("sample_verified")),
+                "metadata_verified": as_bool(request.form.get("metadata_verified")),
+                "territory_verified": as_bool(request.form.get("territory_verified")),
+                "licence_terms_verified": as_bool(request.form.get("licence_terms_verified")),
+                "verification_status": "verified" if all(as_bool(request.form.get(k)) for k in ("identity_verified","authority_verified","master_verified","composition_verified","sample_verified","metadata_verified","territory_verified","licence_terms_verified")) else "incomplete",
+                "updated_at": now,
+            }
+            if rights:
+                db_update("koja_music_rights", {"id": rights["id"]}, payload)
+            else:
+                payload.update({"id": str(uuid.uuid4()), "created_at": now})
+                db_insert("koja_music_rights", payload)
+            flash("Rights record saved. This does not publish the song.", "success")
+            return redirect(url_for("admin_music", track=track_id))
+        if action == "create_licence" and track_id:
+            track = _music_track(track_id)
+            if not track:
+                flash("Track not found.", "danger")
+                return redirect(url_for("admin_music"))
+            agreement = request.files.get("agreement")
+            uploaded = None
+            if agreement and agreement.filename:
+                uploaded, err = _music_upload(agreement, "agreements", MUSIC_AGREEMENT_EXTENSIONS)
+                if err:
+                    flash(f"Agreement upload failed: {err}", "danger")
+                    return redirect(url_for("admin_music", track=track_id))
+            else:
+                flash("A signed agreement file is required before an active licence can be created.", "danger")
+                return redirect(url_for("admin_music", track=track_id))
+            start_date = clean(request.form.get("start_date")) or datetime.now(timezone.utc).date().isoformat()
+            end_date = clean(request.form.get("end_date"))
+            streaming_allowed = as_bool(request.form.get("streaming_allowed"))
+            territory = clean(request.form.get("territory")) or "Worldwide subject to rights"
+            status = "active" if streaming_allowed else "draft"
+            licence = {
+                "id": str(uuid.uuid4()), "track_id": track_id,
+                "licence_number": "KJA-LIC-" + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + secrets.token_hex(3).upper(),
+                "licence_type": clean(request.form.get("licence_type")) or "non_exclusive_zero_upfront_pilot",
+                "territory": territory, "start_date": start_date, "end_date": end_date or None,
+                "streaming_allowed": streaming_allowed, "download_allowed": as_bool(request.form.get("download_allowed")),
+                "promotion_allowed": as_bool(request.form.get("promotion_allowed")),
+                "royalty_type": clean(request.form.get("royalty_type")) or "zero_upfront_pilot",
+                "royalty_rate": clean(request.form.get("royalty_rate")) or "0",
+                "licensor_name": clean(request.form.get("licensor_name")),
+                "licensor_email": clean(request.form.get("licensor_email")),
+                "signed_by": clean(request.form.get("signed_by")),
+                "signature_method": clean(request.form.get("signature_method")) or "signed_document",
+                "agreement_path": uploaded["path"], "agreement_url": uploaded["url"],
+                "status": status, "signed_at": clean(request.form.get("signed_at")) or now,
+                "verified_by": _music_user_id(), "verified_at": now if status == "active" else None,
+                "created_at": now, "updated_at": now,
+            }
+            _, err = db_insert("koja_music_licences", licence)
+            if err:
+                try: delete_storage_path(uploaded["path"])
+                except Exception: pass
+                flash(f"Licence could not be saved: {err}", "danger")
+            else:
+                flash("Licence recorded. The track can be published only after rights verification.", "success")
+            return redirect(url_for("admin_music", track=track_id))
+        if action in {"verify_publish", "reject_track", "revoke_track"} and track_id:
+            track = _music_track(track_id)
+            if not track:
+                flash("Track not found.", "danger")
+                return redirect(url_for("admin_music"))
+            if action == "verify_publish":
+                missing = _music_verification_missing(track)
+                if missing:
+                    flash("Cannot publish: " + ", ".join(missing) + ".", "danger")
+                else:
+                    db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "verified", "status": "published", "reviewed_by": _music_user_id(), "reviewed_at": now, "published_at": now, "updated_at": now})
+                    rights = _music_rights(track_id)
+                    if rights:
+                        db_update("koja_music_rights", {"id": rights.get("id")}, {"verification_status": "verified", "verified_by": _music_user_id(), "verified_at": now, "updated_at": now})
+                    db_insert("koja_music_rights_audit", {"id": str(uuid.uuid4()), "track_id": track_id, "action": "verified_and_published", "actor_id": _music_user_id(), "notes": "Published after complete rights checklist and active signed licence checks.", "created_at": now})
+                    flash("Track rights verified and published to KOJA MUSIC.", "success")
+            elif action == "reject_track":
+                db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "rejected", "status": "rejected", "reviewed_by": _music_user_id(), "reviewed_at": now, "updated_at": now})
+                db_insert("koja_music_rights_audit", {"id": str(uuid.uuid4()), "track_id": track_id, "action": "rejected", "actor_id": _music_user_id(), "notes": clean(request.form.get("reason")) or "Rejected by administrator.", "created_at": now})
+                flash("Track rejected.", "warning")
+            else:
+                db_update("koja_music_tracks", {"id": track_id}, {"rights_status": "revoked", "status": "suspended", "reviewed_by": _music_user_id(), "reviewed_at": now, "updated_at": now})
+                db_update("koja_music_licences", {"track_id": track_id}, {"status": "revoked", "updated_at": now})
+                db_insert("koja_music_rights_audit", {"id": str(uuid.uuid4()), "track_id": track_id, "action": "rights_revoked", "actor_id": _music_user_id(), "notes": clean(request.form.get("reason")) or "Rights revoked by administrator.", "created_at": now})
+                flash("Track rights revoked and public publication suspended.", "warning")
+            return redirect(url_for("admin_music"))
+
+    artists = db_select("koja_music_artists", order="created_at.desc", limit=500)
+    tracks = db_select("koja_music_tracks", order="created_at.desc", limit=500)
+    selected_id = clean(request.args.get("track"))
+    selected = _music_track(selected_id) if selected_id else (tracks[0] if tracks else None)
+    if selected:
+        selected["rights"] = _music_rights(selected["id"])
+        selected["licences"] = db_select("koja_music_licences", {"track_id": selected["id"]}, order="created_at.desc", limit=20)
+    published = [t for t in tracks if t.get("status") == "published" and t.get("rights_status") == "verified" and _music_active_licence(t.get("id"))]
+    stats = {
+        "artists": len(artists),
+        "pending_artists": sum(1 for a in artists if a.get("status") == "pending"),
+        "tracks": len(tracks),
+        "pending_tracks": sum(1 for t in tracks if t.get("status") == "pending_review"),
+        "authorised": len(published),
+        "remaining": max(0, MUSIC_GOAL - len(published)),
     }
-    row, err = db_insert("koja_music_rights", payload)
-    if err:
-        return jsonify(ok=False, error=err), 500
-    db_update("koja_music_tracks", {"id": track_id}, {"rights_status":"verified", "licence_reference":payload["agreement_reference"] or payload["id"], "updated_at":utc_now()})
-    return jsonify(ok=True, rights=row)
+    return render_page("KOJA MUSIC Rights Administration", r"""
+<style>
+.mra{max-width:1450px;margin:auto}.mstats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.mstat{padding:16px;border:1px solid var(--border);border-radius:14px}.mstat b{font-size:28px;display:block}.mra-grid{display:grid;grid-template-columns:1.05fr 1.4fr;gap:14px}.mra-list{max-height:620px;overflow:auto}.mra-item{padding:12px;border-bottom:1px solid var(--border)}.mra-item a{font-weight:800}.mra-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mra-form .full{grid-column:1/-1}.mra-form input,.mra-form select,.mra-form textarea{width:100%;box-sizing:border-box}.mra-badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#edf2f8;font-size:10px;font-weight:800}.mra-live{background:#e4f7ec;color:#14733e}.mra-warn{background:#fff3d8;color:#875a00}@media(max-width:900px){.mstats{grid-template-columns:repeat(2,1fr)}.mra-grid{grid-template-columns:1fr}}@media(max-width:560px){.mstats{grid-template-columns:1fr}.mra-form{grid-template-columns:1fr}.mra-form .full{grid-column:auto}}
+</style>
+<div class="mra"><div class="hero"><h1>KOJA MUSIC Rights Administration</h1><p>Control artist onboarding, rights evidence, signed licences, verification and the first 100 authorised songs.</p></div>
+<div class="mstats"><div class="mstat"><b>{{ stats.authorised }}</b>Authorised songs</div><div class="mstat"><b>{{ stats.remaining }}</b>Remaining to 100</div><div class="mstat"><b>{{ stats.pending_tracks }}</b>Tracks pending</div><div class="mstat"><b>{{ stats.pending_artists }}</b>Artists pending</div><div class="mstat"><b>{{ stats.tracks }}</b>Total submissions</div></div>
+<div class="card"><strong>Publication rule:</strong> KOJA publishes a recording only after the complete rights checklist, a signed active streaming licence, and the artist/rightsholder declaration are verified. Uploading a file alone never grants KOJA rights.</div><div class="actions"><a class="btn secondary" href="{{ url_for('admin_music_acquisition') }}">Rights Acquisition Pipeline</a></div>
+<div class="mra-grid"><div class="card mra-list"><h2>Artists</h2>{% for a in artists %}<div class="mra-item"><strong>{{ a.artist_name }}</strong> · {{ a.country }} <span class="mra-badge">{{ a.status|upper }}</span><div class="small">{{ a.genre or '—' }}</div>{% if a.status=='pending' %}<form method="post" style="display:flex;gap:6px;margin-top:7px"><input type="hidden" name="artist_id" value="{{ a.id }}"><button class="btn" name="action" value="approve_artist">Approve</button><button class="btn secondary" name="action" value="reject_artist">Reject</button></form>{% endif %}</div>{% else %}<p>No artist applications.</p>{% endfor %}</div>
+<div><div class="card mra-list"><h2>Catalogue</h2>{% for t in tracks %}<div class="mra-item"><a href="{{ url_for('admin_music',track=t.id) }}">{{ t.title }}</a> — {{ t.artist_name }} <span class="mra-badge {{ 'mra-live' if t.status=='published' and t.rights_status=='verified' else 'mra-warn' }}">{{ status_label(t) }}</span><div class="small">{{ t.created_at }}</div></div>{% else %}<p>No tracks.</p>{% endfor %}</div>{% if selected %}<div class="card"><h2>Rights file: {{ selected.title }}</h2><p><strong>Artist:</strong> {{ selected.artist_name }} · <strong>ISRC:</strong> {{ selected.isrc or selected.rights.isrc or '—' }}</p><form method="post" class="mra-form"><input type="hidden" name="track_id" value="{{ selected.id }}"><div><label>Master owner</label><input name="master_owner" required value="{{ selected.rights.master_owner or '' }}"></div><div><label>Composition / publishing owner</label><input name="composition_owner" required value="{{ selected.rights.composition_owner or '' }}"></div><div><label>Publisher</label><input name="publisher" value="{{ selected.rights.publisher or '' }}"></div><div><label>Label</label><input name="label_name" value="{{ selected.rights.label_name or '' }}"></div><div><label>Producer</label><input name="producer" value="{{ selected.rights.producer or '' }}"></div><div><label>Featured artists</label><input name="featured_artists" value="{{ selected.rights.featured_artists or '' }}"></div><div><label>Samples</label><select name="sample_disclosure"><option value="none" {% if selected.rights.sample_disclosure=='none' %}selected{% endif %}>None declared</option><option value="cleared" {% if selected.rights.sample_disclosure=='cleared' %}selected{% endif %}>Samples exist and are cleared</option><option value="unknown" {% if not selected.rights.sample_disclosure or selected.rights.sample_disclosure=='unknown' %}selected{% endif %}>Unknown / investigate</option></select></div><div><label>ISRC</label><input name="isrc" value="{{ selected.rights.isrc or selected.isrc or '' }}"></div><div class="full"><label>Rights notes</label><textarea name="rights_notes" rows="3">{{ selected.rights.rights_notes or '' }}</textarea></div><div class="full"><strong>Verification checklist</strong><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin-top:8px"><label><input type="checkbox" name="identity_verified" value="1" {% if selected.rights.identity_verified %}checked{% endif %}> Identity verified</label><label><input type="checkbox" name="authority_verified" value="1" {% if selected.rights.authority_verified %}checked{% endif %}> Authority to license verified</label><label><input type="checkbox" name="master_verified" value="1" {% if selected.rights.master_verified %}checked{% endif %}> Master rights verified</label><label><input type="checkbox" name="composition_verified" value="1" {% if selected.rights.composition_verified %}checked{% endif %}> Composition/publishing verified</label><label><input type="checkbox" name="sample_verified" value="1" {% if selected.rights.sample_verified %}checked{% endif %}> Samples/clearances verified</label><label><input type="checkbox" name="metadata_verified" value="1" {% if selected.rights.metadata_verified %}checked{% endif %}> Metadata verified</label><label><input type="checkbox" name="territory_verified" value="1" {% if selected.rights.territory_verified %}checked{% endif %}> Territory verified</label><label><input type="checkbox" name="licence_terms_verified" value="1" {% if selected.rights.licence_terms_verified %}checked{% endif %}> Licence terms verified</label></div></div><div class="full"><button class="btn" name="action" value="save_rights">Save rights record & checklist</button></div></form>
+<div class="card" style="margin-top:12px"><h3>Signed licence</h3><form method="post" enctype="multipart/form-data" class="mra-form"><input type="hidden" name="track_id" value="{{ selected.id }}"><div><label>Licence type</label><select name="licence_type"><option value="non_exclusive_zero_upfront_pilot">Non-exclusive zero-upfront pilot</option><option value="non_exclusive_revenue_share">Non-exclusive revenue share</option><option value="commercial_licence">Commercial licence</option></select></div><div><label>Territory</label><input name="territory" value="Worldwide subject to rights"></div><div><label>Start date</label><input type="date" name="start_date"></div><div><label>End date</label><input type="date" name="end_date"></div><div><label>Royalty type</label><input name="royalty_type" value="zero_upfront_pilot"></div><div><label>Royalty rate / share</label><input name="royalty_rate" value="0"></div><div><label>Licensor / rights holder</label><input name="licensor_name"></div><div><label>Licensor email</label><input type="email" name="licensor_email"></div><div><label>Signed by</label><input name="signed_by"></div><div><label>Signature method</label><select name="signature_method"><option value="signed_document">Signed document</option><option value="e_signature">E-signature</option><option value="other">Other documented signature</option></select></div><label><input type="checkbox" name="streaming_allowed" value="1" required> Streaming allowed</label><label><input type="checkbox" name="promotion_allowed" value="1" checked> Promotion allowed</label><label><input type="checkbox" name="download_allowed" value="1"> Downloads allowed</label><div class="full"><label>Signed agreement file (required)</label><input type="file" name="agreement" required accept=".pdf,.doc,.docx,.txt"></div><div class="full"><button class="btn" name="action" value="create_licence">Record signed licence</button></div></form>{% for l in selected.licences %}<p class="small"><strong>{{ l.licence_number }}</strong> · {{ l.status|upper }} · {{ l.territory }} · <a target="_blank" rel="noopener" href="{{ l.agreement_url }}">Agreement</a></p>{% endfor %}</div>
+<div class="actions"><form method="post"><input type="hidden" name="track_id" value="{{ selected.id }}"><button class="btn" name="action" value="verify_publish">Verify rights & publish</button></form><form method="post"><input type="hidden" name="track_id" value="{{ selected.id }}"><input name="reason" placeholder="Reason for rejection"><button class="btn secondary" name="action" value="reject_track">Reject</button></form><form method="post"><input type="hidden" name="track_id" value="{{ selected.id }}"><input name="reason" placeholder="Reason for revocation"><button class="btn secondary" name="action" value="revoke_track">Revoke</button></form></div></div>{% endif %}</div></div></div>
+""", artists=artists, tracks=tracks, selected=selected, stats=stats, status_label=_music_status_label)
+
+
+@app.route("/music/rights")
+@login_required
+def music_rights_dashboard():
+    uid = _music_user_id()
+    artist = _music_artist_for_user(uid, include_all=True)
+    if not artist:
+        return redirect(url_for("music_artist_apply"))
+    tracks = db_select("koja_music_tracks", {"artist_id": artist["id"]}, order="created_at.desc", limit=200)
+    for t in tracks:
+        t["licence"] = _music_active_licence(t.get("id"))
+        t["rights"] = _music_rights(t.get("id"))
+    return render_page("KOJA MUSIC Rights", r"""
+<div class="card"><h2>KOJA MUSIC Rights</h2><p>These records show what has been submitted and whether KOJA has verified a signed streaming licence. Artist registration alone does not grant KOJA music rights.</p><a class="btn" href="{{ url_for('music_artist_tracks') }}">Catalogue</a></div>
+<div class="card"><h3>{{ artist.artist_name }} · {{ artist.status|upper }}</h3>{% for t in tracks %}<div style="padding:12px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong><br><span class="small">Rights: {{ t.rights_status|upper }} · Licence: {{ 'ACTIVE' if t.licence else 'NOT ACTIVE' }} · Publication: {{ t.status|upper }}</span></div>{% else %}<p>No recordings.</p>{% endfor %}</div>
+""", artist=artist, tracks=tracks)
+
+
+@app.route("/api/music/rights/status")
+@login_required
+def api_music_rights_status():
+    uid = _music_user_id()
+    artist = _music_artist_for_user(uid, include_all=True)
+    tracks = db_select("koja_music_tracks", {"user_id": uid}, order="created_at.desc", limit=200) if artist else []
+    authorised = [t for t in tracks if _music_can_publish(t) and t.get("status") == "published"]
+    return jsonify({
+        "artist": artist,
+        "goal": MUSIC_GOAL,
+        "authorised_songs": len(authorised),
+        "remaining_to_100": max(0, MUSIC_GOAL - len(authorised)),
+        "tracks": [{"id":t.get("id"),"title":t.get("title"),"status":t.get("status"),"rights_status":t.get("rights_status"),"licence_active":bool(_music_active_licence(t.get("id")))} for t in tracks],
+    })
+
