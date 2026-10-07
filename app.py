@@ -17164,7 +17164,7 @@ def academic_hub():
   <div class="card"><h3>Live Classes</h3><p>Discover, enroll in and attend group classes.</p><a class="btn" href="{{ url_for('academic_classes') }}">Browse Classes</a></div>
   <div class="card"><h3>My Learning</h3><p>{{ enrollments|length }} class enrollment(s) · {{ tutoring|length }} tutoring session(s).</p><a class="btn secondary" href="{{ url_for('academic_classes') }}">Open Classes</a></div>
   <div class="card"><h3>Assignments & AI</h3><p>Upload assignments and open Academic Intelligence for question extraction and teacher matching.</p><a class="btn secondary" href="{{ url_for('assignments') }}">Open Assignments</a></div>
-  <div class="card"><h3>Connect</h3><p>Academic class conversations use KOJA Connect when a class conversation is available.</p><a class="btn secondary" href="{{ url_for('communication_next') }}">Open Connect</a></div>
+  <div class="card"><h3>Connect</h3><p>Academic class conversations use KOJA Connect when a class conversation is available.</p><a class="btn secondary" href="{{ url_for('communication_nextgen') }}">Open Connect</a></div>
 </div></div>
 {% if teacher %}<div class="card"><h2>Teacher Centre</h2><p><span class="badge">{{ teacher.status|capitalize }}</span> {{ teacher.display_name }}</p><div class="grid">
   <div class="card"><h3>Teacher Requests</h3><h2>{{ teacher_requests|length }}</h2><a class="btn" href="{{ url_for('academic_teacher_requests') }}">Review Requests</a></div>
