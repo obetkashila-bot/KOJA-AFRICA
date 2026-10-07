@@ -13903,15 +13903,17 @@ _start_africa_now_worker()
 # ============================================================
 # KOJA GLOBAL NOW — MARKET DATA ENGINE
 # ============================================================
-KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
+KOJA_MARKET_CACHE_TTL = max(60, int(os.getenv("KOJA_MARKET_CACHE_TTL", "300")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
-KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
+KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL").split(",") if x.strip()][:20]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
 _koja_market_diag = {"last_error": None, "last_provider": None}
 _koja_market_lock = threading.Lock()
+_koja_provider_cooldown = {"Alpha Vantage": 0.0, "Twelve Data": 0.0}
+KOJA_MARKET_PAID_FIRST = os.getenv("KOJA_MARKET_PAID_FIRST", "false").strip().lower() in ("1","true","yes","on")
 
 def _market_http_json(url, params):
     try:
@@ -13924,7 +13926,16 @@ def _market_http_json(url, params):
             except Exception:
                 pass
             _koja_market_diag["last_error"] = msg
-            logger.warning("Market provider returned %s: %s", r.status_code, msg)
+            if r.status_code == 429:
+                if "twelvedata.com" in url:
+                    _koja_provider_cooldown["Twelve Data"] = time.time() + 65
+                elif "alphavantage.co" in url:
+                    _koja_provider_cooldown["Alpha Vantage"] = time.time() + 65
+                logger.warning("Market provider rate limited (%s); cooling provider for 65s", r.status_code)
+            elif r.status_code == 404:
+                logger.info("Market symbol/feed unavailable: %s", url)
+            else:
+                logger.warning("Market provider returned %s: %s", r.status_code, msg)
             return None
         body = r.json()
         if not isinstance(body, dict):
@@ -13984,11 +13995,18 @@ def _yahoo_quote(symbol):
         logger.warning("Public market fallback failed for %s: %s", symbol, exc)
         return None
 
+def _provider_available(name):
+    return time.time() >= float(_koja_provider_cooldown.get(name, 0.0) or 0.0)
+
 def _market_quote(symbol):
     symbol = clean(symbol).upper()
     if not symbol:
         return None
-    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
+    # Public Yahoo data is the default so a low paid-provider quota cannot take down
+    # or spam the NEXUS market screen. Paid providers remain available as opt-in.
+    if not KOJA_MARKET_PAID_FIRST:
+        return _yahoo_quote(symbol) or (_alpha_quote(symbol) if _provider_available("Alpha Vantage") else None) or (_twelve_quote(symbol) if _provider_available("Twelve Data") else None)
+    return (_alpha_quote(symbol) if _provider_available("Alpha Vantage") else None) or (_twelve_quote(symbol) if _provider_available("Twelve Data") else None) or _yahoo_quote(symbol)
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -14182,29 +14200,25 @@ def koja_market_chart_api():
     return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
 
 def _public_fx_rates(pairs):
-    """Public FX fallback using ECB-derived rates via Frankfurter."""
+    """Single-request public FX fallback. Avoids one paid-provider request per pair."""
     try:
-        symbols=[]
-        for pair,_,_ in pairs:
-            base,quote=pair.split('/',1)
-            if base != "USD":
-                symbols.append(base)
-            if quote != "USD":
-                symbols.append(quote)
-        symbols=sorted(set(symbols))
-        params={"base":"USD","symbols":",".join(symbols)}
-        body=_market_http_json("https://api.frankfurter.app/latest",params) or {}
-        rates={"USD":1.0}
-        for k,v in (body.get("rates") or {}).items():
-            try: rates[k]=float(v)
-            except Exception: pass
+        body = _market_http_json("https://open.er-api.com/v6/latest/USD", {}) or {}
+        rates = {"USD": 1.0}
+        for k, v in (body.get("rates") or {}).items():
+            try:
+                rates[str(k).upper()] = float(v)
+            except Exception:
+                pass
         out=[]
         for symbol,base_name,quote_name in pairs:
-            base,quote=symbol.split('/',1)
+            try:
+                base,quote=symbol.split('/',1)
+            except ValueError:
+                continue
             if base not in rates or quote not in rates:
                 continue
             rate=rates[quote]/rates[base]
-            out.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Public FX fallback','freshness':'ECB-derived public reference rate'})
+            out.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Public FX reference','freshness':'Public reference FX rate; may be delayed'})
         return out
     except Exception as exc:
         logger.warning("Public FX fallback failed: %s", exc)
@@ -14216,22 +14230,25 @@ def koja_market_fx_api():
     with _koja_market_lock:
         cached=dict(_koja_fx_cache.get("rates") or {})
         cached_at=float(_koja_fx_cache.get("updated_at") or 0)
-    if cached and now-cached_at < 60:
+    if cached and now-cached_at < 300:
         return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':None})
     rates=[]
     for symbol,base_name,quote_name in KOJA_FX_PAIRS:
         rate=None; provider=None
         try:
-            if ALPHAVANTAGE_API_KEY:
-                rate=_alpha_fx_rate(symbol)
-                if rate is not None: provider='Alpha Vantage'
-            if rate is None and TWELVEDATA_API_KEY:
-                rate=_twelve_fx_rate(symbol)
-                if rate is not None: provider='Twelve Data'
+            if KOJA_MARKET_PAID_FIRST:
+                if ALPHAVANTAGE_API_KEY and _provider_available("Alpha Vantage"):
+                    rate=_alpha_fx_rate(symbol)
+                    if rate is not None: provider='Alpha Vantage'
+                if rate is None and TWELVEDATA_API_KEY and _provider_available("Twelve Data"):
+                    rate=_twelve_fx_rate(symbol)
+                    if rate is not None: provider='Twelve Data'
         except Exception:
             logger.exception('FX rate error for %s',symbol)
         if rate is not None:
             rates.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':provider,'freshness':'Provider FX rate; plan/market terms apply'})
+    if not rates and not KOJA_MARKET_PAID_FIRST:
+        rates = _public_fx_rates(KOJA_FX_PAIRS)
     if rates:
         with _koja_market_lock:
             _koja_fx_cache['rates']={x['symbol']:x for x in rates}
