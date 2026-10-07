@@ -6416,15 +6416,6 @@ def music_admin():
             artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
             verified_status = str((artist_row or {}).get('status') or '').lower()
             verified_active = bool((artist_row or {}).get('active'))
-            if action == 'artist_publish' and not (verified_active or verified_status in ('published','approved','active')):
-                # Some older deployments have duplicate/legacy artist records keyed by created_by.
-                owner_id = (artist_row or {}).get('created_by')
-                if owner_id:
-                    db_update('koja_music_artists', {'user_id':owner_id}, {'active':True})
-                    db_update('koja_music_artists', {'user_id':owner_id}, {'status':'published'})
-                    artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
-                    verified_status = str((artist_row or {}).get('status') or '').lower()
-                    verified_active = bool((artist_row or {}).get('active'))
             if action == 'artist_publish' and artist_row and (verified_active or verified_status in ('published','approved','active')):
                 owner_id = artist_row.get('user_id')
                 # Give the activated artist the MUSIC role and keep the account active.
@@ -6511,17 +6502,17 @@ def _music_user_liked(user_id, track_id):
 @login_required
 def music_artist_new():
     user=current_user()
-    uid = str((user or {}).get('id') or '').strip()
     if request.method=='POST':
-        if not uid:
-            flash('Your account could not be identified. Please sign in again.','danger')
-            return redirect(url_for('music_artist_new'))
         name=clean(request.form.get('artist_name'))
         country=clean(request.form.get('country'))
         genre=clean(request.form.get('genre'))
         bio=clean(request.form.get('bio'))
         if not name:
             flash('Artist name is required.','danger')
+            return redirect(url_for('music_artist_new'))
+        uid = str((user or {}).get('id') or '').strip()
+        if not uid:
+            flash('Your account could not be identified. Please sign in again.', 'danger')
             return redirect(url_for('music_artist_new'))
         existing=_music_rows('koja_music_artists', {'user_id':uid}, limit=100)
         if any(str(x.get('artist_name','')).strip().lower()==name.lower() for x in existing):
@@ -6601,7 +6592,7 @@ def music_play_api(track_id):
 @app.route('/music/dashboard')
 @music_artist_required
 def music_dashboard_v2():
-    u=current_user(); artists=_music_rows('koja_music_artists',{'user_id':str(u.get('id'))},limit=100)
+    u=current_user(); artists=_music_rows('koja_music_artists',{'created_by':u.get('id')},limit=100)
     ids={str(a.get('id')) for a in artists}; tracks=[]
     for aid in ids: tracks.extend(_music_rows('koja_music_tracks',{'artist_id':aid},limit=500))
     plays=[]; likes=[]
@@ -6771,7 +6762,7 @@ def _music_lifecycle_readiness(uid):
     and royalty/accounting records are treated as control points, while distribution,
     promotion and media are operational stages.
     """
-    artists = _music_rows('koja_music_artists', {'user_id': uid}, limit=200) if uid else []
+    artists = _music_rows('koja_music_artists', {'created_by': uid}, limit=200) if uid else []
     out = []
     for artist in artists:
         aid = artist.get('id')
@@ -6808,7 +6799,7 @@ def _music_lifecycle_readiness(uid):
 
 def _music_lifecycle_artist_ids(uid):
     if not uid: return set()
-    return {str(x.get('id')) for x in _music_rows('koja_music_artists', {'user_id':uid}, limit=500) if x.get('id')}
+    return {str(x.get('id')) for x in _music_rows('koja_music_artists', {'created_by':uid}, limit=500) if x.get('id')}
 
 def _music_lifecycle_owned_rows(table, uid, limit=500):
     # Best-effort ownership filtering for lifecycle tables.
@@ -6825,7 +6816,7 @@ def _music_lifecycle_counts(uid):
 @music_artist_required
 def music_industry_suite():
     uid=_music_lifecycle_user_id(); counts=_music_lifecycle_counts(uid)
-    artists=_music_rows('koja_music_artists', {'user_id':uid}, limit=100)
+    artists=_music_rows('koja_music_artists', {'created_by':uid}, limit=100)
     tracks=[]
     for a in artists:
         tracks += _music_rows('koja_music_tracks', {'artist_id':a.get('id')}, order='created_at.desc', limit=200)
@@ -6890,7 +6881,7 @@ def music_lifecycle_module(module):
         flash(f'{label} record saved.' if not err else f'{label} record could not be saved. Run the KOJA MUSIC lifecycle migration in Supabase.','success' if not err else 'danger')
         return redirect(url_for('music_lifecycle_module',module=module))
     rows=_music_lifecycle_owned_rows(table,uid,300)
-    artists=_music_rows('koja_music_artists',{'user_id':uid},limit=100)
+    artists=_music_rows('koja_music_artists',{'user_id':str(uid)},limit=100)
     tracks=[]
     for a in artists: tracks += _music_rows('koja_music_tracks',{'artist_id':a.get('id')},limit=200)
     return render_page(f'KOJA MUSIC · {label}',r'''
