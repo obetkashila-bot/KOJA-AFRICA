@@ -13903,17 +13903,15 @@ _start_africa_now_worker()
 # ============================================================
 # KOJA GLOBAL NOW — MARKET DATA ENGINE
 # ============================================================
-KOJA_MARKET_CACHE_TTL = max(60, int(os.getenv("KOJA_MARKET_CACHE_TTL", "300")))
+KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
-KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL").split(",") if x.strip()][:20]
+KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
 _koja_market_diag = {"last_error": None, "last_provider": None}
 _koja_market_lock = threading.Lock()
-_koja_provider_cooldown = {"Alpha Vantage": 0.0, "Twelve Data": 0.0}
-KOJA_MARKET_PAID_FIRST = os.getenv("KOJA_MARKET_PAID_FIRST", "false").strip().lower() in ("1","true","yes","on")
 
 def _market_http_json(url, params):
     try:
@@ -13926,16 +13924,7 @@ def _market_http_json(url, params):
             except Exception:
                 pass
             _koja_market_diag["last_error"] = msg
-            if r.status_code == 429:
-                if "twelvedata.com" in url:
-                    _koja_provider_cooldown["Twelve Data"] = time.time() + 65
-                elif "alphavantage.co" in url:
-                    _koja_provider_cooldown["Alpha Vantage"] = time.time() + 65
-                logger.warning("Market provider rate limited (%s); cooling provider for 65s", r.status_code)
-            elif r.status_code == 404:
-                logger.info("Market symbol/feed unavailable: %s", url)
-            else:
-                logger.warning("Market provider returned %s: %s", r.status_code, msg)
+            logger.warning("Market provider returned %s: %s", r.status_code, msg)
             return None
         body = r.json()
         if not isinstance(body, dict):
@@ -13995,18 +13984,11 @@ def _yahoo_quote(symbol):
         logger.warning("Public market fallback failed for %s: %s", symbol, exc)
         return None
 
-def _provider_available(name):
-    return time.time() >= float(_koja_provider_cooldown.get(name, 0.0) or 0.0)
-
 def _market_quote(symbol):
     symbol = clean(symbol).upper()
     if not symbol:
         return None
-    # Public Yahoo data is the default so a low paid-provider quota cannot take down
-    # or spam the NEXUS market screen. Paid providers remain available as opt-in.
-    if not KOJA_MARKET_PAID_FIRST:
-        return _yahoo_quote(symbol) or (_alpha_quote(symbol) if _provider_available("Alpha Vantage") else None) or (_twelve_quote(symbol) if _provider_available("Twelve Data") else None)
-    return (_alpha_quote(symbol) if _provider_available("Alpha Vantage") else None) or (_twelve_quote(symbol) if _provider_available("Twelve Data") else None) or _yahoo_quote(symbol)
+    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -14200,25 +14182,29 @@ def koja_market_chart_api():
     return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
 
 def _public_fx_rates(pairs):
-    """Single-request public FX fallback. Avoids one paid-provider request per pair."""
+    """Public FX fallback using ECB-derived rates via Frankfurter."""
     try:
-        body = _market_http_json("https://open.er-api.com/v6/latest/USD", {}) or {}
-        rates = {"USD": 1.0}
-        for k, v in (body.get("rates") or {}).items():
-            try:
-                rates[str(k).upper()] = float(v)
-            except Exception:
-                pass
+        symbols=[]
+        for pair,_,_ in pairs:
+            base,quote=pair.split('/',1)
+            if base != "USD":
+                symbols.append(base)
+            if quote != "USD":
+                symbols.append(quote)
+        symbols=sorted(set(symbols))
+        params={"base":"USD","symbols":",".join(symbols)}
+        body=_market_http_json("https://api.frankfurter.app/latest",params) or {}
+        rates={"USD":1.0}
+        for k,v in (body.get("rates") or {}).items():
+            try: rates[k]=float(v)
+            except Exception: pass
         out=[]
         for symbol,base_name,quote_name in pairs:
-            try:
-                base,quote=symbol.split('/',1)
-            except ValueError:
-                continue
+            base,quote=symbol.split('/',1)
             if base not in rates or quote not in rates:
                 continue
             rate=rates[quote]/rates[base]
-            out.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Public FX reference','freshness':'Public reference FX rate; may be delayed'})
+            out.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Public FX fallback','freshness':'ECB-derived public reference rate'})
         return out
     except Exception as exc:
         logger.warning("Public FX fallback failed: %s", exc)
@@ -14230,25 +14216,22 @@ def koja_market_fx_api():
     with _koja_market_lock:
         cached=dict(_koja_fx_cache.get("rates") or {})
         cached_at=float(_koja_fx_cache.get("updated_at") or 0)
-    if cached and now-cached_at < 300:
+    if cached and now-cached_at < 60:
         return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':None})
     rates=[]
     for symbol,base_name,quote_name in KOJA_FX_PAIRS:
         rate=None; provider=None
         try:
-            if KOJA_MARKET_PAID_FIRST:
-                if ALPHAVANTAGE_API_KEY and _provider_available("Alpha Vantage"):
-                    rate=_alpha_fx_rate(symbol)
-                    if rate is not None: provider='Alpha Vantage'
-                if rate is None and TWELVEDATA_API_KEY and _provider_available("Twelve Data"):
-                    rate=_twelve_fx_rate(symbol)
-                    if rate is not None: provider='Twelve Data'
+            if ALPHAVANTAGE_API_KEY:
+                rate=_alpha_fx_rate(symbol)
+                if rate is not None: provider='Alpha Vantage'
+            if rate is None and TWELVEDATA_API_KEY:
+                rate=_twelve_fx_rate(symbol)
+                if rate is not None: provider='Twelve Data'
         except Exception:
             logger.exception('FX rate error for %s',symbol)
         if rate is not None:
             rates.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':provider,'freshness':'Provider FX rate; plan/market terms apply'})
-    if not rates and not KOJA_MARKET_PAID_FIRST:
-        rates = _public_fx_rates(KOJA_FX_PAIRS)
     if rates:
         with _koja_market_lock:
             _koja_fx_cache['rates']={x['symbol']:x for x in rates}
@@ -14587,48 +14570,6 @@ def _nexus_opportunity_rows(q="", country="", limit=100):
         r.setdefault("source_type", "Africa Now")
     return rows[:limit]
 
-
-# NEXUS global market intelligence extensions
-KOJA_MARKET_COMMODITIES = [("GC=F","Gold","USD/oz"),("SI=F","Silver","USD/oz"),("BZ=F","Brent Crude","USD/barrel"),("CL=F","WTI Crude","USD/barrel"),("HG=F","Copper","USD/lb"),("NG=F","Natural Gas","USD/MMBtu"),("KC=F","Coffee","USD/lb"),("CC=F","Cocoa","USD/tonne"),("ZW=F","Wheat","USD/bushel")]
-KOJA_NEXUS_COUNTRY_CURRENCY={"DZ":"DZD","AO":"AOA","BJ":"XOF","BW":"BWP","BF":"XOF","BI":"BIF","CV":"CVE","CM":"XAF","CF":"XAF","TD":"XAF","KM":"KMF","CD":"CDF","CG":"XAF","CI":"XOF","DJ":"DJF","EG":"EGP","GQ":"XAF","ER":"ERN","SZ":"SZL","ET":"ETB","GA":"XAF","GM":"GMD","GH":"GHS","GN":"GNF","GW":"XOF","KE":"KES","LS":"LSL","LR":"LRD","LY":"LYD","MG":"MGA","MW":"MWK","ML":"XOF","MR":"MRU","MU":"MUR","MA":"MAD","MZ":"MZN","NA":"NAD","NE":"XOF","NG":"NGN","RW":"RWF","ST":"STN","SN":"XOF","SC":"SCR","SL":"SLE","SO":"SOS","ZA":"ZAR","SS":"SSP","SD":"SDG","TZ":"TZS","TG":"XOF","TN":"TND","UG":"UGX","ZM":"ZMW","ZW":"ZWL"}
-KOJA_NEXUS_COUNTRY_INDEX={"ZA":"^J203.JO","NG":"^NGSEALL","EG":"^CASE30","KE":"^NSEI","GH":"^GSECI","MA":"^MASI","TZ":"^DSEI","UG":"^USEALL","ZM":"^ZAX","ZW":"^ZSE","MU":"^SEMDEX","BW":"^BSE","NA":"^NSX","TN":"^TUNINDEX","CI":"^BRVM"}
-def _nexus_fx_usd(currency):
-    currency=clean(currency).upper()
-    if not currency or currency=="USD": return 1.0,"USD","Reference"
-    pair="USD/"+currency; rate=None; provider=None
-    try:
-        if ALPHAVANTAGE_API_KEY: rate=_alpha_fx_rate(pair); provider="Alpha Vantage" if rate is not None else None
-        if rate is None and TWELVEDATA_API_KEY: rate=_twelve_fx_rate(pair); provider="Twelve Data" if rate is not None else None
-    except Exception: pass
-    if rate is None:
-        rows=_public_fx_rates([(pair,"US Dollar",currency)])
-        if rows: rate=rows[0].get("rate"); provider=rows[0].get("provider")
-    return rate,currency,provider
-@app.route('/api/nexus/market/overview')
-def nexus_market_overview_api():
-    stocks=[]
-    for symbol in ["^GSPC","^DJI","^IXIC","^FTSE","^GDAXI","^N225","^HSI","^STOXX50E"]:
-        q=_market_quote(symbol)
-        if q: stocks.append(q)
-    commodities=[]
-    for symbol,name,unit in KOJA_MARKET_COMMODITIES:
-        q=_market_quote(symbol)
-        if q: q.update(name=name,unit=unit); commodities.append(q)
-    countries=[]
-    cmap=dict(KOJA_AFRICA_54)
-    for code,name in KOJA_AFRICA_54:
-        cur=KOJA_NEXUS_COUNTRY_CURRENCY.get(code); rate,_,provider=_nexus_fx_usd(cur) if cur else (None,None,None)
-        sym=KOJA_NEXUS_COUNTRY_INDEX.get(code); idx=_market_quote(sym) if sym else None
-        countries.append({"code":code,"name":name,"currency":cur,"usd_rate":rate,"fx_provider":provider,"index":idx})
-    return jsonify({"updated_at":time.time(),"stocks":stocks,"commodities":commodities,"countries":countries,"freshness":"Provider quotes; availability and delay depend on market-data source and entitlement."})
-@app.route('/api/nexus/market/country/<code>')
-def nexus_market_country_api(code):
-    code=clean(code).upper(); cmap=dict(KOJA_AFRICA_54)
-    if code not in cmap: abort(404)
-    cur=KOJA_NEXUS_COUNTRY_CURRENCY.get(code); rate,_,provider=_nexus_fx_usd(cur) if cur else (None,None,None)
-    sym=KOJA_NEXUS_COUNTRY_INDEX.get(code); idx=_market_quote(sym) if sym else None
-    return jsonify({"country":{"code":code,"name":cmap[code],"currency":cur,"usd_rate":rate,"fx_provider":provider,"index":idx},"updated_at":time.time()})
-
 def _nexus_market_rows(q="", limit=100):
     candidates=[]
     for table in ("koja_market_products","koja_marketplace_products"):
@@ -14661,72 +14602,30 @@ def _nexus_unsave(item_type,item_id):
     session["nexus_saved"]=[x for x in _nexus_saved() if f"{x.get('type')}:{x.get('id')}"!=key]; session.modified=True
 
 def _nexus_shell(title, body, **ctx):
-    shell = r"""
+    return render_page(title, r'''
 <style>
-/* NEXUS monochrome home presentation */
-.nxh{max-width:1450px;margin:auto;color:#111;background:#000;padding:0 0 28px}.nxh a{color:#111}.nxbar{color:#fff}.nxh{min-height:100vh}.nxh > .nxbar{padding:4px 0 12px}.nxh .nxmenu{color:#fff;background:#000;border-color:#fff}.nxh .nxdrawer{color:#111}.nxh .nxpanel{background:#fff;color:#111}.nxh .nxlinks a{color:#111;background:#fff;border-color:#111}.nxh input,.nxh select,.nxh textarea{background:#fff;color:#111;border-color:#111}
-.nxh{max-width:1450px;margin:auto}.nxbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.nxbrand{font-weight:900;letter-spacing:.08em;font-size:18px}.nxmenu{padding:9px 14px;border-radius:10px;border:1px solid rgba(90,110,135,.2);background:var(--card-bg,#fff);cursor:pointer}.nxdrawer{position:fixed;inset:0;z-index:9999;display:none;background:rgba(2,12,25,.48)}.nxdrawer.open{display:block}.nxpanel{position:absolute;right:0;top:0;height:100%;width:min(360px,88vw);background:var(--card-bg,#fff);padding:24px;overflow:auto;box-shadow:-10px 0 35px rgba(0,0,0,.2)}.nxpanel h2{margin-top:0}.nxlinks{display:grid;gap:7px}.nxlinks a{padding:11px 12px;border-radius:10px;text-decoration:none;color:inherit;border:1px solid rgba(90,110,135,.13)}
-.nxhero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:24px;padding:30px;margin-bottom:18px}.nxhero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.nxhero p{max-width:900px;line-height:1.65;color:rgba(255,255,255,.84)}.nxsearch{display:flex;gap:8px;max-width:900px}.nxsearch input{flex:1;min-width:0}.nxgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.nxgrid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.nxcard{border:1px solid rgba(90,110,135,.20);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.06)}.nxcard h2,.nxcard h3{margin-top:0}.nxmuted{font-size:13px;color:#718096}.nxpill{display:inline-block;font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;margin:3px 3px 3px 0}.nxpending{background:#fff4dc;color:#8a5b00}.nxlist{display:grid;gap:9px}.nxitem{padding:12px;border-bottom:1px solid rgba(90,110,135,.15)}.nxitem:last-child{border-bottom:0}.nxactions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.nxcrumb{font-size:12px;color:#718096;margin:8px 0 14px}.nxstat strong{display:block;font-size:27px}.nxstat span{font-size:12px;color:#718096}
-.nxlive{border-radius:20px;overflow:hidden;margin-bottom:18px;border:1px solid rgba(90,110,135,.18);background:#07192d;color:#fff;box-shadow:0 12px 32px rgba(0,0,0,.12)}.nxlive-media{height:clamp(190px,31vw,390px);position:relative;background:linear-gradient(135deg,#07192d,#0b4ea2);overflow:hidden}.nxlive-media img,.nxlive-media video{width:100%;height:100%;object-fit:cover;display:none}.nxlive-content{position:absolute;left:0;right:0;bottom:0;padding:22px;background:linear-gradient(transparent,rgba(2,9,20,.94))}.nxlive-kicker{font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;opacity:.85}.nxlive-title{font-size:clamp(22px,3.2vw,38px);line-height:1.08;font-weight:900;margin:5px 0}.nxlive-meta{font-size:12px;opacity:.8}.nxlive-controls{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#061326}.nxlive-dots{display:flex;gap:5px;margin-left:auto}.nxlive-dot{width:7px;height:7px;border-radius:50%;background:#64748b;cursor:pointer}.nxlive-dot.active{background:#fff}.nxlive-note{font-size:11px;color:#9fb1c7}
-.nxexplore{border:2px solid #fff;border-radius:22px;padding:24px;background:#fff;color:#111;box-shadow:0 8px 26px rgba(0,0,0,.35)}.nxexplore-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:16px}.nxexplore-head h1{margin:0 0 7px;font-size:clamp(26px,4vw,40px)}.nxexplore-head p{margin:0;max-width:820px;color:#333;line-height:1.55}.nxexplore-search{max-width:none;margin-bottom:18px}.nxexplore-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.nxexplore-card{display:block;text-decoration:none;color:#111;border:1px solid #111;border-radius:15px;padding:15px;background:#fff;transition:transform .15s ease,box-shadow .15s ease}.nxexplore-card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.07)}.nxexplore-card strong{display:block;font-size:15px;margin-bottom:5px}.nxexplore-card span{display:block;font-size:12px;line-height:1.45;color:#333}@media(max-width:1100px){.nxexplore-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:650px){.nxexplore{padding:17px}.nxexplore-head{align-items:flex-start;flex-direction:column}.nxexplore-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:430px){.nxexplore-grid{grid-template-columns:1fr}}
-@media(max-width:1000px){.nxgrid{grid-template-columns:repeat(2,1fr)}.nxgrid4{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.nxgrid,.nxgrid4{grid-template-columns:1fr}.nxsearch{flex-direction:column}.nxlive-media{height:250px}}
+.nxh{max-width:1450px;margin:auto}.nxnav{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}.nxnav a{padding:8px 11px;border:1px solid rgba(90,110,135,.18);border-radius:999px;text-decoration:none;color:inherit;font-size:12px}.nxhero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:24px;padding:30px;margin-bottom:18px}.nxhero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.nxhero p{max-width:900px;line-height:1.65;color:rgba(255,255,255,.84)}.nxsearch{display:flex;gap:8px;max-width:900px}.nxsearch input{flex:1;min-width:0}.nxgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.nxgrid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.nxcard{border:1px solid rgba(90,110,135,.20);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.06)}.nxcard h2,.nxcard h3{margin-top:0}.nxmuted{font-size:13px;color:#718096}.nxpill{display:inline-block;font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;margin:3px 3px 3px 0}.nxpending{background:#fff4dc;color:#8a5b00}.nxlist{display:grid;gap:9px}.nxitem{padding:12px;border-bottom:1px solid rgba(90,110,135,.15)}.nxitem:last-child{border-bottom:0}.nxactions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.nxcrumb{font-size:12px;color:#718096;margin:8px 0 14px}.nxstat strong{display:block;font-size:27px}.nxstat span{font-size:12px;color:#718096}@media(max-width:1000px){.nxgrid{grid-template-columns:repeat(2,1fr)}.nxgrid4{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.nxgrid,.nxgrid4{grid-template-columns:1fr}.nxsearch{flex-direction:column}}
 </style>
 <div class="nxh">
-<div class="nxbar"><div class="nxbrand">AFRICA <span style="opacity:.45">/</span> NEXUS</div><button class="nxmenu" type="button" onclick="document.getElementById('nxdrawer').classList.add('open')">Menu</button></div>
-<div id="nxdrawer" class="nxdrawer" onclick="if(event.target===this)this.classList.remove('open')"><aside class="nxpanel"><div style="display:flex;justify-content:space-between;align-items:center"><h2>NEXUS Menu</h2><button class="nxmenu" type="button" onclick="document.getElementById('nxdrawer').classList.remove('open')">Close</button></div><div class="nxlinks"><a href="{{ url_for('koja_nexus_home') }}">NEXUS</a><a href="{{ url_for('nexus_africa') }}">Africa</a><a href="{{ url_for('nexus_search') }}">Search</a><a href="{{ url_for('nexus_business') }}">Business</a><a href="{{ url_for('nexus_services') }}">Services</a><a href="{{ url_for('nexus_news') }}">Africa Now</a><a href="{{ url_for('nexus_market') }}">Market</a><a href="{{ url_for('nexus_opportunities') }}">Opportunities</a><a href="{{ url_for('nexus_education') }}">Education</a><a href="{{ url_for('nexus_organisations') }}">Organisations</a><a href="{{ url_for('nexus_intelligence') }}">Intelligence</a><a href="{{ url_for('nexus_saved') }}">Saved</a><a href="{{ url_for('nexus_connect') }}">Connect</a></div></aside></div>
-""" + body + r"""
+<nav class="nxnav"><a href="{{ url_for('koja_nexus_home') }}">NEXUS</a><a href="{{ url_for('nexus_africa') }}">Africa</a><a href="{{ url_for('nexus_search') }}">Search</a><a href="{{ url_for('nexus_business') }}">Business</a><a href="{{ url_for('nexus_services') }}">Services</a><a href="{{ url_for('nexus_news') }}">Africa Now</a><a href="{{ url_for('nexus_market') }}">Market</a><a href="{{ url_for('nexus_opportunities') }}">Opportunities</a><a href="{{ url_for('nexus_education') }}">Education</a><a href="{{ url_for('nexus_organisations') }}">Organisations</a><a href="{{ url_for('nexus_intelligence') }}">Intelligence</a><a href="{{ url_for('nexus_saved') }}">Saved</a><a href="{{ url_for('nexus_connect') }}">Connect</a></nav>
+''' + body + r'''
 </div>
-<script>
-(function(){const root=document.querySelector('[data-nexus-live]');if(!root)return;let items=[],idx=0,timer=null;const title=root.querySelector('[data-live-title]'),meta=root.querySelector('[data-live-meta]'),kicker=root.querySelector('[data-live-kicker]'),img=root.querySelector('[data-live-img]'),video=root.querySelector('[data-live-video]'),dots=root.querySelector('[data-live-dots]');function render(){if(!items.length){return}const x=items[idx%items.length]||{};kicker.textContent=x.category||x.type||'Africa update';title.textContent=x.title||'Latest Africa update';meta.textContent=[x.source,x.country,x.published_at||x.published].filter(Boolean).join(' · ');img.style.display='none';video.style.display='none';if(/^https?:\/\//i.test(x.image_url||x.image)){img.src=x.image_url||x.image;img.style.display='block'}if(/^https?:\/\//i.test(x.video_url||x.video)){video.src=x.video_url||x.video;video.style.display='block'}dots.innerHTML=items.slice(0,10).map((_,i)=>'<span class="nxlive-dot '+(i===idx?'active':'')+'" data-i="'+i+'"></span>').join('');dots.querySelectorAll('.nxlive-dot').forEach(d=>d.onclick=()=>{idx=Number(d.dataset.i);render();reset()});root.querySelector('[data-live-open]').onclick=()=>{if(x.url||x.source_url)window.open(x.url||x.source_url,'_blank','noopener')};root.querySelector('[data-live-share]').onclick=async()=>{const u=x.url||x.source_url||location.href;try{await navigator.share({title:x.title||'KOJA NEXUS',url:u})}catch(e){try{await navigator.clipboard.writeText(u)}catch(_){} }};}function reset(){clearInterval(timer);timer=setInterval(()=>{idx=(idx+1)%Math.max(items.length,1);render()},7000)}async function load(){try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store'});const j=await r.json();items=j.items||[];if(!items.length)items=[{title:'KOJA NEXUS — Africa updates',category:'NEXUS',source:'KOJA AFRICA'}];idx=0;render();reset()}catch(e){items=[{title:'KOJA NEXUS',category:'Africa',source:'Automatic updates'}];render();reset()}}load();setInterval(load,60000)})();
-</script>
-"""
-    return render_page(title, shell, **ctx)
+''', **ctx)
 
 def _nexus_home_page():
-    return _nexus_shell("KOJA NEXUS",r"""
-<div class="nxlive" data-nexus-live><div class="nxlive-media"><img data-live-img alt=""><video data-live-video controls playsinline></video><div class="nxlive-content"><div class="nxlive-kicker" data-live-kicker>AFRICA NOW</div><div class="nxlive-title" data-live-title>Loading Africa updates…</div><div class="nxlive-meta" data-live-meta>News · Sports · Jobs · Opportunities</div></div></div><div class="nxlive-controls"><span class="nxlive-note">Automatic NEXUS updates</span><button class="btn" data-live-open type="button">Open</button><button class="btn secondary" data-live-share type="button">Share</button><div class="nxlive-dots" data-live-dots></div></div></div>
-
-<section class="nxhome-market">
-<style>
-.nxhome-market{background:#fff;color:#111;border:2px solid #fff;border-radius:22px;padding:18px;margin-bottom:18px;box-shadow:0 8px 26px rgba(0,0,0,.35)}
-.nxhome-market .nxmh{display:flex;justify-content:space-between;gap:12px;align-items:end;flex-wrap:wrap}.nxhome-market .nxmh h2{margin:0;font-size:clamp(20px,3vw,28px)}
-.nxhome-market .nxmg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}.nxhome-market .nxmb{background:#fff;border:1px solid #111;border-radius:15px;padding:13px}.nxhome-market .nxmb strong{display:block;font-size:13px}.nxhome-market .nxmv{font-size:21px;font-weight:900;margin-top:6px}.nxhome-market .nxmc{font-size:11px;margin-top:4px}.nxhome-market .nxmu{font-size:10px;color:#555;margin-top:6px;line-height:1.4}.nxhome-market .nxup{color:#087a43}.nxhome-market .nxdown{color:#b42318}.nxhome-market .nxchart{height:230px;border:1px solid #111;border-radius:15px;margin-top:12px;background:#fafafa;overflow:hidden}.nxhome-market .nxchart svg{width:100%;height:100%}.nxhome-market .nxcountry{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:10px;margin-top:12px}.nxhome-market select{width:100%;padding:10px;border:1px solid #111;border-radius:10px;background:#fff;color:#111}.nxhome-market .nxmarket-row{margin-top:14px}.nxhome-market .nxmarket-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.nxhome-market .nxmarket-link{font-size:12px;font-weight:800;color:#111;text-decoration:none;border:1px solid #111;border-radius:10px;padding:8px 10px}@media(max-width:950px){.nxhome-market .nxmg{grid-template-columns:repeat(2,1fr)}.nxhome-market .nxcountry{grid-template-columns:1fr}}@media(max-width:520px){.nxhome-market .nxmg{grid-template-columns:1fr}}
-</style>
-<div class="nxmh"><div><h2>GLOBAL MARKET NOW</h2><div class="nxmuted">Stocks, currencies, commodities and country-level market signals.</div></div><div class="nxmarket-actions"><span id="nxhome-market-updated" class="nxmu">Updating…</span><a class="nxmarket-link" href="{{ url_for('nexus_market') }}">Open Market</a></div></div>
-<div id="nxhome-stocks" class="nxmg"><div class="nxmb">Loading global markets…</div></div>
-<div class="nxmarket-row"><div class="nxmh"><div><h3 style="margin:0">MARKET GRAPH</h3><div class="nxmuted">Recent price movement for a selected global benchmark.</div></div><select id="nxhome-symbol" style="max-width:210px"><option value="^GSPC">S&amp;P 500</option><option value="^DJI">Dow Jones</option><option value="^IXIC">Nasdaq</option><option value="^FTSE">FTSE 100</option><option value="^GDAXI">DAX</option><option value="^N225">Nikkei 225</option><option value="^HSI">Hang Seng</option></select></div><div id="nxhome-chart" class="nxchart">Loading graph…</div></div>
-<div class="nxmarket-row"><div class="nxmh"><div><h3 style="margin:0">TOP MARKET PRODUCTS</h3><div class="nxmuted">Tracked commodities and energy/metals products.</div></div></div><div id="nxhome-commodities" class="nxmg"></div></div>
-<div class="nxmarket-row"><div class="nxmh"><div><h3 style="margin:0">COUNTRY MARKET LEVEL</h3><div class="nxmuted">Choose an African country for its currency and mapped market benchmark.</div></div><select id="nxhome-country" style="max-width:280px"><option value="DZ">Algeria (DZ)</option><option value="AO">Angola (AO)</option><option value="BJ">Benin (BJ)</option><option value="BW">Botswana (BW)</option><option value="BF">Burkina Faso (BF)</option><option value="BI">Burundi (BI)</option><option value="CV">Cabo Verde (CV)</option><option value="CM">Cameroon (CM)</option><option value="CF">Central African Republic (CF)</option><option value="TD">Chad (TD)</option><option value="KM">Comoros (KM)</option><option value="CG">Republic of the Congo (CG)</option><option value="CI">Côte d’Ivoire (CI)</option><option value="CD">Democratic Republic of the Congo (CD)</option><option value="DJ">Djibouti (DJ)</option><option value="EG">Egypt (EG)</option><option value="GQ">Equatorial Guinea (GQ)</option><option value="ER">Eritrea (ER)</option><option value="SZ">Eswatini (SZ)</option><option value="ET">Ethiopia (ET)</option><option value="GA">Gabon (GA)</option><option value="GM">The Gambia (GM)</option><option value="GH">Ghana (GH)</option><option value="GN">Guinea (GN)</option><option value="GW">Guinea-Bissau (GW)</option><option value="KE">Kenya (KE)</option><option value="LS">Lesotho (LS)</option><option value="LR">Liberia (LR)</option><option value="LY">Libya (LY)</option><option value="MG">Madagascar (MG)</option><option value="MW">Malawi (MW)</option><option value="ML">Mali (ML)</option><option value="MR">Mauritania (MR)</option><option value="MU">Mauritius (MU)</option><option value="MA">Morocco (MA)</option><option value="MZ">Mozambique (MZ)</option><option value="NA">Namibia (NA)</option><option value="NE">Niger (NE)</option><option value="NG">Nigeria (NG)</option><option value="RW">Rwanda (RW)</option><option value="ST">São Tomé and Príncipe (ST)</option><option value="SN">Senegal (SN)</option><option value="SC">Seychelles (SC)</option><option value="SL">Sierra Leone (SL)</option><option value="SO">Somalia (SO)</option><option value="ZA">South Africa (ZA)</option><option value="SS">South Sudan (SS)</option><option value="SD">Sudan (SD)</option><option value="TZ">Tanzania (TZ)</option><option value="TG">Togo (TG)</option><option value="TN">Tunisia (TN)</option><option value="UG">Uganda (UG)</option><option value="ZM">Zambia (ZM)</option><option value="ZW">Zimbabwe (ZW)</option></select></div><div class="nxcountry"><div id="nxhome-fx" class="nxmb">Loading currency…</div><div id="nxhome-index" class="nxmb">Loading benchmark…</div><div class="nxmb"><strong>Market scope</strong><div class="nxmv">Africa + World</div><div class="nxmu">Data availability depends on the provider and exchange.</div></div></div></div>
-<script>(function(){const S=document.getElementById('nxhome-stocks'),C=document.getElementById('nxhome-commodities'),U=document.getElementById('nxhome-market-updated'),SY=document.getElementById('nxhome-symbol'),CH=document.getElementById('nxhome-chart'),CO=document.getElementById('nxhome-country'),FX=document.getElementById('nxhome-fx'),IX=document.getElementById('nxhome-index');function e(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function card(q,label){let n=Number(q.change_percent),cl=n>=0?'nxup':'nxdown';return '<div class="nxmb"><strong>'+e(label||q.symbol)+'</strong><div class="nxmv">'+e(Number(q.price).toLocaleString(undefined,{maximumFractionDigits:4}))+'</div><div class="nxmc '+cl+'">'+(Number.isFinite(n)?(n>=0?'+':'')+n.toFixed(2)+'%':'—')+'</div><div class="nxmu">'+e(q.provider||'Provider')+' · '+e(q.freshness||'')+'</div></div>';}function draw(a){if(!a.length){CH.innerHTML='<div style="padding:20px">No graph data available.</div>';return;}let v=a.map(x=>Number(x.close)).filter(Number.isFinite),w=1000,h=230,p=35,min=Math.min(...v),max=Math.max(...v),sp=max-min||1,pts=a.map((x,i)=>[p+i/Math.max(1,a.length-1)*(w-2*p),h-25-(Number(x.close)-min)/sp*(h-50)]),d=pts.map((x,i)=>(i?'L':'M')+x[0].toFixed(1)+' '+x[1].toFixed(1)).join(' ');CH.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><path d="'+d+'" fill="none" stroke="#111" stroke-width="3" vector-effect="non-scaling-stroke"/><circle cx="'+pts[pts.length-1][0]+'" cy="'+pts[pts.length-1][1]+'" r="5" fill="#111"/><text x="'+p+'" y="15" font-size="11">'+e(SY.options[SY.selectedIndex].text)+' · '+Number(v[v.length-1]).toLocaleString(undefined,{maximumFractionDigits:2})+'</text></svg>';}async function chart(){try{let d=await (await fetch('/api/markets/chart?symbol='+encodeURIComponent(SY.value)+'&interval=1day&outputsize=60',{cache:'no-store'})).json();draw(d.values||[]);}catch(x){CH.textContent='Graph temporarily unavailable.';}}async function all(){try{let d=await (await fetch('/api/nexus/market/overview',{cache:'no-store'})).json();U.textContent='Updated '+new Date(d.updated_at*1000).toLocaleTimeString();S.innerHTML=(d.stocks||[]).map(q=>card(q)).join('')||'<div class="nxmb">No benchmark quotes available.</div>';let a=(d.commodities||[]).sort((x,y)=>Number(y.price)-Number(x.price));C.innerHTML=a.map(q=>card(q,q.name)+'<div class="nxmu">Unit: '+e(q.unit)+'</div>').join('')||'<div class="nxmb">No commodity quotes available.</div>';}catch(x){S.innerHTML='<div class="nxmb">Market feed temporarily unavailable.</div>';}}async function country(){try{let d=await (await fetch('/api/nexus/market/country/'+CO.value,{cache:'no-store'})).json(),x=d.country||{};FX.innerHTML='<strong>'+e(x.currency||'Currency')+'</strong><div class="nxmv">'+(x.usd_rate==null?'—':Number(x.usd_rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="nxmu">1 USD = '+e(x.usd_rate==null?'unavailable':Number(x.usd_rate).toLocaleString(undefined,{maximumFractionDigits:6}))+' '+e(x.currency||'')+' · '+e(x.fx_provider||'Provider unavailable')+'</div>';let q=x.index;IX.innerHTML=q?'<strong>'+e(q.symbol)+'</strong><div class="nxmv">'+e(Number(q.price).toLocaleString(undefined,{maximumFractionDigits:2}))+'</div><div class="nxmc">'+e(q.change_percent||'')+'</div><div class="nxmu">'+e(q.provider||'')+'</div>':'<strong>No benchmark mapped</strong><div class="nxmu">Currency data may still be available.</div>';}catch(x){FX.textContent='Country data unavailable';IX.textContent='Country data unavailable';}}SY.onchange=chart;CO.onchange=country;all();chart();country();setInterval(all,60000);setInterval(chart,300000);setInterval(country,60000);})();</script>
-</section>
-
-<section class="nxexplore">
-  <div class="nxexplore-head">
-    <div><h1>Explore NEXUS</h1><p>One gateway to Africa — countries, search, business, services, news, markets, opportunities, education, organisations and intelligence.</p></div>
-    <a class="btn" href="{{ url_for('nexus_search') }}">Global Search</a>
-  </div>
-  <form class="nxsearch nxexplore-search" action="{{ url_for('nexus_search') }}"><input name="q" placeholder="Search across Africa…"><button class="btn" type="submit">Search</button></form>
-  <div class="nxexplore-grid">
-    <a class="nxexplore-card" href="{{ url_for('nexus_africa') }}"><strong>Africa</strong><span>54 countries and country discovery</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_search') }}"><strong>Search</strong><span>Search the NEXUS index</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_business') }}"><strong>Business</strong><span>Businesses, B2B and organisations</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_services') }}"><strong>Services</strong><span>Government and public services</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_news') }}"><strong>Africa Now</strong><span>News and current updates</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_market') }}"><strong>Market</strong><span>African markets and commerce</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_opportunities') }}"><strong>Opportunities</strong><span>Jobs, grants, scholarships and tenders</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_education') }}"><strong>Education</strong><span>Universities, research and academic discovery</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_organisations') }}"><strong>Organisations</strong><span>Companies and institutions</span></a>
-    <a class="nxexplore-card" href="{{ url_for('nexus_intelligence') }}"><strong>Intelligence</strong><span>Country, business, market and opportunity intelligence</span></a>
-  </div>
-</section>
-""")
-
+    services=_world_rows(); news=_nexus_news_rows(limit=6); opps=_nexus_opportunity_rows(limit=6); businesses=_nexus_business_rows()[:6]
+    verified=sum(1 for x in services if _world_verified(x))
+    return _nexus_shell("KOJA NEXUS",r'''
+<div class="nxhero"><div class="nxcrumb">KOJA / NEXUS</div><h1>KOJA NEXUS</h1><p>Discover Africa's countries, services, businesses, organisations, markets, news and opportunities — then continue into the specialised KOJA service that executes the next step.</p><form class="nxsearch" action="{{ url_for('nexus_search') }}"><input name="q" placeholder="Search Africa, countries, services, businesses, opportunities, news..."><button class="btn" type="submit">Global Search</button></form></div>
+<div class="nxgrid4"><div class="nxcard nxstat"><strong>{{ countries|length }}</strong><span>African countries</span></div><div class="nxcard nxstat"><strong>{{ services|length }}</strong><span>Indexed services</span></div><div class="nxcard nxstat"><strong>{{ verified }}</strong><span>Verified services</span></div><div class="nxcard nxstat"><strong>{{ opps|length }}</strong><span>Current opportunities</span></div></div>
+<section class="nxcard" style="margin-top:18px"><h2>Explore Africa</h2><div class="nxgrid4">{% for code,name in countries[:12] %}<a class="nxcard" href="{{ url_for('nexus_country',country=code.lower()) }}"><strong>{{ name }}</strong><div class="nxmuted">{{ code }}</div></a>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_africa') }}">View all 54 countries</a></div></section>
+<div class="nxgrid" style="margin-top:18px"><section class="nxcard"><h2>Africa Now</h2><div class="nxlist">{% for x in news %}<div class="nxitem"><strong>{{ x.title }}</strong><div class="nxmuted">{{ x.category or 'Africa' }} · {{ x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No current stories available.</p>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_news') }}">Open Africa Now</a></div></section><section class="nxcard"><h2>Opportunities</h2><div class="nxlist">{% for x in opps %}<div class="nxitem"><strong>{{ x.title }}</strong><div class="nxmuted">{{ x.job_type or x.opportunity_type or 'Opportunity' }} · {{ x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No current opportunities available.</p>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_opportunities') }}">Find opportunities</a></div></section><section class="nxcard"><h2>Featured organisations</h2><div class="nxlist">{% for x in businesses %}<div class="nxitem"><strong>{{ x.name or x.business_name or 'Business' }}</strong><div class="nxmuted">{{ x.country_name or x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No indexed business profiles available.</p>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_business') }}">Discover business</a></div></section></div>
+<section class="nxcard" style="margin-top:18px"><h2>KOJA Ecosystem</h2><p class="nxmuted">NEXUS discovers and routes the user into the specialised KOJA services that execute deeper activity.</p><div class="nxgrid4">{% for n,u in ecosystem %}<a class="nxcard" href="{{ u }}"><strong>{{ n }}</strong><div class="nxmuted">Continue</div></a>{% endfor %}</div></section>
+''', countries=KOJA_AFRICA_54, services=services, verified=verified, opps=opps, news=news, businesses=businesses, ecosystem=[("KOJA NEWS","/news"),("KOJA BUSINESS","/business-directory"),("KOJA EDUCATION","/education"),("KOJA MARKET","/market"),("KOJA MEDIA","/media-next"),("KOJA MUSIC","/music"),("KOJA CONNECT+","/communication-next"),("KOJA DELIVERY","/deliver"),("KOJA CLOUD","https://higher-education-at-easy.onrender.com")])
 
 @app.route("/nexus")
 def koja_nexus_home():
-    """Public NEXUS home. Keep this endpoint name stable for the global navigation and drawer."""
     return _nexus_home_page()
-
 
 @app.route("/nexus/search")
 def nexus_search():
@@ -14806,15 +14705,8 @@ def nexus_news():
 @app.route("/nexus/market")
 def nexus_market():
     rows=_nexus_market_rows(clean(request.args.get("q")),100)
-    return _nexus_shell("NEXUS Market",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Market</div><h1>Global Market Intelligence</h1><p>Stocks, currencies, commodities and country-level African market signals. Data is labelled with provider and freshness information.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Products, companies, markets..."><button class="btn">Search Market</button></form></div>
-<style>.nxm{display:grid;gap:14px}.nxmp{background:#fff;color:#111;border:2px solid #111;border-radius:20px;padding:18px}.nxmh{display:flex;justify-content:space-between;gap:12px;align-items:end;flex-wrap:wrap}.nxmh h2{margin:0}.nxmg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}.nxmb{background:#fff;border:1px solid #111;border-radius:15px;padding:13px}.nxmb strong{display:block;font-size:13px}.nxmv{font-size:21px;font-weight:900;margin-top:6px}.nxmc{font-size:11px;margin-top:4px}.nxmu{font-size:10px;color:#555;margin-top:6px;line-height:1.4}.nxup{color:#087a43}.nxdown{color:#b42318}.nxchart{height:260px;border:1px solid #111;border-radius:15px;margin-top:12px;background:#fafafa;overflow:hidden}.nxchart svg{width:100%;height:100%}.nxcountry{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:10px;margin-top:12px}.nxcountry select{width:100%;padding:10px;border:1px solid #111;border-radius:10px;background:#fff;color:#111}@media(max-width:950px){.nxmg{grid-template-columns:repeat(2,1fr)}.nxcountry{grid-template-columns:1fr}}@media(max-width:520px){.nxmg{grid-template-columns:1fr}}</style>
-<section class="nxm"><div class="nxmp"><div class="nxmh"><div><h2>WORLD MARKET NOW</h2><div class="nxmuted">Major global stock indexes.</div></div><span id="nxmu" class="nxmu">Loading…</span></div><div id="nxstocks" class="nxmg"><div class="nxmb">Loading market data…</div></div></div>
-<div class="nxmp"><div class="nxmh"><div><h2>MARKET GRAPH</h2><div class="nxmuted">Recent price history for a selected benchmark.</div></div><select id="nxsym" style="padding:9px;border:1px solid #111;border-radius:10px;background:#fff;color:#111"><option value="^GSPC">S&amp;P 500</option><option value="^DJI">Dow Jones</option><option value="^IXIC">Nasdaq</option><option value="^FTSE">FTSE 100</option><option value="^GDAXI">DAX</option><option value="^N225">Nikkei 225</option><option value="^HSI">Hang Seng</option></select></div><div id="nxchart" class="nxchart">Loading graph…</div></div>
-<div class="nxmp"><div class="nxmh"><div><h2>TOP MARKET PRODUCTS</h2><div class="nxmuted">Tracked commodities and energy/metals products ranked by quoted unit price.</div></div></div><div id="nxcommodities" class="nxmg"></div></div>
-<div class="nxmp"><div class="nxmh"><div><h2>COUNTRY MARKET LEVEL</h2><div class="nxmuted">African country currency versus USD and local benchmark where mapped.</div></div></div><div class="nxcountry"><select id="nxcountry">{% for code,name in countries %}<option value="{{ code }}">{{ name }} ({{ code }})</option>{% endfor %}</select><div id="nxf" class="nxmb">Loading…</div><div id="nxi" class="nxmb">Loading…</div></div></div></section>
-<div class="nxcard"><h2>African Market Listings</h2><div class="nxmuted">KOJA marketplace products and listings are shown separately from financial-market data.</div></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">Market</span><h2>{{ x.name or x.title or x.product_name or 'Market item' }}</h2><div class="nxmuted">{{ x.category or x.industry or 'Market' }}</div><p>{{ x.description or x.summary or '' }}</p></article>{% else %}<div class="nxcard"><h3>No local market listings found.</h3></div>{% endfor %}</div>
-<script>(function(){const S=document.getElementById('nxstocks'),C=document.getElementById('nxcommodities'),U=document.getElementById('nxmu'),SY=document.getElementById('nxsym'),CH=document.getElementById('nxchart'),CO=document.getElementById('nxcountry'),FX=document.getElementById('nxf'),IX=document.getElementById('nxi');function e(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function card(q,label){let n=Number(q.change_percent),cl=n>=0?'nxup':'nxdown';return '<div class="nxmb"><strong>'+e(label||q.symbol)+'</strong><div class="nxmv">'+e(Number(q.price).toLocaleString(undefined,{maximumFractionDigits:4}))+'</div><div class="nxmc '+cl+'">'+(Number.isFinite(n)?(n>=0?'+':'')+n.toFixed(2)+'%':'—')+'</div><div class="nxmu">'+e(q.provider||'Provider')+' · '+e(q.freshness||'')+'</div></div>';}function draw(a){if(!a.length){CH.innerHTML='<div style="padding:20px">No graph data available.</div>';return;}let v=a.map(x=>Number(x.close)).filter(Number.isFinite),w=1000,h=250,p=35,min=Math.min(...v),max=Math.max(...v),sp=max-min||1,pts=a.map((x,i)=>[p+i/Math.max(1,a.length-1)*(w-2*p),h-25-(Number(x.close)-min)/sp*(h-50)]),d=pts.map((x,i)=>(i?'L':'M')+x[0].toFixed(1)+' '+x[1].toFixed(1)).join(' ');CH.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><path d="'+d+'" fill="none" stroke="#111" stroke-width="3" vector-effect="non-scaling-stroke"/><circle cx="'+pts[pts.length-1][0]+'" cy="'+pts[pts.length-1][1]+'" r="5" fill="#111"/><text x="'+p+'" y="15" font-size="11">'+e(SY.options[SY.selectedIndex].text)+' · '+Number(v[v.length-1]).toLocaleString(undefined,{maximumFractionDigits:2})+'</text></svg>';}async function chart(){try{let d=await (await fetch('/api/markets/chart?symbol='+encodeURIComponent(SY.value)+'&interval=1day&outputsize=60',{cache:'no-store'})).json();draw(d.values||[]);}catch(x){CH.textContent='Graph temporarily unavailable.';}}async function all(){try{let d=await (await fetch('/api/nexus/market/overview',{cache:'no-store'})).json();U.textContent='Updated '+new Date(d.updated_at*1000).toLocaleTimeString();S.innerHTML=(d.stocks||[]).map(q=>card(q)).join('')||'<div class="nxmb">No benchmark quotes available.</div>';let a=(d.commodities||[]).sort((x,y)=>Number(y.price)-Number(x.price));C.innerHTML=a.map(q=>card(q,q.name)+'<div class="nxmu">Unit: '+e(q.unit)+'</div>').join('')||'<div class="nxmb">No commodity quotes available.</div>';}catch(x){S.innerHTML='<div class="nxmb">Market feed temporarily unavailable.</div>';}}async function country(){try{let d=await (await fetch('/api/nexus/market/country/'+CO.value,{cache:'no-store'})).json(),x=d.country||{};FX.innerHTML='<strong>'+e(x.currency||'Currency')+'</strong><div class="nxmv">'+(x.usd_rate==null?'—':Number(x.usd_rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="nxmu">1 USD = '+e(x.usd_rate==null?'unavailable':Number(x.usd_rate).toLocaleString(undefined,{maximumFractionDigits:6}))+' '+e(x.currency||'')+' · '+e(x.fx_provider||'Provider unavailable')+'</div>';let q=x.index;IX.innerHTML=q?'<strong>'+e(q.symbol)+'</strong><div class="nxmv">'+e(Number(q.price).toLocaleString(undefined,{maximumFractionDigits:2}))+'</div><div class="nxmc">'+e(q.change_percent||'')+'</div><div class="nxmu">'+e(q.provider||'')+'</div>':'<strong>No benchmark mapped</strong><div class="nxmu">Currency data may still be available.</div>';}catch(x){FX.textContent='Country data unavailable';IX.textContent='Country data unavailable';}}SY.onchange=chart;CO.onchange=country;all();chart();country();setInterval(all,60000);setInterval(chart,300000);setInterval(country,60000);})();</script>
-''' ,rows=rows,q=clean(request.args.get("q")),countries=KOJA_AFRICA_54)
+    return _nexus_shell("NEXUS Market",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Market</div><h1>African Market Discovery</h1><p>Market and commerce information assembled from existing KOJA market data. For live financial data, NEXUS links to the existing market intelligence layer.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Products, companies, markets..."><button class="btn">Search Market</button></form></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">Market</span><h2>{{ x.name or x.title or x.product_name or 'Market item' }}</h2><div class="nxmuted">{{ x.category or x.industry or 'Market' }}</div><p>{{ x.description or x.summary or '' }}</p></article>{% else %}<div class="nxcard"><h3>Market snapshot</h3><p class="nxmuted">Existing KOJA market data is available through the specialised KOJA MARKET module.</p><a class="btn" href="/market">Open KOJA MARKET</a></div>{% endfor %}</div>''',rows=rows,q=clean(request.args.get("q")))
 
 @app.route("/nexus/opportunities")
 def nexus_opportunities():
@@ -17160,6 +17052,401 @@ def bh_admin_action():
     _bh_audit("bh_admin_" + kind + "_" + action, kind, rid, {"status": status})
     flash("%s %s." % (kind.capitalize(), status), "success")
     return redirect(url_for("bh_admin"))
+
+
+# ============================================================
+# KOJA ACADEMIC V1 — Teacher marketplace, tutoring, live classes
+# Additive expansion. Existing KOJA routes/functions remain intact.
+# Requires KOJA_ACADEMIC_V1.sql to be applied once to Supabase.
+# ============================================================
+ACADEMIC_TEACHER_TABLE = 'koja_academic_teachers'
+ACADEMIC_CLASS_TABLE = 'koja_academic_classes'
+ACADEMIC_ENROLL_TABLE = 'koja_academic_enrollments'
+ACADEMIC_TUTOR_TABLE = 'koja_academic_tutoring_sessions'
+ACADEMIC_BOOKING_TABLE = 'koja_academic_bookings'
+ACADEMIC_MATERIAL_TABLE = 'koja_academic_materials'
+ACADEMIC_ATTENDANCE_TABLE = 'koja_academic_attendance'
+ACADEMIC_REVIEW_TABLE = 'koja_academic_reviews'
+ACADEMIC_LEDGER_TABLE = 'koja_academic_ledger'
+ACADEMIC_REQUEST_TABLE = 'koja_academic_teacher_requests'
+
+
+def _academic_uid():
+    u = current_user() or {}
+    return str(u.get('id') or u.get('user_id') or '')
+
+
+def _academic_ready():
+    # Feature detection instead of startup DB dependency.
+    rows = db_select(ACADEMIC_TEACHER_TABLE, limit=1)
+    return rows is not None
+
+
+def _academic_teacher(uid=None):
+    uid = str(uid or _academic_uid())
+    if not uid:
+        return None
+    return first_row(ACADEMIC_TEACHER_TABLE, {'user_id': uid})
+
+
+def _academic_teacher_or_404():
+    t = _academic_teacher()
+    if not t:
+        abort(403)
+    return t
+
+
+def _academic_class(cid):
+    return first_row(ACADEMIC_CLASS_TABLE, {'id': str(cid)})
+
+
+def _academic_owner(class_row):
+    return str((class_row or {}).get('teacher_user_id') or '') == _academic_uid()
+
+
+def _academic_enrolled(cid, uid=None):
+    uid = str(uid or _academic_uid())
+    return bool(first_row(ACADEMIC_ENROLL_TABLE, {'class_id': str(cid), 'learner_user_id': uid, 'status': 'enrolled'}))
+
+
+def _academic_live_token(room, identity, name, can_publish=False):
+    try:
+        return _livekit_token(room, identity, name, can_publish=can_publish)
+    except TypeError:
+        # Existing helper supports the same grants; fall back to the server SDK helper.
+        return _livekit_token(room, identity, name)
+    except Exception:
+        if livekit_api is None or not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or not LIVEKIT_URL:
+            return None
+        try:
+            grants = livekit_api.VideoGrants(room_join=True, room=room, can_publish=bool(can_publish), can_subscribe=True, can_publish_data=True)
+            return (livekit_api.AccessToken(api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
+                    .with_identity(identity).with_name(name or 'KOJA Participant').with_grants(grants).to_jwt())
+        except Exception:
+            logger.exception('Academic LiveKit token generation failed')
+            return None
+
+
+@app.route('/academic')
+@login_required
+def academic_hub():
+    uid = _academic_uid()
+    assignments_rows = db_select('assignments', {'owner_id': uid}, order='created_at.desc', limit=20) or []
+    classes = db_select(ACADEMIC_CLASS_TABLE, {'status': 'published'}, order='created_at.desc', limit=30) or []
+    teacher = _academic_teacher(uid)
+    sessions = db_select(ACADEMIC_BOOKING_TABLE, {'learner_user_id': uid}, order='created_at.desc', limit=20) or []
+    return render_page('KOJA Academic', r'''
+<div class="hero"><h1>KOJA Academic</h1><p>Assignments, teachers, live tutoring and live classes in one KOJA ecosystem.</p>
+<div class="actions"><a class="btn" href="{{ url_for('academic_teachers') }}">Find a Teacher</a><a class="btn secondary" href="{{ url_for('academic_classes') }}">Live Classes</a><a class="btn secondary" href="{{ url_for('assignments') }}">My Assignments</a>{% if teacher %}<a class="btn success" href="{{ url_for('academic_teacher_dashboard') }}">Teacher Dashboard</a>{% else %}<a class="btn secondary" href="{{ url_for('academic_teacher_register') }}">Become a Teacher</a>{% endif %}</div></div>
+<div class="grid"><div class="card"><h3>My Assignments</h3><h2>{{ assignments|length }}</h2><p>Assignments can be connected to teacher assistance and tutoring.</p></div><div class="card"><h3>Published Classes</h3><h2>{{ classes|length }}</h2><p>Discover classes currently recruiting learners.</p></div><div class="card"><h3>My Tutoring</h3><h2>{{ sessions|length }}</h2><p>Bookings and tutoring sessions linked to your account.</p></div></div>
+<div class="card"><h2>Academic flow</h2><p><strong>Assignment → AI assistance → Find a Teacher → Book → Live Teaching → Learn → Complete</strong></p><p class="small">Live teaching uses KOJA's existing LiveKit infrastructure when configured. If it is unavailable, the booking and learning workflow remains available.</p></div>
+''', assignments=assignments_rows, classes=classes, sessions=sessions, teacher=teacher)
+
+
+@app.route('/academic/teachers')
+@login_required
+def academic_teachers():
+    subject = clean(request.args.get('subject'))
+    topic = clean(request.args.get('topic'))
+    level = clean(request.args.get('level'))
+    rows = db_select(ACADEMIC_TEACHER_TABLE, {'status': 'verified'}, order='rating.desc,created_at.desc', limit=100) or []
+    if subject:
+        rows = [r for r in rows if subject.lower() in str(r.get('subjects') or '').lower()]
+    if topic:
+        rows = [r for r in rows if topic.lower() in str(r.get('topics') or '').lower()]
+    if level:
+        rows = [r for r in rows if level.lower() in str(r.get('education_levels') or '').lower()]
+    return render_page('Find a Teacher', r'''
+<div class="hero"><h1>Find a Teacher</h1><p>Connect with verified teachers for one-to-one tutoring and group learning.</p></div>
+<div class="card"><form method="get" class="grid"><div><label>Subject</label><input name="subject" value="{{ request.args.get('subject','') }}" placeholder="Mathematics"></div><div><label>Topic</label><input name="topic" value="{{ request.args.get('topic','') }}" placeholder="Refraction"></div><div><label>Level</label><input name="level" value="{{ request.args.get('level','') }}" placeholder="University"></div><div><label>&nbsp;</label><button class="btn">Search Teachers</button></div></form></div>
+<div class="grid">{% for t in teachers %}<div class="card"><h2>{{ t.display_name }}</h2><p><span class="badge">Verified Teacher</span></p><p><strong>Subjects:</strong> {{ t.subjects or '—' }}</p><p><strong>Topics:</strong> {{ t.topics or '—' }}</p><p><strong>Level:</strong> {{ t.education_levels or '—' }}</p><p><strong>Qualifications:</strong> {{ t.qualifications or '—' }}</p><p><strong>Rate:</strong> {{ t.currency or 'ZMW' }} {{ t.hourly_rate or '0' }}/hour</p><p><strong>Rating:</strong> {{ t.rating or 0 }}</p><div class="actions"><a class="btn" href="{{ url_for('academic_teacher_profile', teacher_id=t.id) }}">View Teacher</a></div></div>{% else %}<div class="card"><p>No verified teachers are currently listed. Teachers can register for review.</p></div>{% endfor %}</div>
+''', teachers=rows)
+
+
+@app.route('/academic/teacher/register', methods=['GET','POST'])
+@login_required
+def academic_teacher_register():
+    uid = _academic_uid()
+    existing = _academic_teacher(uid)
+    if request.method == 'POST':
+        payload = {'user_id': uid, 'display_name': clean(request.form.get('display_name')) or (current_user() or {}).get('name') or (current_user() or {}).get('full_name') or 'KOJA Teacher',
+                   'subjects': clean(request.form.get('subjects')), 'topics': clean(request.form.get('topics')), 'qualifications': clean(request.form.get('qualifications')),
+                   'institution': clean(request.form.get('institution')), 'experience': clean(request.form.get('experience')), 'languages': clean(request.form.get('languages')),
+                   'education_levels': clean(request.form.get('education_levels')), 'hourly_rate': request.form.get('hourly_rate') or 0, 'group_rate': request.form.get('group_rate') or 0,
+                   'currency': clean(request.form.get('currency')) or 'ZMW', 'status': 'pending', 'updated_at': utc_now()}
+        if existing:
+            _, err = db_update(ACADEMIC_TEACHER_TABLE, {'id': existing.get('id')}, payload)
+        else:
+            payload.update({'id': str(uuid.uuid4()), 'rating': 0, 'completed_sessions': 0, 'created_at': utc_now()})
+            _, err = db_insert(ACADEMIC_TEACHER_TABLE, payload)
+        if err:
+            flash('Teacher profile could not be saved. Apply KOJA_ACADEMIC_V1.sql first or check the academic tables.', 'danger')
+        else:
+            flash('Teacher profile submitted for KOJA verification.', 'success')
+            notify_user(uid, 'Teacher profile submitted', 'Your KOJA Academic teacher profile is pending verification.', 'academic')
+        return redirect(url_for('academic_teacher_dashboard'))
+    return render_page('Become a Teacher', r'''
+<div class="hero"><h1>Become a KOJA Teacher</h1><p>Create your teaching profile. Verification is controlled by KOJA administration.</p></div>
+<div class="card"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Display name</label><input name="display_name" required value="{{ teacher.display_name if teacher else '' }}"><label>Subjects</label><input name="subjects" required placeholder="Mathematics, Physics"><label>Topics</label><input name="topics" placeholder="Algebra, Mechanics, Refraction"><label>Education levels</label><input name="education_levels" placeholder="Secondary, University"><label>Qualifications</label><textarea name="qualifications"></textarea><label>Institution</label><input name="institution"><label>Experience</label><textarea name="experience"></textarea><label>Languages</label><input name="languages" placeholder="English, Bemba"><label>Hourly rate</label><input type="number" name="hourly_rate" min="0" step="0.01" value="{{ teacher.hourly_rate if teacher else 0 }}"><label>Group-class rate per learner</label><input type="number" name="group_rate" min="0" step="0.01" value="{{ teacher.group_rate if teacher else 0 }}"><label>Currency</label><input name="currency" value="{{ teacher.currency if teacher else 'ZMW' }}"><button class="btn success">Submit Teacher Profile</button></form></div>
+''', teacher=existing)
+
+
+@app.route('/academic/teacher/<teacher_id>')
+@login_required
+def academic_teacher_profile(teacher_id):
+    t = first_row(ACADEMIC_TEACHER_TABLE, {'id': teacher_id})
+    if not t or t.get('status') != 'verified': abort(404)
+    classes = db_select(ACADEMIC_CLASS_TABLE, {'teacher_user_id': t.get('user_id'), 'status': 'published'}, order='starts_at.asc', limit=30) or []
+    return render_page('Teacher Profile', r'''
+<div class="hero"><h1>{{ t.display_name }}</h1><p><span class="badge">Verified Teacher</span></p><p>{{ t.qualifications or '' }}</p></div>
+<div class="grid"><div class="card"><h3>Subjects</h3><p>{{ t.subjects or '—' }}</p></div><div class="card"><h3>Topics</h3><p>{{ t.topics or '—' }}</p></div><div class="card"><h3>Rate</h3><p>{{ t.currency or 'ZMW' }} {{ t.hourly_rate or 0 }}/hour</p></div><div class="card"><h3>Rating</h3><p>{{ t.rating or 0 }}</p></div></div>
+<div class="card"><h2>Available Classes</h2>{% for c in classes %}<div class="card"><h3>{{ c.title }}</h3><p>{{ c.subject }} · {{ c.topic or 'General' }} · {{ c.education_level or 'All levels' }}</p><p>{{ c.description or '' }}</p><a class="btn" href="{{ url_for('academic_class_detail', class_id=c.id) }}">View Class</a></div>{% else %}<p>No published classes yet.</p>{% endfor %}</div>
+''', t=t, classes=classes)
+
+
+@app.route('/academic/classes')
+@login_required
+def academic_classes():
+    rows = db_select(ACADEMIC_CLASS_TABLE, {'status': 'published'}, order='starts_at.asc', limit=100) or []
+    visible=[]
+    for c in rows:
+        enrolled = db_select(ACADEMIC_ENROLL_TABLE, {'class_id': c.get('id'), 'status': 'enrolled'}, limit=500) or []
+        c=dict(c); c['_filled']=len(enrolled); c['_remaining']=max(0,int(c.get('max_seats') or 0)-len(enrolled)) if c.get('max_seats') else None
+        t=_academic_teacher(c.get('teacher_user_id')); c['_teacher']=t.get('display_name') if t else 'KOJA Teacher'; visible.append(c)
+    return render_page('KOJA Live Classes', r'''
+<div class="hero"><h1>Live Classes</h1><p>Discover classes being recruited by verified KOJA teachers.</p><div class="actions"><a class="btn success" href="{{ url_for('academic_teacher_register') }}">Teach on KOJA</a></div></div>
+<div class="grid">{% for c in classes %}<div class="card"><h2>{{ c.title }}</h2><p><strong>{{ c._teacher }}</strong> · {{ c.subject }} · {{ c.topic or 'General' }}</p><p>{{ c.description or '' }}</p><p><strong>Level:</strong> {{ c.education_level or 'All levels' }}</p><p><strong>Starts:</strong> {{ c.starts_at or 'To be scheduled' }} · <strong>Duration:</strong> {{ c.duration_minutes or 60 }} min</p><p><strong>Seats:</strong> {{ c._filled }}{% if c.max_seats %}/{{ c.max_seats }}{% endif %} · <strong>Price:</strong> {{ c.currency or 'ZMW' }} {{ c.price_per_learner or 0 }}</p>{% if c._remaining is none or c._remaining > 0 %}<a class="btn" href="{{ url_for('academic_class_detail', class_id=c.id) }}">View / Join</a>{% else %}<span class="badge">Full</span>{% endif %}</div>{% else %}<div class="card"><p>No published classes are recruiting learners yet.</p></div>{% endfor %}</div>
+''', classes=visible)
+
+
+@app.route('/academic/classes/new', methods=['GET','POST'])
+@login_required
+def academic_class_new():
+    teacher = _academic_teacher_or_404()
+    if teacher.get('status') != 'verified':
+        flash('Your teacher profile must be verified before you can publish classes.', 'warning')
+        return redirect(url_for('academic_teacher_dashboard'))
+    if request.method == 'POST':
+        try: max_seats=max(1,min(int(request.form.get('max_seats') or 20),10000))
+        except Exception: max_seats=20
+        payload={'id':str(uuid.uuid4()),'teacher_user_id':_academic_uid(),'title':clean(request.form.get('title')),'subject':clean(request.form.get('subject')),'topic':clean(request.form.get('topic')),'education_level':clean(request.form.get('education_level')),
+                 'description':clean(request.form.get('description')),'learning_objectives':clean(request.form.get('learning_objectives')),'starts_at':clean(request.form.get('starts_at')) or None,'duration_minutes':int(request.form.get('duration_minutes') or 60),
+                 'max_seats':max_seats,'price_per_learner':request.form.get('price_per_learner') or 0,'currency':clean(request.form.get('currency')) or 'ZMW','status':'published','room_name':'koja-academic-'+uuid.uuid4().hex,'created_at':utc_now(),'updated_at':utc_now()}
+        _,err=db_insert(ACADEMIC_CLASS_TABLE,payload)
+        if err: flash('Class could not be created. Apply the KOJA Academic SQL migration first.', 'danger')
+        else: flash('Class published and open for learner recruitment.', 'success')
+        return redirect(url_for('academic_classes'))
+    return render_page('Create Live Class', r'''
+<div class="hero"><h1>Create Live Class</h1><p>Recruit learners and teach live with KOJA's classroom infrastructure.</p></div>
+<div class="card"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Class title</label><input name="title" required><label>Subject</label><input name="subject" required><label>Topic</label><input name="topic"><label>Education level</label><input name="education_level"><label>Description</label><textarea name="description"></textarea><label>Learning objectives</label><textarea name="learning_objectives"></textarea><label>Start date/time</label><input type="datetime-local" name="starts_at"><label>Duration (minutes)</label><input type="number" name="duration_minutes" min="15" max="720" value="60"><label>Maximum learners</label><input type="number" name="max_seats" min="1" max="10000" value="20"><label>Price per learner</label><input type="number" name="price_per_learner" min="0" step="0.01" value="0"><label>Currency</label><input name="currency" value="ZMW"><button class="btn success">Publish Class</button></form></div>
+''')
+
+
+@app.route('/academic/classes/<class_id>')
+@login_required
+def academic_class_detail(class_id):
+    c=_academic_class(class_id)
+    if not c: abort(404)
+    t=_academic_teacher(c.get('teacher_user_id'))
+    enrolled=db_select(ACADEMIC_ENROLL_TABLE, {'class_id': class_id, 'status':'enrolled'}, limit=10000) or []
+    uid=_academic_uid(); is_teacher=str(c.get('teacher_user_id'))==uid; is_enrolled=_academic_enrolled(class_id,uid)
+    return render_page('Academic Class', r'''
+<div class="hero"><h1>{{ c.title }}</h1><p>{{ c.subject }}{% if c.topic %} · {{ c.topic }}{% endif %} · {{ c.education_level or 'All levels' }}</p></div>
+<div class="card"><p><strong>Teacher:</strong> {{ teacher.display_name if teacher else 'KOJA Teacher' }} <span class="badge">Verified</span></p><p>{{ c.description or '' }}</p><p><strong>Objectives:</strong> {{ c.learning_objectives or '—' }}</p><p><strong>Schedule:</strong> {{ c.starts_at or 'To be scheduled' }} · {{ c.duration_minutes or 60 }} minutes</p><p><strong>Seats:</strong> {{ enrolled|length }}{% if c.max_seats %}/{{ c.max_seats }}{% endif %} · <strong>Price:</strong> {{ c.currency or 'ZMW' }} {{ c.price_per_learner or 0 }}</p><div class="actions">{% if is_teacher %}<a class="btn success" href="{{ url_for('academic_class_room',class_id=c.id) }}">Open Teaching Room</a>{% elif is_enrolled %}<a class="btn success" href="{{ url_for('academic_class_room',class_id=c.id) }}">Join Live Class</a>{% elif c.max_seats and enrolled|length >= c.max_seats %}<span class="badge">Class Full</span>{% else %}<form method="post" action="{{ url_for('academic_class_join',class_id=c.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn">Join Class</button></form>{% endif %}</div></div>
+<div class="card"><h2>Recruitment</h2><p>This class is {{ 'open' if c.status=='published' else c.status }}. The teacher controls the class and learner participation.</p></div>
+''', c=c, teacher=t, enrolled=enrolled, is_teacher=is_teacher, is_enrolled=is_enrolled)
+
+
+@app.route('/academic/classes/<class_id>/join', methods=['POST'])
+@login_required
+def academic_class_join(class_id):
+    c=_academic_class(class_id)
+    if not c or c.get('status')!='published': abort(404)
+    uid=_academic_uid()
+    if str(c.get('teacher_user_id'))==uid:
+        return redirect(url_for('academic_class_room',class_id=class_id))
+    if _academic_enrolled(class_id,uid):
+        return redirect(url_for('academic_class_room',class_id=class_id))
+    existing=db_select(ACADEMIC_ENROLL_TABLE, {'class_id':class_id,'learner_user_id':uid}, limit=1) or []
+    if existing and existing[0].get('status')=='pending':
+        flash('Your class enrollment is pending.', 'info'); return redirect(url_for('academic_class_detail',class_id=class_id))
+    enrolled=db_select(ACADEMIC_ENROLL_TABLE, {'class_id':class_id,'status':'enrolled'}, limit=10000) or []
+    if c.get('max_seats') and len(enrolled)>=int(c.get('max_seats')):
+        flash('This class is full.', 'warning'); return redirect(url_for('academic_class_detail',class_id=class_id))
+    # Paid classes are not marked paid here. This is deliberately a pending booking until an existing verified payment flow is connected.
+    price=float(c.get('price_per_learner') or 0)
+    status='enrolled' if price<=0 else 'pending_payment'
+    row,err=db_insert(ACADEMIC_ENROLL_TABLE, {'id':str(uuid.uuid4()),'class_id':class_id,'learner_user_id':uid,'status':status,'amount':price,'currency':c.get('currency') or 'ZMW','created_at':utc_now(),'updated_at':utc_now()})
+    if err: flash('Enrollment could not be created. Check the academic migration.', 'danger')
+    elif status=='pending_payment': flash('Enrollment created, but payment must be verified before paid access is activated.', 'info')
+    else:
+        notify_user(c.get('teacher_user_id'),'New KOJA learner',f'{(current_user() or {}).get("name") or (current_user() or {}).get("email") or "A learner"} joined your class: {c.get("title")}.','academic',class_id,'/academic/classes/'+str(class_id))
+        flash('You are enrolled in the class.', 'success')
+    return redirect(url_for('academic_class_detail',class_id=class_id))
+
+
+@app.route('/academic/classes/<class_id>/room')
+@login_required
+def academic_class_room(class_id):
+    c=_academic_class(class_id)
+    if not c: abort(404)
+    uid=_academic_uid(); teacher_mode=str(c.get('teacher_user_id'))==uid; enrolled=_academic_enrolled(class_id,uid)
+    if not teacher_mode and not enrolled: abort(403)
+    return render_page('KOJA Live Teaching', r'''
+<style>.academic-live{display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:14px}.academic-stage{min-height:480px;background:#0b1220;border-radius:16px;padding:12px;color:#fff}.academic-material{background:#111827;border-radius:12px;min-height:390px;padding:20px;display:flex;align-items:center;justify-content:center;text-align:center}.academic-sidebar{display:flex;flex-direction:column;gap:12px}.academic-video{min-height:160px;background:#05070b;border-radius:12px;padding:10px}.academic-controls{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:850px){.academic-live{grid-template-columns:1fr}.academic-stage{min-height:360px}}</style>
+<div class="hero"><h1>{{ c.title }}</h1><p>{{ c.subject }}{% if c.topic %} · {{ c.topic }}{% endif %} · Live Teaching Room</p></div>
+<div class="academic-live"><section class="academic-stage"><div id="liveStatus">{% if live_configured %}Preparing secure classroom…{% else %}Live video is currently unavailable. You can still use the classroom materials and messaging fallback.{% endif %}</div><div id="material" class="academic-material"><div><h2>Teaching Material</h2><p id="materialText">The teacher can present approved class materials here.</p></div></div><div class="academic-controls" style="margin-top:12px"><button class="btn" type="button" onclick="toggleMic()">Microphone</button><button class="btn" type="button" onclick="toggleCamera()">Camera</button><button class="btn" type="button" onclick="shareScreen()">Share Screen</button><button class="btn secondary" type="button" onclick="raiseHand()">Raise Hand</button><button class="btn secondary" type="button" onclick="toggleWhiteboard()">Whiteboard</button></div></section><aside class="academic-sidebar"><div class="card"><h3>Participants</h3><div id="participants">Loading…</div></div><div class="card"><h3>Teaching Materials</h3><p class="small">Use the class materials area to present PDFs, notes and other permitted resources. Advanced real-time document synchronization depends on the configured live infrastructure.</p></div><div class="card"><h3>Chat</h3><textarea id="academicChat" placeholder="Ask a question…"></textarea><button class="btn" onclick="sendAcademicMessage()">Send</button><div id="chatLog" style="margin-top:10px"></div></div></aside></div>
+{% if live_configured %}<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js"></script><script>
+let room=null; const canPublish={{ teacher_mode|tojson }};
+(async()=>{try{const r=await fetch({{ token_url|tojson }},{credentials:'same-origin'});const d=await r.json();if(!r.ok||!d.token){document.getElementById('liveStatus').textContent='Live classroom unavailable: '+(d.message||'authentication unavailable');return;}room=new LivekitClient.Room();await room.connect(d.server_url,d.token);document.getElementById('liveStatus').textContent='Connected to KOJA Live Teaching.';room.on('participantConnected',p=>renderParticipants());room.on('participantDisconnected',p=>renderParticipants());await room.localParticipant.setCameraEnabled(true);await room.localParticipant.setMicrophoneEnabled(true);renderParticipants();}catch(e){document.getElementById('liveStatus').textContent='Live connection unavailable. Use the classroom fallback: '+e.message;}})();
+function renderParticipants(){const b=document.getElementById('participants');if(!room){b.textContent='No live connection.';return;}b.innerHTML='<p><strong>'+room.localParticipant.identity+'</strong> (you)</p>'+Array.from(room.remoteParticipants.values()).map(p=>'<p>'+escapeHtml(p.name||p.identity)+'</p>').join('');}
+function escapeHtml(s){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+async function toggleMic(){if(room)await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);}
+async function toggleCamera(){if(room)await room.localParticipant.setCameraEnabled(!room.localParticipant.isCameraEnabled);}
+async function shareScreen(){if(!room){return;}try{await room.localParticipant.setScreenShareEnabled(true);}catch(e){alert('Screen sharing is unavailable on this device/browser.');}}
+function raiseHand(){sendAcademicMessage('I would like to speak / ask a question.');}
+function toggleWhiteboard(){document.getElementById('materialText').textContent='Whiteboard mode requested. A full collaborative whiteboard requires the configured real-time classroom capability.';}
+async function sendAcademicMessage(msg){msg=msg||document.getElementById('academicChat').value.trim();if(!msg)return;const r=await fetch({{ message_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':{{ csrf_token()|tojson }}},body:JSON.stringify({message:msg})});const d=await r.json();if(d.ok){document.getElementById('chatLog').innerHTML+='<p>'+escapeHtml(msg)+'</p>';document.getElementById('academicChat').value='';}}
+</script>{% endif %}
+''', c=c, teacher_mode=teacher_mode, live_configured=bool(LIVEKIT_URL and LIVEKIT_API_KEY and LIVEKIT_API_SECRET and livekit_api), token_url=url_for('academic_class_token',class_id=class_id), message_url=url_for('academic_class_message',class_id=class_id))
+
+
+@app.route('/api/academic/classes/<class_id>/token')
+@login_required
+def academic_class_token(class_id):
+    c=_academic_class(class_id)
+    if not c: return jsonify({'ok':False,'message':'Class not found.'}),404
+    uid=_academic_uid(); teacher_mode=str(c.get('teacher_user_id'))==uid; enrolled=_academic_enrolled(class_id,uid)
+    if not teacher_mode and not enrolled: return jsonify({'ok':False,'message':'Not enrolled in this class.'}),403
+    if not LIVEKIT_URL or not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or livekit_api is None:
+        return jsonify({'ok':False,'message':'Live video is not configured. Use the classroom fallback.'}),503
+    token=_academic_live_token(c.get('room_name'), 'koja-academic-'+uid+'-'+uuid.uuid4().hex[:8], (current_user() or {}).get('name') or (current_user() or {}).get('email') or 'KOJA User', can_publish=True)
+    if not token: return jsonify({'ok':False,'message':'Live video authentication is temporarily unavailable.'}),503
+    return jsonify({'ok':True,'server_url':_livekit_server_url(),'token':token,'room':c.get('room_name'),'teacher':teacher_mode})
+
+
+@app.route('/api/academic/classes/<class_id>/message', methods=['POST'])
+@login_required
+def academic_class_message(class_id):
+    c=_academic_class(class_id)
+    if not c: return jsonify({'ok':False,'message':'Class not found.'}),404
+    uid=_academic_uid(); teacher_mode=str(c.get('teacher_user_id'))==uid; enrolled=_academic_enrolled(class_id,uid)
+    if not teacher_mode and not enrolled: return jsonify({'ok':False,'message':'Not authorized.'}),403
+    data=request.get_json(silent=True) or {}; message=clean(data.get('message'))[:2000]
+    if not message: return jsonify({'ok':False,'message':'Message is empty.'}),400
+    # Reuse KOJA notifications for a reliable fallback even when realtime chat is unavailable.
+    target=c.get('teacher_user_id') if not teacher_mode else None
+    if target and target!=uid: notify_user(target,'KOJA Academic class message',message,'academic',class_id,'/academic/classes/'+str(class_id))
+    return jsonify({'ok':True,'stored':bool(target),'realtime':bool(LIVEKIT_URL and LIVEKIT_API_KEY and LIVEKIT_API_SECRET)})
+
+
+@app.route('/academic/tutoring/request/<assignment_id>', methods=['POST'])
+@login_required
+def academic_tutoring_request(assignment_id):
+    item=first_row('assignments',{'id':assignment_id})
+    if not item or not can_access_assignment(item,current_user()): abort(403)
+    subject=clean(request.form.get('subject'))
+    topic=clean(request.form.get('topic'))
+    note=clean(request.form.get('note'))
+    return redirect(url_for('academic_teachers',subject=subject,topic=topic))
+
+
+@app.route('/academic/teacher/<teacher_id>/book', methods=['GET','POST'])
+@login_required
+def academic_teacher_book(teacher_id):
+    teacher=first_row(ACADEMIC_TEACHER_TABLE,{'id':teacher_id})
+    if not teacher or teacher.get('status')!='verified': abort(404)
+    uid=_academic_uid()
+    if str(teacher.get('user_id'))==uid:
+        flash('You cannot book yourself as a learner.', 'warning')
+        return redirect(url_for('academic_teacher_profile',teacher_id=teacher_id))
+    if request.method=='POST':
+        try: minutes=max(15,min(int(request.form.get('duration_minutes') or 60),720))
+        except Exception: minutes=60
+        rate=float(teacher.get('hourly_rate') or 0); amount=round(rate*minutes/60,2)
+        room='koja-academic-tutor-'+uuid.uuid4().hex
+        session_id=str(uuid.uuid4()); booking_id=str(uuid.uuid4())
+        _,err=db_insert(ACADEMIC_TUTOR_TABLE,{'id':session_id,'teacher_user_id':teacher.get('user_id'),'learner_user_id':uid,'assignment_id':clean(request.form.get('assignment_id')) or None,'subject':clean(request.form.get('subject')) or teacher.get('subjects'),'topic':clean(request.form.get('topic')),'duration_minutes':minutes,'amount':amount,'currency':teacher.get('currency') or 'ZMW','room_name':room,'status':'pending_payment' if amount>0 else 'confirmed','created_at':utc_now(),'updated_at':utc_now()})
+        if err:
+            flash('Tutoring session could not be created. Apply the KOJA Academic SQL migration first.','danger')
+            return redirect(url_for('academic_teacher_profile',teacher_id=teacher_id))
+        db_insert(ACADEMIC_BOOKING_TABLE,{'id':booking_id,'tutoring_session_id':session_id,'teacher_user_id':teacher.get('user_id'),'learner_user_id':uid,'assignment_id':clean(request.form.get('assignment_id')) or None,'status':'pending_payment' if amount>0 else 'confirmed','amount':amount,'currency':teacher.get('currency') or 'ZMW','created_at':utc_now(),'updated_at':utc_now()})
+        if amount>0:
+            flash('Tutoring request created. Payment must be verified before this paid session is activated.','info')
+        else:
+            notify_user(teacher.get('user_id'),'New KOJA tutoring request','A learner requested a tutoring session with you.','academic',session_id,'/academic/teacher/dashboard')
+            flash('Tutoring session requested.','success')
+        return redirect(url_for('academic_tutoring_room',session_id=session_id))
+    return render_page('Book Teacher',r'''
+<div class="hero"><h1>Book {{ teacher.display_name }}</h1><p>{{ teacher.subjects }} · {{ teacher.topics or 'General tutoring' }}</p></div>
+<div class="card"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="assignment_id" value="{{ request.args.get('assignment_id','') }}"><label>Subject</label><input name="subject" value="{{ request.args.get('subject','') }}"><label>Topic</label><input name="topic" value="{{ request.args.get('topic','') }}"><label>Duration (minutes)</label><input type="number" name="duration_minutes" min="15" max="720" value="60"><p><strong>Hourly rate:</strong> {{ teacher.currency or 'ZMW' }} {{ teacher.hourly_rate or 0 }}</p><button class="btn success">Request Tutoring</button></form></div>
+''',teacher=teacher)
+
+@app.route('/academic/tutoring/<session_id>')
+@login_required
+def academic_tutoring_room(session_id):
+    sess=first_row(ACADEMIC_TUTOR_TABLE,{'id':session_id})
+    if not sess: abort(404)
+    uid=_academic_uid(); teacher_mode=str(sess.get('teacher_user_id'))==uid
+    if not teacher_mode and str(sess.get('learner_user_id'))!=uid: abort(403)
+    if sess.get('status')=='pending_payment':
+        return render_page('Tutoring Session',r'''<div class="hero"><h1>Tutoring Session</h1><p>Payment verification is required before this paid session can start.</p></div><div class="card"><p><strong>Subject:</strong> {{ sess.subject or 'Academic' }}</p><p><strong>Topic:</strong> {{ sess.topic or 'General tutoring' }}</p><p><strong>Amount:</strong> {{ sess.currency or 'ZMW' }} {{ sess.amount or 0 }}</p><p class="small">KOJA does not mark a paid session as successful from a browser redirect. Connect this session to a verified existing KOJA payment flow before activation.</p></div>''',sess=sess)
+    return render_page('Live Tutoring',r'''
+<div class="hero"><h1>KOJA Live Tutoring</h1><p>{{ sess.subject or 'Academic' }}{% if sess.topic %} · {{ sess.topic }}{% endif %}</p></div>
+<div class="card"><div id="tutorStatus">{% if live_configured %}Preparing secure tutoring room…{% else %}Live video is unavailable. Continue through KOJA messaging and teaching materials.{% endif %}</div><div id="tutorStage" style="min-height:420px;background:#0b1220;border-radius:16px;margin-top:12px;color:#fff;padding:20px"><h2>Teaching Space</h2><p>Teacher can present the assignment, screen or approved learning materials here.</p></div><div class="actions" style="margin-top:12px"><button class="btn" onclick="toggleTutorMic()">Microphone</button><button class="btn" onclick="toggleTutorCamera()">Camera</button><button class="btn" onclick="shareTutorScreen()">Share Screen</button></div></div>
+{% if live_configured %}<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js"></script><script>let tutorRoom=null;(async()=>{try{const r=await fetch({{ token_url|tojson }});const d=await r.json();if(!r.ok||!d.token){document.getElementById('tutorStatus').textContent=d.message||'Live tutoring is unavailable.';return;}tutorRoom=new LivekitClient.Room();await tutorRoom.connect(d.server_url,d.token);document.getElementById('tutorStatus').textContent='Connected to KOJA Live Tutoring.';await tutorRoom.localParticipant.setCameraEnabled(true);await tutorRoom.localParticipant.setMicrophoneEnabled(true);}catch(e){document.getElementById('tutorStatus').textContent='Live connection unavailable: '+e.message;}})();async function toggleTutorMic(){if(tutorRoom)await tutorRoom.localParticipant.setMicrophoneEnabled(!tutorRoom.localParticipant.isMicrophoneEnabled);}async function toggleTutorCamera(){if(tutorRoom)await tutorRoom.localParticipant.setCameraEnabled(!tutorRoom.localParticipant.isCameraEnabled);}async function shareTutorScreen(){if(!tutorRoom)return;try{await tutorRoom.localParticipant.setScreenShareEnabled(true);}catch(e){alert('Screen sharing is unavailable on this device/browser.');}}</script>{% endif %}
+''',sess=sess,live_configured=bool(LIVEKIT_URL and LIVEKIT_API_KEY and LIVEKIT_API_SECRET and livekit_api),token_url=url_for('academic_tutoring_token',session_id=session_id))
+
+@app.route('/api/academic/tutoring/<session_id>/token')
+@login_required
+def academic_tutoring_token(session_id):
+    sess=first_row(ACADEMIC_TUTOR_TABLE,{'id':session_id})
+    if not sess: return jsonify({'ok':False,'message':'Session not found.'}),404
+    uid=_academic_uid(); teacher_mode=str(sess.get('teacher_user_id'))==uid
+    if not teacher_mode and str(sess.get('learner_user_id'))!=uid: return jsonify({'ok':False,'message':'Not authorized.'}),403
+    if sess.get('status')!='confirmed': return jsonify({'ok':False,'message':'This tutoring session is not active.'}),409
+    if not LIVEKIT_URL or not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or livekit_api is None:
+        return jsonify({'ok':False,'message':'Live video is not configured.'}),503
+    token=_academic_live_token(sess.get('room_name'),'koja-academic-'+uid+'-'+uuid.uuid4().hex[:8],(current_user() or {}).get('name') or (current_user() or {}).get('email') or 'KOJA User',can_publish=True)
+    if not token: return jsonify({'ok':False,'message':'Live authentication unavailable.'}),503
+    return jsonify({'ok':True,'server_url':_livekit_server_url(),'token':token,'room':sess.get('room_name'),'teacher':teacher_mode})
+
+
+@app.route('/academic/teacher/dashboard')
+@login_required
+def academic_teacher_dashboard():
+    t=_academic_teacher_or_404(); uid=_academic_uid()
+    classes=db_select(ACADEMIC_CLASS_TABLE,{'teacher_user_id':uid},order='created_at.desc',limit=100) or []
+    bookings=db_select(ACADEMIC_BOOKING_TABLE,{'teacher_user_id':uid},order='created_at.desc',limit=100) or []
+    earnings=db_select(ACADEMIC_LEDGER_TABLE,{'teacher_user_id':uid},order='created_at.desc',limit=100) or []
+    gross=sum(float(x.get('gross_amount') or 0) for x in earnings if x.get('status')=='posted')
+    return render_page('Academic Teacher Dashboard',r'''
+<div class="hero"><h1>Teacher Dashboard</h1><p>{{ teacher.display_name }} · <span class="badge">{{ teacher.status }}</span></p><div class="actions"><a class="btn" href="{{ url_for('academic_class_new') }}">Create & Recruit Class</a><a class="btn secondary" href="{{ url_for('academic_teachers') }}">View Marketplace</a></div></div>
+<div class="grid"><div class="card"><h3>My Classes</h3><h2>{{ classes|length }}</h2></div><div class="card"><h3>Bookings</h3><h2>{{ bookings|length }}</h2></div><div class="card"><h3>Posted Gross Earnings</h3><h2>{{ money(gross,'ZMW') }}</h2></div></div>
+<div class="card"><h2>Classes</h2><table><tr><th>Class</th><th>Status</th><th>Seats</th><th>Room</th><th></th></tr>{% for c in classes %}<tr><td>{{ c.title }}</td><td>{{ c.status }}</td><td>{{ c.max_seats }}</td><td>{{ c.room_name }}</td><td><a class="btn" href="{{ url_for('academic_class_detail',class_id=c.id) }}">Open</a></td></tr>{% else %}<tr><td colspan="5">No classes yet.</td></tr>{% endfor %}</table></div>
+''', teacher=t, classes=classes, bookings=bookings, gross=gross, money=market_money)
+
+
+@app.route('/admin/academic')
+@admin_required
+def admin_academic():
+    teachers=db_select(ACADEMIC_TEACHER_TABLE,order='created_at.desc',limit=300) or []
+    return render_page('Admin Academic',r'''
+<div class="hero"><h1>KOJA Academic Administration</h1><p>Teacher verification and academic marketplace controls.</p></div>
+<div class="card"><h2>Teacher Verification</h2><table><tr><th>Teacher</th><th>Subjects</th><th>Qualifications</th><th>Status</th><th></th></tr>{% for t in teachers %}<tr><td>{{ t.display_name }}</td><td>{{ t.subjects }}</td><td>{{ t.qualifications or '—' }}</td><td>{{ t.status }}</td><td>{% if t.status!='verified' %}<form method="post" action="{{ url_for('admin_academic_teacher_status',teacher_id=t.id,status='verified') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn success">Verify</button></form>{% endif %}{% if t.status!='suspended' %}<form method="post" action="{{ url_for('admin_academic_teacher_status',teacher_id=t.id,status='suspended') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger">Suspend</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No teacher applications.</td></tr>{% endfor %}</table></div>
+''', teachers=teachers)
+
+
+@app.route('/admin/academic/teacher/<teacher_id>/<status>', methods=['POST'])
+@admin_required
+def admin_academic_teacher_status(teacher_id,status):
+    if status not in ('verified','suspended','pending','rejected'): abort(400)
+    t=first_row(ACADEMIC_TEACHER_TABLE,{'id':teacher_id})
+    if not t: abort(404)
+    db_update(ACADEMIC_TEACHER_TABLE,{'id':teacher_id},{'status':status,'verified_by':_academic_uid(),'verified_at':utc_now() if status=='verified' else None,'updated_at':utc_now()})
+    notify_user(t.get('user_id'),'KOJA Teacher profile update',f'Your KOJA Academic teacher profile is now {status}.','academic',teacher_id,'/academic/teacher/dashboard')
+    flash('Teacher status updated.','success')
+    return redirect(url_for('admin_academic'))
 
 
 if __name__=="__main__":
