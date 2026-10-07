@@ -1004,7 +1004,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
 <a role="menuitem" href="{{ url_for('music_home') }}">KOJA MUSIC</a>
 {% if user and user.role in ['artist','musician','music_artist'] %}<a role="menuitem" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('music_admin') }}">MUSIC Admin</a><a role="menuitem" href="{{ url_for('news_live_admin') }}">News Live Studio</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('music_admin') }}">MUSIC Admin</a><a role="menuitem" href="{{ url_for('news_live_admin') }}">News Live Studio</a><a role="menuitem" href="{{ url_for('bh_admin') }}">Business Hub Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
 <a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
 <a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
@@ -5758,6 +5758,8 @@ def provider_location(provider_id):
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/news/live",
+    "/business-directory",
+    "/industries",
     "/research",
     "/research/notes",
     "/documents",
@@ -9240,7 +9242,7 @@ def business_dashboard(business_id):
     if not b: abort(404)
     products=db_select('koja_business_products',{'business_id':business_id},limit=200) or []; sales=db_select('koja_business_sales',{'business_id':business_id},limit=200) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=200) or []
     revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses); profit=revenue-costs
-    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="card"><p><strong>KOJA Business Number:</strong> {{ b.business_number or 'Pending identity migration' }}</p><p><strong>TPIN:</strong> {{ ('••••' + (b.tpin|string)[-4:]) if b.tpin else 'Not provided' }}</p><p><strong>Business Licence:</strong> {{ ('••••' + (b.business_licence|string)[-4:]) if b.business_licence else 'Not provided' }}</p></div><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_intelligence',business_id=b.id) }}">Business Intelligence</a><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>AI Intelligence</h2><p>Predictive analytics, revenue forecasting, pricing, inventory risk, customer concentration and AI strategy.</p><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">Open AI Intelligence</a></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div><div class="card"><h2>KOJA Platform Engines</h2><p>Discover · Ads · Pay · Intelligence · Identity · Workspace · Ecosystem</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_core_status',business_id=b.id) }}">View Connected Engines</a></div></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
+    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="card"><p><strong>KOJA Business Number:</strong> {{ b.business_number or 'Pending identity migration' }}</p><p><strong>TPIN:</strong> {{ ('••••' + (b.tpin|string)[-4:]) if b.tpin else 'Not provided' }}</p><p><strong>Business Licence:</strong> {{ ('••••' + (b.business_licence|string)[-4:]) if b.business_licence else 'Not provided' }}</p></div><div class="actions"><a class="btn success" href="{{ url_for('bh_hub',business_id=b.id) }}">Business Hub</a><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_intelligence',business_id=b.id) }}">Business Intelligence</a><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>AI Intelligence</h2><p>Predictive analytics, revenue forecasting, pricing, inventory risk, customer concentration and AI strategy.</p><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">Open AI Intelligence</a></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div><div class="card"><h2>KOJA Platform Engines</h2><p>Discover · Ads · Pay · Intelligence · Identity · Workspace · Ecosystem</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_core_status',business_id=b.id) }}">View Connected Engines</a></div></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
 
 @app.route('/business/<business_id>/core-status')
 @login_required
@@ -10331,12 +10333,6 @@ def admin_business_verification_v2():
     tpl="""<div class='hero'><h1>Business Verification V2</h1><p>Verification, licence and tax expiry control.</p></div><div class='card'><form method='post'><input name='business_id' placeholder='Business ID' required><select name='status'><option>pending</option><option>verified</option><option>rejected</option><option>expired</option></select><input name='licence_number' placeholder='Licence number'><input name='licence_expires_at' type='date'><input name='tax_number' placeholder='Tax number'><input name='tax_expires_at' type='date'><input name='reason' placeholder='Reason'><button class='btn'>Save</button></form></div><div class='card'><table><tr><th>Business</th><th>Status</th><th>Licence</th><th>Tax</th></tr>{% for x in rows %}<tr><td>{{ x.business_id }}</td><td>{{ x.status }}</td><td>{{ x.licence_expires_at or '—' }}</td><td>{{ x.tax_expires_at or '—' }}</td></tr>{% else %}<tr><td colspan='4'>No records.</td></tr>{% endfor %}</table></div>"""
     return render_page('Business Verification V2',tpl,rows=rows)
 
-@app.route('/business-directory')
-def business_directory_v2():
-    q=clean(request.args.get('q')); rows=db_select('koja_business_directory',{'active':True},order='updated_at.desc',limit=500) or []
-    if q: rows=[x for x in rows if q.lower() in (' '.join(str(x.get(k) or '') for k in ('public_name','description','location','category'))).lower()]
-    tpl="""<div class='hero'><h1>KOJA Business Directory</h1><p>Discover businesses and verified providers.</p></div><div class='card'><form method='get'><input name='q' value='{{ request.args.get('q','') }}' placeholder='Search business, service or location'><button class='btn'>Search</button></form></div><div class='grid'>{% for x in rows %}<div class='card'><h2>{{ x.public_name or x.business_id }}</h2><p>{{ x.category or 'Business' }}</p><p>{{ x.description or '' }}</p><p>{{ x.location or '' }}</p>{% if x.verified %}<strong>Verified</strong>{% endif %}</div>{% else %}<div class='card'>No businesses found.</div>{% endfor %}</div>"""
-    return render_page('KOJA Business Directory',tpl,rows=rows)
 
 @app.route('/market/promotions-v2',methods=['GET','POST'])
 @login_required
@@ -10353,7 +10349,7 @@ def market_promotions_v2():
 @admin_required
 def production_health_v2():
     checks={}
-    for t in ['koja_business_accounts','koja_business_transactions','koja_business_staff','koja_live_sessions_v2','koja_market_payout_ledger','koja_delivery_security','koja_business_verifications_v2','koja_business_directory','koja_market_promotions','koja_audit_log_v2','koja_idempotency_keys_v2']:
+    for t in ['koja_business_profiles','koja_business_services','koja_business_price_tiers','koja_business_pos_receipts','koja_connectplus_rfq_targets','koja_connectplus_contracts','koja_connectplus_partnerships','koja_connectplus_investor_profiles','koja_connectplus_investment_listings','koja_connectplus_investor_interests','koja_news_live_state','koja_music_artists','koja_business_accounts','koja_business_transactions','koja_business_staff','koja_live_sessions_v2','koja_market_payout_ledger','koja_delivery_security','koja_business_verifications_v2','koja_business_directory','koja_market_promotions','koja_audit_log_v2','koja_idempotency_keys_v2']:
         try: checks[t]=db_select(t,{},limit=1) is not None
         except Exception: checks[t]=False
     checks['LIVEKIT_CONFIGURED']=bool(os.getenv('LIVEKIT_URL') and os.getenv('LIVEKIT_API_KEY') and os.getenv('LIVEKIT_API_SECRET'))
@@ -15319,6 +15315,1474 @@ def news_live_admin():
     boot = {"state": _news_state_load(), "scenes": NEWS_SCENES,
             "events": [{"kind": e.get("kind"), "created_at": e.get("created_at")} for e in events]}
     return render_page("KOJA NEWS Live Studio", NEWS_STUDIO_HTML, boot=boot, categories=NEWS_CATEGORIES)
+
+
+# ============================================================
+# KOJA BUSINESS HUB V5 (additive)
+#   Businesses : profile, services, inventory, pricing, POS
+#   Industries : 10-industry hub + public company directory
+#   Customers  : search, compare, directed quote requests
+#   Connect+   : RFQ board, contracts, partnerships, investors
+#   Delivery   : existing B2B fulfilment/delivery engine (linked, not duplicated)
+# Everything is scoped to the signed-in owner's business; public pages only show
+# what the owner chose to publish.
+# ============================================================
+from markupsafe import Markup
+
+BH_INDUSTRIES = [
+    ("manufacturing", "Manufacturing", "Factories, processing, fabrication and industrial production."),
+    ("mining", "Mining", "Exploration, extraction, minerals and mining support services."),
+    ("agriculture", "Agriculture", "Farming, agro-processing, inputs and agri-trade."),
+    ("construction", "Construction", "Building, civil works, materials and contractors."),
+    ("energy", "Energy", "Power, solar, fuels, utilities and energy services."),
+    ("transport", "Transport", "Freight, logistics, passenger transport and fleet services."),
+    ("technology", "Technology", "Software, hardware, telecoms and digital services."),
+    ("finance", "Finance", "Banking, insurance, lending, payments and advisory."),
+    ("healthcare", "Healthcare", "Clinics, pharmaceuticals, medical supplies and health services."),
+    ("media", "Media", "Broadcasting, publishing, advertising and creative production."),
+]
+BH_INDUSTRY_NAME = {k: n for k, n, _ in BH_INDUSTRIES}
+BH_EMPLOYEE_RANGES = ["1-5", "6-20", "21-50", "51-200", "201-1000", "1000+"]
+
+BH_CSS = r'''<style>
+.bh{max-width:1100px;margin:0 auto}
+.bh-chip{display:inline-block;padding:.15em .7em;border-radius:99px;background:rgba(255,255,255,.12);font-size:.85em;margin:0 6px 6px 0}
+.bh-chip.ok{background:#1b8a4b;color:#fff}.bh-chip.warn{background:#b7791f;color:#fff}.bh-chip.bad{background:#c1121f;color:#fff}
+.bh-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.bh-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.bh-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:700px){.bh-two{grid-template-columns:1fr}}
+.bh table{width:100%;border-collapse:collapse}
+.bh th,.bh td{padding:8px;border-bottom:1px solid rgba(255,255,255,.12);text-align:left;vertical-align:top}
+.bh .muted{opacity:.75}.bh .big{font-size:1.6rem;font-weight:800}
+.bh-logo{width:64px;height:64px;object-fit:contain;border-radius:12px;background:#fff}
+.bh-note{border-left:4px solid #ffb703;padding:8px 12px;background:rgba(255,183,3,.08);border-radius:6px}
+</style>'''
+
+
+# ---- small helpers -----------------------------------------------------------
+def _bh_uid():
+    return str((current_user() or {}).get("id") or "")
+
+
+def _bh_page(title, tpl, **ctx):
+    ctx.setdefault("csrf", Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
+    ctx.setdefault("money", market_money)
+    ctx.setdefault("industries", BH_INDUSTRIES)
+    return render_page(title, BH_CSS + tpl, **ctx)
+
+
+def _bh_rows(table, filters=None, order=None, limit=300):
+    try:
+        return db_select(table, filters=filters or {}, order=order, limit=limit) or []
+    except Exception as exc:
+        logger.warning("KOJA BUSINESS HUB table %s unavailable: %s", table, exc)
+        return []
+
+
+def _bh_first(table, filters):
+    try:
+        return first_row(table, filters)
+    except Exception as exc:
+        logger.warning("KOJA BUSINESS HUB table %s unavailable: %s", table, exc)
+        return None
+
+
+def _bh_my_businesses():
+    return _bh_rows("koja_businesses", {"owner_id": _bh_uid()}, order="created_at.desc", limit=50) if _bh_uid() else []
+
+
+def _bh_owned(business_id):
+    """The business, only if the signed-in user owns it (else None)."""
+    uid = _bh_uid()
+    return _bh_first("koja_businesses", {"id": business_id, "owner_id": uid}) if (uid and business_id) else None
+
+
+def _bh_owned_or_404(business_id):
+    b = _bh_owned(business_id)
+    if not b:
+        abort(404)
+    return b
+
+
+def _bh_num(v, default=0.0, lo=None, hi=None):
+    try:
+        x = float(str(v).replace(",", "").strip() or default)
+    except Exception:
+        x = float(default)
+    if x != x or x in (float("inf"), float("-inf")):
+        x = float(default)
+    if lo is not None:
+        x = max(lo, x)
+    if hi is not None:
+        x = min(hi, x)
+    return round(x, 2)
+
+
+def _bh_int(v, default=0, lo=None, hi=None):
+    try:
+        x = int(float(str(v).strip() or default))
+    except Exception:
+        x = int(default)
+    if lo is not None:
+        x = max(lo, x)
+    if hi is not None:
+        x = min(hi, x)
+    return x
+
+
+def _bh_text(v, n):
+    return clean(v)[:n]
+
+
+def _bh_bool(v):
+    return str(v or "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _bh_slug(name):
+    base = re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")[:48] or "company"
+    return base
+
+
+def _bh_url(v):
+    v = _bh_text(v, 300)
+    if not v:
+        return ""
+    if not re.match(r"^https?://", v, re.I):
+        v = "https://" + v
+    p = urlparse(v)
+    return v if (p.scheme in ("http", "https") and p.netloc and "." in p.netloc and " " not in v) else None
+
+
+def _bh_email(v):
+    v = _bh_text(v, 160)
+    return v if (not v or re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", v)) else None
+
+
+def _bh_notify(uid, title, body, link="/business"):
+    try:
+        if uid:
+            _b2bv4_notify(uid, title, body, link)
+    except Exception as exc:
+        logger.warning("KOJA BUSINESS HUB notify failed: %s", exc)
+
+
+def _bh_audit(action, rtype=None, rid=None, meta=None):
+    try:
+        _r_audit(action, rtype, rid, meta or {})
+    except Exception:
+        pass
+
+
+def _bh_verified_ids():
+    rows = _bh_rows("koja_business_verifications_v2", limit=3000)
+    return {str(r.get("business_id")) for r in rows if str(r.get("status") or "").lower() in ("approved", "verified", "active")}
+
+
+# ---- company profiles + directory --------------------------------------------
+def _bh_profile(business_id):
+    return _bh_first("koja_business_profiles", {"business_id": business_id})
+
+
+def _bh_entry(p, verified):
+    return {
+        "slug": p.get("slug"), "business_id": str(p.get("business_id")), "name": p.get("public_name") or "",
+        "tagline": p.get("tagline") or "", "description": (p.get("description") or "")[:220],
+        "industry": p.get("industry") or "", "industry_label": BH_INDUSTRY_NAME.get(p.get("industry") or "", ""),
+        "location": p.get("location") or "", "country": p.get("country") or "", "logo_url": p.get("logo_url") or "",
+        "verified": str(p.get("business_id")) in verified, "accepts_rfq": bool(p.get("accepts_rfq")), "legacy": False,
+    }
+
+
+def _bh_directory(q="", industry="", location="", verified_only=False, rfq_only=False, limit=500):
+    verified = _bh_verified_ids()
+    out = [_bh_entry(p, verified) for p in _bh_rows("koja_business_profiles", {"status": "published"}, order="updated_at.desc", limit=limit)]
+    if not (verified_only or rfq_only):
+        for r in _bh_rows("koja_business_directory", {"active": True}, order="updated_at.desc", limit=300):  # legacy listings
+            out.append({"slug": None, "business_id": "", "name": r.get("public_name") or "", "tagline": "", "description": (r.get("description") or "")[:220],
+                        "industry": "", "industry_label": r.get("category") or "", "location": r.get("location") or "", "country": "",
+                        "logo_url": "", "verified": False, "accepts_rfq": False, "legacy": True})
+    ql, ll = q.lower(), location.lower()
+    def ok(e):
+        hay = " ".join(str(e[k]) for k in ("name", "tagline", "description", "industry_label", "location", "country")).lower()
+        if ql and ql not in hay: return False
+        if ll and ll not in (e["location"] + " " + e["country"]).lower(): return False
+        if industry and e["industry"] != industry and not (e["legacy"] and BH_INDUSTRY_NAME.get(industry, "").lower() in e["industry_label"].lower()): return False
+        if verified_only and not e["verified"]: return False
+        if rfq_only and not e["accepts_rfq"]: return False
+        return True
+    res = [e for e in out if ok(e)]
+    res.sort(key=lambda e: (not e["verified"], e["name"].lower()))
+    return res
+
+
+def _bh_company_data(p):
+    """Everything a public company page may show. Never includes cost prices, stock files or owner data."""
+    bid = str(p.get("business_id"))
+    data = {"services": [s for s in _bh_rows("koja_business_services", {"business_id": bid}, order="created_at.desc", limit=100) if s.get("active", True)],
+            "products": [], "tiers": {}, "partners": []}
+    if p.get("show_catalogue"):
+        tiers = _bh_rows("koja_business_price_tiers", {"business_id": bid}, order="min_qty.asc", limit=500)
+        for t in tiers:
+            data["tiers"].setdefault(str(t.get("product_id")), []).append(t)
+        for pr in _bh_rows("koja_business_products", {"business_id": bid}, order="created_at.desc", limit=60):
+            data["products"].append({"id": str(pr.get("id")), "name": pr.get("name") or "", "price": pr.get("selling_price") or 0,
+                                     "in_stock": (pr.get("product_type") == "digital") or _bh_int(pr.get("stock")) > 0,
+                                     "delivery": bool(pr.get("delivery_available")), "type": pr.get("product_type") or "physical"})
+    for pt in _bh_rows("koja_connectplus_partnerships", {"proposer_business_id": bid, "status": "accepted"}, limit=50) + \
+              _bh_rows("koja_connectplus_partnerships", {"partner_business_id": bid, "status": "accepted"}, limit=50):
+        other = pt.get("partner_business_id") if str(pt.get("proposer_business_id")) == bid else pt.get("proposer_business_id")
+        op = _bh_profile(other)
+        if op and op.get("status") == "published":
+            data["partners"].append({"name": op.get("public_name"), "slug": op.get("slug"), "type": pt.get("partnership_type")})
+    return data
+
+
+@app.route("/business-directory")
+def business_directory_v2():
+    q, industry = _bh_text(request.args.get("q"), 80), clean(request.args.get("industry"))
+    industry = industry if industry in BH_INDUSTRY_NAME else ""
+    loc = _bh_text(request.args.get("location"), 80)
+    rows = _bh_directory(q, industry, loc, _bh_bool(request.args.get("verified")), _bh_bool(request.args.get("rfq")))
+    return _bh_page("KOJA Business Directory", r'''
+<div class="bh"><div class="hero"><h1>KOJA Business Directory</h1><p>Find verified companies by industry, location and capability. Compare them, request quotes and trade through KOJA.</p></div>
+<div class="card"><form method="get" class="bh-row">
+<input name="q" value="{{ q }}" placeholder="Search company, product or service" style="flex:2;min-width:200px">
+<select name="industry"><option value="">All industries</option>{% for k,n,d in industries %}<option value="{{ k }}" {{ 'selected' if k==industry else '' }}>{{ n }}</option>{% endfor %}</select>
+<input name="location" value="{{ loc }}" placeholder="Location" style="flex:1;min-width:120px">
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="verified" value="1" {{ 'checked' if verified_only else '' }} style="width:auto"> Verified</label>
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="rfq" value="1" {{ 'checked' if rfq_only else '' }} style="width:auto"> Accepts RFQs</label>
+<button class="btn" type="submit">Search</button></form></div>
+<div class="bh-row" style="margin:8px 0"><a class="btn secondary" href="{{ url_for('bh_industries') }}">Browse industries</a>
+<button class="btn" type="button" id="bhCmp" disabled>Compare selected (0)</button><span class="muted">{{ rows|length }} compan{{ 'y' if rows|length==1 else 'ies' }}</span></div>
+<div class="bh-grid">{% for e in rows %}<div class="card">
+<div class="bh-row">{% if e.logo_url %}<img class="bh-logo" src="{{ e.logo_url }}" alt="">{% endif %}<div>
+<h3 style="margin:0">{% if e.slug %}<a href="{{ url_for('bh_company', slug=e.slug) }}">{{ e.name }}</a>{% else %}{{ e.name }}{% endif %}</h3>
+<div>{% if e.verified %}<span class="bh-chip ok">Verified</span>{% endif %}{% if e.industry_label %}<span class="bh-chip">{{ e.industry_label }}</span>{% endif %}{% if e.accepts_rfq %}<span class="bh-chip">Accepts RFQs</span>{% endif %}</div></div></div>
+<p class="muted">{{ e.location }}{{ ', ' + e.country if e.country else '' }}</p><p>{{ e.tagline or e.description }}</p>
+{% if e.slug %}<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" class="bhPick" value="{{ e.slug }}" style="width:auto"> Compare</label>{% endif %}</div>
+{% else %}<div class="card"><p>No companies match yet. Try fewer filters, or <a href="{{ url_for('koja_business') }}">list your own business</a>.</p></div>{% endfor %}</div></div>
+<script>(function(){var b=document.getElementById('bhCmp'),p=document.querySelectorAll('.bhPick');
+function sync(){var s=[].filter.call(p,function(x){return x.checked;});b.textContent='Compare selected ('+s.length+')';b.disabled=s.length<2;
+[].forEach.call(p,function(x){x.disabled=!x.checked&&s.length>=4;});return s;}
+[].forEach.call(p,function(x){x.onchange=sync;});
+b.onclick=function(){var s=sync().map(function(x){return x.value;});location.href='/compare?s='+encodeURIComponent(s.join(','));};sync();})();</script>
+''', rows=rows, q=q, industry=industry, loc=loc, verified_only=_bh_bool(request.args.get("verified")), rfq_only=_bh_bool(request.args.get("rfq")))
+
+
+@app.route("/companies")
+def bh_companies():
+    return redirect(url_for("business_directory_v2", **request.args))
+
+
+@app.route("/industries")
+def bh_industries():
+    counts = {}
+    for e in _bh_directory(limit=1000):
+        if e["industry"]:
+            counts[e["industry"]] = counts.get(e["industry"], 0) + 1
+    return _bh_page("KOJA Industries", r'''
+<div class="bh"><div class="hero"><h1>Industries</h1><p>Ten sectors powering African trade. Pick an industry to find companies, suppliers and opportunities.</p></div>
+<div class="bh-grid">{% for k,n,d in industries %}<div class="card"><h3>{{ n }}</h3><p class="muted">{{ d }}</p>
+<p><strong>{{ counts.get(k,0) }}</strong> listed compan{{ 'y' if counts.get(k,0)==1 else 'ies' }}</p>
+<a class="btn" href="{{ url_for('bh_industry', slug=k) }}">Explore {{ n }}</a></div>{% endfor %}</div></div>''', counts=counts)
+
+
+@app.route("/industries/<slug>")
+def bh_industry(slug):
+    if slug not in BH_INDUSTRY_NAME:
+        abort(404)
+    rows = _bh_directory(industry=slug)
+    name = BH_INDUSTRY_NAME[slug]
+    open_rfqs = [r for r in _bh_rows("koja_b2b_unified_requests", {"status": "open"}, order="created_at.desc", limit=200)
+                 if name.lower() in str(r.get("category") or "").lower()][:6]
+    return _bh_page("KOJA " + name, r'''
+<div class="bh"><div class="hero"><h1>{{ name }}</h1><p>{{ desc }}</p>
+<div class="actions"><a class="btn" href="{{ url_for('business_directory_v2', industry=slug) }}">Search {{ name }} companies</a><a class="btn secondary" href="{{ url_for('bh_industries') }}">All industries</a></div></div>
+<div class="card"><h2>Companies ({{ rows|length }})</h2><div class="bh-grid">{% for e in rows[:12] %}<div class="card"><h3><a href="{{ url_for('bh_company', slug=e.slug) }}">{{ e.name }}</a></h3>
+<div>{% if e.verified %}<span class="bh-chip ok">Verified</span>{% endif %}</div><p class="muted">{{ e.location }}</p><p>{{ e.tagline or e.description }}</p></div>
+{% else %}<p>No {{ name }} companies are listed yet.</p>{% endfor %}</div></div>
+{% if rfqs %}<div class="card"><h2>Open requests in {{ name }}</h2>{% for r in rfqs %}<p><strong>{{ r.get('title') }}</strong> <span class="muted">{{ r.get('location') or '' }}</span></p>{% endfor %}
+<a class="btn secondary" href="{{ url_for('bh_rfq_board') }}">See all RFQs</a></div>{% endif %}</div>''',
+                    name=name, desc=dict((k, d) for k, _, d in BH_INDUSTRIES)[slug], slug=slug, rows=rows, rfqs=open_rfqs)
+
+
+@app.route("/companies/<slug>")
+def bh_company(slug):
+    p = _bh_first("koja_business_profiles", {"slug": slug})
+    if not p:
+        abort(404)
+    owner_preview = bool(_bh_owned(p.get("business_id")))
+    if p.get("status") != "published" and not owner_preview:
+        abort(404)
+    data = _bh_company_data(p)
+    verified = str(p.get("business_id")) in _bh_verified_ids()
+    return _bh_page(p.get("public_name") or "Company", r'''
+<div class="bh">
+{% if p.status != 'published' %}<div class="bh-note">Preview: this profile is <strong>{{ p.status }}</strong> and not visible to the public.</div>{% endif %}
+<div class="hero"><div class="bh-row">{% if p.logo_url %}<img class="bh-logo" src="{{ p.logo_url }}" alt="">{% endif %}<div><h1 style="margin:0">{{ p.public_name }}</h1><p>{{ p.tagline or '' }}</p>
+<div>{% if verified %}<span class="bh-chip ok">KOJA Verified</span>{% endif %}{% if p.industry %}<a class="bh-chip" href="{{ url_for('bh_industry', slug=p.industry) }}">{{ industry_name }}</a>{% endif %}
+{% if p.location %}<span class="bh-chip">{{ p.location }}{{ ', '+p.country if p.country else '' }}</span>{% endif %}{% if p.year_founded %}<span class="bh-chip">Since {{ p.year_founded }}</span>{% endif %}{% if p.employee_range %}<span class="bh-chip">{{ p.employee_range }} staff</span>{% endif %}</div></div></div>
+<div class="actions" style="margin-top:10px">{% if p.accepts_rfq %}<a class="btn success" href="{{ url_for('bh_company_rfq', slug=p.slug) }}">Request a quote</a>{% endif %}
+<a class="btn secondary" href="{{ url_for('bh_compare', s=p.slug) }}">Compare</a>
+<a class="btn secondary" href="{{ url_for('bh_company_partner', slug=p.slug) }}">Propose partnership</a></div></div>
+<div class="card"><h2>About</h2><p style="white-space:pre-wrap">{{ p.description }}</p>
+{% if p.certifications %}<p><strong>Certifications:</strong> {{ p.certifications }}</p>{% endif %}
+<p>{% if p.website %}<a href="{{ p.website }}" rel="nofollow noopener" target="_blank">{{ p.website }}</a> &nbsp; {% endif %}{{ p.contact_email or '' }} {{ p.contact_phone or '' }}</p></div>
+{% if d.services %}<div class="card"><h2>Services</h2><table><tr><th>Service</th><th>Pricing</th></tr>{% for s in d.services %}<tr><td><strong>{{ s.name }}</strong><br><span class="muted">{{ s.description or '' }}</span></td>
+<td>{% if s.pricing_model == 'quote' or not s.price %}Quote on request{% else %}{{ money(s.price, s.currency or 'ZMW') }} {{ {'hourly':'/ hour','daily':'/ day','fixed':''}.get(s.pricing_model,'') }}{% endif %}</td></tr>{% endfor %}</table></div>{% endif %}
+{% if d.products %}<div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Price</th><th>Availability</th></tr>{% for pr in d.products %}<tr><td><strong>{{ pr.name }}</strong>{% if pr.delivery %} <span class="bh-chip">Delivery</span>{% endif %}</td>
+<td>{{ money(pr.price) }}{% for t in d.tiers.get(pr.id, []) %}<br><span class="muted">{{ t.min_qty }}+ : {{ money(t.unit_price) }}{{ ' ('+t.label+')' if t.label else '' }}</span>{% endfor %}</td>
+<td>{{ 'In stock' if pr.in_stock else 'Out of stock' }}</td></tr>{% endfor %}</table></div>{% endif %}
+{% if d.partners %}<div class="card"><h2>Partners</h2>{% for x in d.partners %}<a class="bh-chip" href="{{ url_for('bh_company', slug=x.slug) }}">{{ x.name }} · {{ x.type }}</a>{% endfor %}</div>{% endif %}</div>''',
+                    p=p, d=data, verified=verified, industry_name=BH_INDUSTRY_NAME.get(p.get("industry") or "", ""))
+
+
+@app.route("/compare")
+def bh_compare():
+    slugs = [s for s in re.split(r"[,\s]+", request.args.get("s", "")) if s][:4]
+    profiles = [p for p in (_bh_first("koja_business_profiles", {"slug": s}) for s in slugs) if p and p.get("status") == "published"]
+    verified = _bh_verified_ids()
+    cols = []
+    for p in profiles:
+        d = _bh_company_data(p)
+        prices = [float(x["price"] or 0) for x in d["products"] if float(x["price"] or 0) > 0]
+        shared = bool(p.get("show_catalogue"))
+        cols.append({"p": p, "verified": str(p.get("business_id")) in verified, "services": len(d["services"]),
+                     "shared": shared, "products": len(d["products"]) if shared else None,
+                     "range": (min(prices), max(prices)) if (shared and prices) else None,
+                     "delivery": any(x["delivery"] for x in d["products"]) if shared else None,
+                     "tiers": sum(len(v) for v in d["tiers"].values()) if shared else None})
+    return _bh_page("Compare Companies", r'''
+<div class="bh"><div class="hero"><h1>Compare companies</h1><p>Side-by-side view of up to four companies.</p></div>
+{% if cols|length < 2 %}<div class="card"><p>Pick at least two companies from the <a href="{{ url_for('business_directory_v2') }}">directory</a> to compare.</p></div>
+{% else %}<div class="card" style="overflow-x:auto"><table><tr><th></th>{% for c in cols %}<th><a href="{{ url_for('bh_company', slug=c.p.slug) }}">{{ c.p.public_name }}</a></th>{% endfor %}</tr>
+<tr><td>Verified</td>{% for c in cols %}<td>{{ 'Yes' if c.verified else 'No' }}</td>{% endfor %}</tr>
+<tr><td>Industry</td>{% for c in cols %}<td>{{ names.get(c.p.industry, '-') }}</td>{% endfor %}</tr>
+<tr><td>Location</td>{% for c in cols %}<td>{{ c.p.location or '-' }}{{ ', '+c.p.country if c.p.country else '' }}</td>{% endfor %}</tr>
+<tr><td>Founded</td>{% for c in cols %}<td>{{ c.p.year_founded or '-' }}</td>{% endfor %}</tr>
+<tr><td>Team size</td>{% for c in cols %}<td>{{ c.p.employee_range or '-' }}</td>{% endfor %}</tr>
+<tr><td>Services listed</td>{% for c in cols %}<td>{{ c.services }}</td>{% endfor %}</tr>
+<tr><td>Products listed</td>{% for c in cols %}<td>{{ c.products if c.shared else 'Not shared' }}</td>{% endfor %}</tr>
+<tr><td>Price range</td>{% for c in cols %}<td>{% if c.range %}{{ money(c.range[0]) }} - {{ money(c.range[1]) }}{% else %}-{% endif %}</td>{% endfor %}</tr>
+<tr><td>Volume pricing</td>{% for c in cols %}<td>{% if c.shared %}{{ 'Yes' if c.tiers else 'No' }}{% else %}-{% endif %}</td>{% endfor %}</tr>
+<tr><td>Delivery available</td>{% for c in cols %}<td>{% if c.shared %}{{ 'Yes' if c.delivery else 'No' }}{% else %}-{% endif %}</td>{% endfor %}</tr>
+<tr><td>Accepts RFQs</td>{% for c in cols %}<td>{{ 'Yes' if c.p.accepts_rfq else 'No' }}</td>{% endfor %}</tr>
+<tr><td></td>{% for c in cols %}<td>{% if c.p.accepts_rfq %}<a class="btn success" href="{{ url_for('bh_company_rfq', slug=c.p.slug) }}">Request quote</a>{% endif %}</td>{% endfor %}</tr></table></div>{% endif %}</div>''',
+                    cols=cols, names=BH_INDUSTRY_NAME)
+
+
+
+# ---- owner: Business Hub (the diagram as a page) -----------------------------
+@app.route("/business/<business_id>/hub")
+@login_required
+def bh_hub(business_id):
+    b = _bh_owned_or_404(business_id)
+    bid = str(business_id)
+    prof = _bh_profile(bid)
+    stats = {
+        "products": len(_bh_rows("koja_business_products", {"business_id": bid}, limit=1000)),
+        "services": len([s for s in _bh_rows("koja_business_services", {"business_id": bid}, limit=500) if s.get("active", True)]),
+        "contracts": len([c for c in _bh_rows("koja_connectplus_contracts", {"party_a_business_id": bid}, limit=500) + _bh_rows("koja_connectplus_contracts", {"party_b_business_id": bid}, limit=500)
+                          if c.get("status") in ("sent", "active")]),
+        "partners": len([x for x in _bh_rows("koja_connectplus_partnerships", {"proposer_business_id": bid}, limit=300) + _bh_rows("koja_connectplus_partnerships", {"partner_business_id": bid}, limit=300)
+                         if x.get("status") in ("proposed", "accepted")]),
+    }
+    return _bh_page("KOJA Business Hub", r'''
+<div class="bh"><div class="hero"><h1>{{ b.name }} · Business Hub</h1><p>Run the company, reach customers, trade with other businesses and deliver, from one place.</p>
+<div class="bh-row">{% if prof and prof.status == 'published' %}<span class="bh-chip ok">Public profile live</span>{% elif prof %}<span class="bh-chip warn">Profile {{ prof.status }}</span>{% else %}<span class="bh-chip warn">No public profile yet</span>{% endif %}
+{% if prof and prof.industry %}<span class="bh-chip">{{ names.get(prof.industry) }}</span>{% endif %}</div></div>
+
+<div class="card"><h2>Businesses &mdash; run it</h2><div class="bh-grid">
+<div class="card"><h3>Company profile</h3><p class="muted">Public page, industry, logo and what you offer.</p><a class="btn" href="{{ url_for('bh_profile_edit', business_id=b.id) }}">Edit profile</a>{% if prof %} <a class="btn secondary" href="{{ url_for('bh_company', slug=prof.slug) }}">View</a>{% endif %}</div>
+<div class="card"><h3>Products</h3><p class="muted">{{ stats.products }} product(s)</p><a class="btn" href="{{ url_for('business_products', business_id=b.id) }}">Manage products</a></div>
+<div class="card"><h3>Services</h3><p class="muted">{{ stats.services }} active</p><a class="btn" href="{{ url_for('bh_services', business_id=b.id) }}">Manage services</a></div>
+<div class="card"><h3>Inventory</h3><p class="muted">Stock levels, adjustments, movement log.</p><a class="btn" href="{{ url_for('bh_inventory', business_id=b.id) }}">Open inventory</a></div>
+<div class="card"><h3>Pricing</h3><p class="muted">Volume / wholesale price tiers.</p><a class="btn" href="{{ url_for('bh_pricing', business_id=b.id) }}">Set pricing</a></div>
+<div class="card"><h3>POS</h3><p class="muted">Sell in-store, print receipts, post to accounting.</p><a class="btn success" href="{{ url_for('bh_pos', business_id=b.id) }}">Open POS</a></div>
+<div class="card"><h3>Staff</h3><a class="btn" href="{{ url_for('business_employees', business_id=b.id) }}">Employees</a></div>
+<div class="card"><h3>Invoices</h3><a class="btn" href="{{ url_for('business_invoices', business_id=b.id) }}">Invoices</a></div>
+<div class="card"><h3>CRM</h3><a class="btn" href="{{ url_for('business_customers', business_id=b.id) }}">Customers</a></div>
+<div class="card"><h3>Payments</h3><a class="btn" href="{{ url_for('business_payments', business_id=b.id) }}">Payments</a> <a class="btn secondary" href="{{ url_for('business_accounting_v2', business_id=b.id) }}">Accounting</a></div></div></div>
+
+<div class="card"><h2>Industries &amp; customers &mdash; be found</h2><div class="bh-grid">
+<div class="card"><h3>Industries</h3><p class="muted">Ten sectors, with company listings.</p><a class="btn" href="{{ url_for('bh_industries') }}">Browse industries</a></div>
+<div class="card"><h3>Directory</h3><p class="muted">How customers search, compare and request quotes.</p><a class="btn" href="{{ url_for('business_directory_v2') }}">Open directory</a></div>
+<div class="card"><h3>Orders &amp; payment</h3><p class="muted">Quotes, orders, secure payment, fulfilment.</p><a class="btn" href="{{ url_for('b2bv4_centre', business_id=b.id) }}">B2B centre</a></div></div></div>
+
+<div class="card"><h2>KOJA Connect+ &mdash; trade with other businesses</h2><div class="bh-grid">
+<div class="card"><h3>RFQ board</h3><p class="muted">Open requests from buyers you can quote on.</p><a class="btn" href="{{ url_for('bh_rfq_board', business_id=b.id) }}">Find RFQs</a></div>
+<div class="card"><h3>Contracts</h3><p class="muted">{{ stats.contracts }} open</p><a class="btn" href="{{ url_for('bh_contracts', business_id=b.id) }}">Contracts</a></div>
+<div class="card"><h3>Partnerships</h3><p class="muted">{{ stats.partners }} active / proposed</p><a class="btn" href="{{ url_for('bh_partnerships', business_id=b.id) }}">Partnerships</a></div>
+<div class="card"><h3>Suppliers &amp; connections</h3><a class="btn" href="{{ url_for('business_suppliers', business_id=b.id) }}">Suppliers</a> <a class="btn secondary" href="{{ url_for('business_connect', business_id=b.id) }}">Connections</a></div>
+<div class="card"><h3>Investors</h3><p class="muted">Raise funds or invest.</p><a class="btn" href="{{ url_for('bh_fundraising', business_id=b.id) }}">Fundraising</a> <a class="btn secondary" href="{{ url_for('bh_investors_home') }}">Investor hub</a></div></div></div>
+
+<div class="card"><h2>KOJA Delivery &mdash; goods &amp; services reach the customer</h2><p class="muted">Paid B2B orders create delivery jobs automatically when fulfilment starts.</p>
+<a class="btn" href="{{ url_for('business_delivery', business_id=b.id) }}">Delivery</a></div></div>''',
+                    b=b, prof=prof, stats=stats, names=BH_INDUSTRY_NAME)
+
+
+# ---- owner: company profile ---------------------------------------------------
+@app.route("/business/<business_id>/profile", methods=["GET", "POST"])
+@login_required
+def bh_profile_edit(business_id):
+    b = _bh_owned_or_404(business_id)
+    p = _bh_profile(business_id)
+    if request.method == "POST":
+        f = request.form
+        name = _bh_text(f.get("public_name"), 120)
+        industry = clean(f.get("industry")); industry = industry if industry in BH_INDUSTRY_NAME else ""
+        desc, loc = _bh_text(f.get("description"), 2000), _bh_text(f.get("location"), 120)
+        website, email = _bh_url(f.get("website")), _bh_email(f.get("contact_email"))
+        want_publish = _bh_bool(f.get("publish"))
+        errs = []
+        if not name: errs.append("Public name is required.")
+        if website is None: errs.append("Website is not a valid address.")
+        if email is None: errs.append("Contact email is not valid.")
+        if want_publish and not (name and industry and loc and len(desc) >= 30):
+            errs.append("To publish, add a name, industry, location and a description of at least 30 characters.")
+        if want_publish and p and p.get("status") == "suspended":
+            errs.append("This profile was suspended by KOJA. Contact support before publishing again.")
+        logo_url = (p or {}).get("logo_url") or ""
+        lf = request.files.get("logo")
+        if lf and lf.filename and not errs:
+            info, uerr = upload_storage(lf, folder="business/logos", public=True, max_mb=5, allowed={"jpg", "jpeg", "png", "webp"})
+            if uerr: errs.append("Logo upload failed: " + str(uerr)[:160])
+            else: logo_url = (info or {}).get("url") or logo_url
+        if errs:
+            for e in errs: flash(e, "danger")
+            return redirect(url_for("bh_profile_edit", business_id=business_id))
+        year = _bh_int(f.get("year_founded"), 0, 0, datetime.now(timezone.utc).year)
+        status = "suspended" if (p and p.get("status") == "suspended") else ("published" if want_publish else "draft")
+        payload = {"business_id": str(business_id), "public_name": name, "tagline": _bh_text(f.get("tagline"), 140), "description": desc,
+                   "industry": industry, "location": loc, "country": _bh_text(f.get("country"), 80), "website": website or "",
+                   "contact_email": email or "", "contact_phone": _bh_text(f.get("contact_phone"), 40),
+                   "year_founded": year if year >= 1800 else None,
+                   "employee_range": f.get("employee_range") if f.get("employee_range") in BH_EMPLOYEE_RANGES else "",
+                   "certifications": _bh_text(f.get("certifications"), 500), "logo_url": logo_url,
+                   "show_catalogue": _bh_bool(f.get("show_catalogue")), "accepts_rfq": _bh_bool(f.get("accepts_rfq")),
+                   "status": status, "updated_at": utc_now()}
+        if p:
+            _, err = db_update("koja_business_profiles", {"id": p.get("id")}, payload)
+        else:
+            slug = _bh_slug(name)
+            if _bh_first("koja_business_profiles", {"slug": slug}): slug += "-" + uuid.uuid4().hex[:4]
+            payload.update(id=str(uuid.uuid4()), slug=slug, created_at=utc_now())
+            _, err = db_insert("koja_business_profiles", payload)
+        if err:
+            flash("Profile could not be saved. Has the KOJA Business Hub migration been run? " + str(err)[:160], "danger")
+        else:
+            flash("Profile published." if status == "published" else "Profile saved as a draft.", "success")
+            _bh_audit("business_profile_save", "business", business_id, {"status": status})
+        return redirect(url_for("bh_profile_edit", business_id=business_id))
+    d = p or {"public_name": b.get("name"), "location": b.get("location"), "contact_phone": b.get("phone"), "accepts_rfq": True, "status": "draft"}
+    return _bh_page("Company Profile", r'''
+<div class="bh"><div class="hero"><h1>Company profile</h1><p>{{ b.name }} &middot; status: <strong>{{ d.status or 'draft' }}</strong></p></div>
+<div class="bh-note">Everything on this page is shown publicly once you publish. Never enter private information.</div>
+<div class="card"><form method="post" enctype="multipart/form-data">{{ csrf }}
+<div class="bh-two"><div><label>Public company name</label><input name="public_name" maxlength="120" value="{{ d.public_name or '' }}" required></div>
+<div><label>Industry</label><select name="industry"><option value="">Select&hellip;</option>{% for k,n,x in industries %}<option value="{{ k }}" {{ 'selected' if d.industry==k else '' }}>{{ n }}</option>{% endfor %}</select></div>
+<div><label>Tagline</label><input name="tagline" maxlength="140" value="{{ d.tagline or '' }}"></div>
+<div><label>Location (city)</label><input name="location" maxlength="120" value="{{ d.location or '' }}"></div>
+<div><label>Country</label><input name="country" maxlength="80" value="{{ d.country or '' }}"></div>
+<div><label>Website</label><input name="website" maxlength="300" value="{{ d.website or '' }}" placeholder="https://"></div>
+<div><label>Public email</label><input name="contact_email" maxlength="160" value="{{ d.contact_email or '' }}"></div>
+<div><label>Public phone</label><input name="contact_phone" maxlength="40" value="{{ d.contact_phone or '' }}"></div>
+<div><label>Year founded</label><input name="year_founded" type="number" min="1800" value="{{ d.year_founded or '' }}"></div>
+<div><label>Team size</label><select name="employee_range"><option value="">-</option>{% for r in ranges %}<option {{ 'selected' if d.employee_range==r else '' }}>{{ r }}</option>{% endfor %}</select></div></div>
+<label>About the company</label><textarea name="description" rows="6" maxlength="2000">{{ d.description or '' }}</textarea>
+<label>Certifications / licences (public)</label><input name="certifications" maxlength="500" value="{{ d.certifications or '' }}">
+<label>Logo (JPG/PNG/WebP, max 5 MB)</label>{% if d.logo_url %}<img class="bh-logo" src="{{ d.logo_url }}" alt=""> {% endif %}<input type="file" name="logo" accept="image/*">
+<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="show_catalogue" style="width:auto" {{ 'checked' if d.show_catalogue else '' }}> Show my products and prices publicly</label>
+<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="accepts_rfq" style="width:auto" {{ 'checked' if d.accepts_rfq else '' }}> Accept quote requests from other businesses</label>
+<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="publish" style="width:auto" {{ 'checked' if d.status=='published' else '' }}> Publish to the KOJA directory</label>
+<div class="bh-row" style="margin-top:12px"><button class="btn success" type="submit">Save</button><a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a>
+{% if d.slug %}<a class="btn secondary" href="{{ url_for('bh_company', slug=d.slug) }}">Preview</a>{% endif %}</div></form></div></div>''',
+                    b=b, d=d, ranges=BH_EMPLOYEE_RANGES)
+
+
+# ---- owner: services ----------------------------------------------------------
+@app.route("/business/<business_id>/services", methods=["GET", "POST"])
+@login_required
+def bh_services(business_id):
+    b = _bh_owned_or_404(business_id)
+    if request.method == "POST":
+        f, action = request.form, clean(request.form.get("action"))
+        if action == "add":
+            name = _bh_text(f.get("name"), 120)
+            model = f.get("pricing_model") if f.get("pricing_model") in ("fixed", "hourly", "daily", "quote") else "quote"
+            if not name:
+                flash("Service name is required.", "danger")
+            else:
+                _, err = db_insert("koja_business_services", {"id": str(uuid.uuid4()), "business_id": str(business_id), "name": name,
+                                   "description": _bh_text(f.get("description"), 500), "pricing_model": model,
+                                   "price": _bh_num(f.get("price"), 0, 0, 1e9) if model != "quote" else 0,
+                                   "currency": (re.sub(r"[^A-Z]", "", clean(f.get("currency")).upper())[:3] or "ZMW"), "active": True, "created_at": utc_now()})
+                flash("Service added." if not err else "Could not save the service (run the Business Hub migration).", "success" if not err else "danger")
+        elif action in ("toggle", "delete"):
+            s = _bh_first("koja_business_services", {"id": clean(f.get("id")), "business_id": str(business_id)})
+            if s and action == "toggle": db_update("koja_business_services", {"id": s.get("id")}, {"active": not s.get("active", True)})
+            elif s: db_delete("koja_business_services", {"id": s.get("id")})
+        return redirect(url_for("bh_services", business_id=business_id))
+    rows = _bh_rows("koja_business_services", {"business_id": str(business_id)}, order="created_at.desc", limit=200)
+    return _bh_page("Services", r'''
+<div class="bh"><div class="hero"><h1>Services</h1><p>{{ b.name }} &middot; what you do, and how you price it.</p></div>
+<div class="card"><form method="post">{{ csrf }}<input type="hidden" name="action" value="add"><div class="bh-two">
+<div><label>Service name</label><input name="name" maxlength="120" required></div>
+<div><label>Pricing</label><select name="pricing_model"><option value="quote">Quote on request</option><option value="fixed">Fixed price</option><option value="hourly">Per hour</option><option value="daily">Per day</option></select></div>
+<div><label>Price</label><input name="price" type="number" min="0" step="0.01" value="0"></div><div><label>Currency</label><input name="currency" value="ZMW" maxlength="3"></div></div>
+<label>Description</label><textarea name="description" rows="3" maxlength="500"></textarea><button class="btn success" type="submit">Add service</button></form></div>
+<div class="card"><h2>Your services</h2><table><tr><th>Service</th><th>Pricing</th><th>Status</th><th></th></tr>
+{% for s in rows %}<tr><td><strong>{{ s.name }}</strong><br><span class="muted">{{ s.description or '' }}</span></td>
+<td>{% if s.pricing_model=='quote' or not s.price %}Quote{% else %}{{ money(s.price, s.currency or 'ZMW') }} / {{ s.pricing_model }}{% endif %}</td><td>{{ 'Active' if s.get('active', True) else 'Hidden' }}</td>
+<td><form method="post" class="bh-row">{{ csrf }}<input type="hidden" name="id" value="{{ s.id }}"><button class="btn secondary" name="action" value="toggle">{{ 'Hide' if s.get('active', True) else 'Show' }}</button><button class="btn danger" name="action" value="delete">Delete</button></form></td></tr>
+{% else %}<tr><td colspan="4">No services yet.</td></tr>{% endfor %}</table>
+<a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a></div></div>''', b=b, rows=rows)
+
+
+# ---- owner: volume pricing ----------------------------------------------------
+def _bh_unit_price(product, qty, tiers):
+    """Base price, or the best volume tier whose min_qty <= qty."""
+    price = _bh_num(product.get("selling_price"), 0, 0)
+    best = None
+    for t in tiers:
+        if str(t.get("product_id")) == str(product.get("id")) and _bh_int(t.get("min_qty"), 1) <= qty:
+            if best is None or _bh_int(t.get("min_qty")) > _bh_int(best.get("min_qty")):
+                best = t
+    return _bh_num(best.get("unit_price"), price, 0) if best else price
+
+
+@app.route("/business/<business_id>/pricing", methods=["GET", "POST"])
+@login_required
+def bh_pricing(business_id):
+    b = _bh_owned_or_404(business_id)
+    bid = str(business_id)
+    if request.method == "POST":
+        f, action = request.form, clean(request.form.get("action"))
+        if action == "add":
+            pr = _bh_first("koja_business_products", {"id": clean(f.get("product_id")), "business_id": bid})
+            qty, price = _bh_int(f.get("min_qty"), 0, 0, 1000000), _bh_num(f.get("unit_price"), 0, 0, 1e9)
+            if not pr: flash("Pick one of your products.", "danger")
+            elif qty < 2: flash("A volume tier starts at a quantity of 2 or more.", "danger")
+            elif price <= 0 or price > _bh_num(pr.get("selling_price"), 0):
+                flash("Tier price must be above zero and not higher than the base price.", "danger")
+            else:
+                _, err = db_insert("koja_business_price_tiers", {"id": str(uuid.uuid4()), "business_id": bid, "product_id": str(pr.get("id")),
+                                   "min_qty": qty, "unit_price": price, "label": _bh_text(f.get("label"), 60), "created_at": utc_now()})
+                flash("Price tier saved." if not err else "Could not save (run the Business Hub migration).", "success" if not err else "danger")
+        elif action == "delete":
+            t = _bh_first("koja_business_price_tiers", {"id": clean(f.get("id")), "business_id": bid})
+            if t: db_delete("koja_business_price_tiers", {"id": t.get("id")})
+        return redirect(url_for("bh_pricing", business_id=business_id))
+    products = _bh_rows("koja_business_products", {"business_id": bid}, order="created_at.desc", limit=300)
+    tiers = _bh_rows("koja_business_price_tiers", {"business_id": bid}, order="min_qty.asc", limit=1000)
+    by = {}
+    for t in tiers: by.setdefault(str(t.get("product_id")), []).append(t)
+    return _bh_page("Pricing", r'''
+<div class="bh"><div class="hero"><h1>Pricing</h1><p>{{ b.name }} &middot; volume and wholesale price tiers. POS and your public catalogue use them automatically.</p></div>
+<div class="card"><form method="post" class="bh-two">{{ csrf }}<input type="hidden" name="action" value="add">
+<div><label>Product</label><select name="product_id" required>{% for p in products %}<option value="{{ p.id }}">{{ p.name }} ({{ money(p.selling_price) }})</option>{% endfor %}</select></div>
+<div><label>From quantity</label><input name="min_qty" type="number" min="2" value="10"></div>
+<div><label>Unit price</label><input name="unit_price" type="number" min="0.01" step="0.01"></div><div><label>Label (optional)</label><input name="label" maxlength="60" placeholder="Wholesale"></div>
+<div><button class="btn success" type="submit">Add tier</button></div></form></div>
+<div class="card"><h2>Price tiers</h2><table><tr><th>Product</th><th>Base</th><th>Tiers</th></tr>
+{% for p in products %}<tr><td><strong>{{ p.name }}</strong></td><td>{{ money(p.selling_price) }}</td><td>{% for t in by.get(p.id|string, []) %}
+<form method="post" class="bh-row" style="display:inline-flex">{{ csrf }}<input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ t.id }}"><span class="bh-chip">{{ t.min_qty }}+ : {{ money(t.unit_price) }}{{ ' · '+t.label if t.label else '' }}</span><button class="btn danger" type="submit">x</button></form>{% else %}<span class="muted">-</span>{% endfor %}</td></tr>
+{% else %}<tr><td colspan="3">Add products first in <a href="{{ url_for('business_products', business_id=b.id) }}">Products</a>.</td></tr>{% endfor %}</table>
+<a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a></div></div>''', b=b, products=products, by=by)
+
+
+
+# ---- inventory: safe stock changes + movement log ------------------------------
+def _bh_stock_apply(business_id, product_id, delta, movement_type, reference=""):
+    """Change stock with compare-and-set so two sellers can't oversell. Returns (new_stock, error)."""
+    for _ in range(5):
+        pr = _bh_first("koja_business_products", {"id": product_id, "business_id": str(business_id)})
+        if not pr:
+            return None, "Product not found."
+        if pr.get("product_type") == "digital":
+            return pr.get("stock"), None
+        has_stock = pr.get("stock") is not None
+        old = _bh_int(pr.get("stock"), 0)
+        new = old + int(delta)
+        if new < 0:
+            return None, "Not enough stock for %s (only %d left)." % (pr.get("name") or "item", old)
+        flt = {"id": product_id, "business_id": str(business_id)}
+        if has_stock:
+            flt["stock"] = old
+        rows, err = db_update("koja_business_products", flt, {"stock": new})
+        if err:
+            return None, "Stock update failed."
+        if rows:
+            try:
+                db_insert("koja_business_stock_movements", {"business_id": str(business_id), "product_id": str(product_id),
+                          "movement_type": movement_type, "quantity": int(delta), "reference": str(reference or ""), "created_at": utc_now()})
+            except Exception as exc:
+                logger.warning("stock movement log failed: %s", exc)
+            return new, None
+        # someone else changed the stock between our read and write: re-read and retry
+    return None, "Stock changed while saving. Please try again."
+
+
+BH_ADJUST_REASONS = {"received": "Stock received", "damaged": "Damaged / expired", "returned": "Customer return",
+                     "correction": "Count correction", "internal": "Internal use"}
+
+
+@app.route("/business/<business_id>/inventory", methods=["GET", "POST"])
+@login_required
+def bh_inventory(business_id):
+    b = _bh_owned_or_404(business_id)
+    bid = str(business_id)
+    if request.method == "POST":
+        f = request.form
+        pid, mode = clean(f.get("product_id")), clean(f.get("mode"))
+        reason = f.get("reason") if f.get("reason") in BH_ADJUST_REASONS else "correction"
+        qty = _bh_int(f.get("qty"), 0, 0, 10000000)
+        pr = _bh_first("koja_business_products", {"id": pid, "business_id": bid})
+        if not pr or mode not in ("add", "remove", "set"):
+            flash("Choose a product and an action.", "danger")
+        elif pr.get("product_type") == "digital":
+            flash("Digital products do not use stock.", "warning")
+        else:
+            delta = qty if mode == "add" else (-qty if mode == "remove" else qty - _bh_int(pr.get("stock"), 0))
+            if delta == 0:
+                flash("Nothing to change.", "info")
+            else:
+                new, err = _bh_stock_apply(bid, pid, delta, "adjustment_" + reason, "manual")
+                flash(("%s: stock is now %d." % (pr.get("name"), new)) if err is None else err, "success" if err is None else "danger")
+        return redirect(url_for("bh_inventory", business_id=business_id))
+    low = _bh_int(request.args.get("low"), 5, 0, 100000)
+    products = _bh_rows("koja_business_products", {"business_id": bid}, order="name.asc", limit=500)
+    names = {str(p.get("id")): p.get("name") for p in products}
+    moves = _bh_rows("koja_business_stock_movements", {"business_id": bid}, order="created_at.desc", limit=40)
+    physical = [p for p in products if p.get("product_type") != "digital"]
+    value = sum(_bh_int(p.get("stock")) * _bh_num(p.get("cost_price"), 0) for p in physical)
+    low_items = [p for p in physical if _bh_int(p.get("stock")) <= low]
+    return _bh_page("Inventory", r'''
+<div class="bh"><div class="hero"><h1>Inventory</h1><p>{{ b.name }} &middot; stock levels, adjustments and the movement log.</p></div>
+<div class="bh-grid"><div class="card"><div class="muted">Stock value (at cost)</div><div class="big">{{ money(value) }}</div></div>
+<div class="card"><div class="muted">Physical items</div><div class="big">{{ physical|length }}</div></div>
+<div class="card"><div class="muted">Low stock (&le; {{ low }})</div><div class="big" style="color:{{ '#ff6b6b' if low_items else 'inherit' }}">{{ low_items|length }}</div></div></div>
+<div class="card"><h2>Stock</h2><div style="overflow-x:auto"><table><tr><th>Product</th><th>SKU</th><th>Stock</th><th>Adjust</th></tr>
+{% for p in products %}<tr><td><strong>{{ p.name }}</strong></td><td>{{ p.sku or '-' }}</td>
+<td>{% if p.product_type == 'digital' %}<span class="muted">digital</span>{% else %}{{ p.stock or 0 }}{% if (p.stock or 0) <= low %} <span class="bh-chip bad">Low</span>{% endif %}{% endif %}</td>
+<td>{% if p.product_type != 'digital' %}<form method="post" class="bh-row">{{ csrf }}<input type="hidden" name="product_id" value="{{ p.id }}">
+<select name="mode" style="width:auto"><option value="add">Add</option><option value="remove">Remove</option><option value="set">Set to</option></select>
+<input name="qty" type="number" min="0" value="1" style="width:90px"><select name="reason" style="width:auto">{% for k,v in reasons.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select>
+<button class="btn" type="submit">Apply</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="4">No products yet. Add them in <a href="{{ url_for('business_products', business_id=b.id) }}">Products</a>.</td></tr>{% endfor %}</table></div></div>
+<div class="card"><h2>Recent movements</h2><table><tr><th>When</th><th>Product</th><th>Change</th><th>Type</th><th>Ref</th></tr>
+{% for m in moves %}<tr><td>{{ (m.created_at or '')[:16].replace('T',' ') }}</td><td>{{ names.get(m.product_id|string, '-') }}</td><td>{{ '%+d' % (m.quantity or 0) }}</td><td>{{ m.movement_type }}</td><td>{{ m.reference or '' }}</td></tr>
+{% else %}<tr><td colspan="5">No stock movements yet.</td></tr>{% endfor %}</table>
+<a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a></div></div>''',
+                    b=b, products=products, names=names, moves=moves, physical=physical, value=value, low=low, low_items=low_items, reasons=BH_ADJUST_REASONS)
+
+
+# ---- POS -----------------------------------------------------------------------
+from decimal import Decimal, ROUND_HALF_UP
+
+BH_CURRENCY = "ZMW"
+BH_PAY_METHODS = {"cash": "Cash", "mobile_money": "Mobile money", "card": "Card", "bank": "Bank transfer"}
+
+
+def _bh_d(v):
+    try:
+        return Decimal(str(v if v not in (None, "") else 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except Exception:
+        return Decimal("0.00")
+
+
+@app.route("/business/<business_id>/pos")
+@login_required
+def bh_pos(business_id):
+    b = _bh_owned_or_404(business_id)
+    bid = str(business_id)
+    products = [p for p in _bh_rows("koja_business_products", {"business_id": bid}, order="name.asc", limit=500)
+                if p.get("product_type") == "digital" or _bh_int(p.get("stock")) > 0]
+    services = [s for s in _bh_rows("koja_business_services", {"business_id": bid}, limit=200)
+                if s.get("active", True) and s.get("pricing_model") != "quote" and _bh_num(s.get("price")) > 0]
+    tiers = _bh_rows("koja_business_price_tiers", {"business_id": bid}, order="min_qty.asc", limit=1000)
+    boot = {"currency": BH_CURRENCY, "checkout": url_for("bh_pos_checkout", business_id=business_id),
+            "products": [{"kind": "product", "id": str(p["id"]), "name": p.get("name") or "", "price": _bh_num(p.get("selling_price")),
+                          "stock": None if p.get("product_type") == "digital" else _bh_int(p.get("stock")),
+                          "tiers": [[_bh_int(t["min_qty"]), _bh_num(t["unit_price"])] for t in tiers if str(t.get("product_id")) == str(p["id"])]} for p in products],
+            "services": [{"kind": "service", "id": str(s["id"]), "name": s.get("name") or "", "price": _bh_num(s.get("price")), "stock": None, "tiers": []} for s in services]}
+    recent = _bh_rows("koja_business_pos_receipts", {"business_id": bid}, order="created_at.desc", limit=10)
+    return _bh_page("POS", r'''
+<div class="bh"><div class="hero"><h1>Point of Sale</h1><p>{{ b.name }} &middot; prices and stock are checked on the server at checkout.</p></div>
+<div class="bh-two" style="align-items:start">
+<div class="card"><input id="q" placeholder="Search products and services" autocomplete="off"><div id="items" class="bh-grid" style="margin-top:10px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))"></div></div>
+<div class="card"><h2>Sale</h2><table id="cart"><tr><th>Item</th><th>Qty</th><th>Total</th><th></th></tr></table>
+<div class="bh-row" style="margin-top:8px"><label>Discount</label><input id="disc" type="number" min="0" step="0.01" value="0" style="width:110px"></div>
+<div class="bh-row" style="margin-top:8px"><label>Payment</label><select id="pm" style="width:auto">{% for k,v in methods.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select>
+<input id="tend" type="number" min="0" step="0.01" placeholder="Cash tendered" style="width:140px"></div>
+<input id="cust" placeholder="Customer name (optional)" maxlength="80" style="margin-top:8px">
+<p class="big" id="tot">0.00</p><p class="muted" id="chg"></p><div id="err" style="color:#ff6b6b;min-height:1.3em"></div>
+<button class="btn success" id="go" type="button" style="width:100%">Complete sale</button></div></div>
+<div class="card"><h2>Recent sales</h2><table><tr><th>Receipt</th><th>Total</th><th>Method</th><th>When</th></tr>
+{% for r in recent %}<tr><td><a href="{{ url_for('bh_pos_receipt', business_id=b.id, number=r.receipt_number) }}">{{ r.receipt_number }}</a></td><td>{{ money(r.total) }}</td><td>{{ r.payment_method }}</td><td>{{ (r.created_at or '')[:16].replace('T',' ') }}</td></tr>
+{% else %}<tr><td colspan="4">No sales yet.</td></tr>{% endfor %}</table><a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a></div></div>
+<script id="posBoot" type="application/json">{{ boot|tojson }}</script>
+<script>(function(){
+var B=JSON.parse(document.getElementById('posBoot').textContent),all=B.products.concat(B.services),cart={};
+var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+var $=function(i){return document.getElementById(i);};
+function unit(it,q){var p=it.price;it.tiers.forEach(function(t){if(q>=t[0])p=t[1];});return p;}
+function fmt(n){return (Math.round(n*100)/100).toFixed(2);}
+function drawItems(){var q=$('q').value.toLowerCase(),box=$('items');box.textContent='';
+ all.filter(function(i){return !q||i.name.toLowerCase().indexOf(q)>=0;}).slice(0,60).forEach(function(i){
+  var d=document.createElement('button');d.type='button';d.className='card';d.style.cursor='pointer';d.style.textAlign='left';
+  var n=document.createElement('strong');n.textContent=i.name;var p=document.createElement('div');p.textContent=B.currency+' '+fmt(i.price)+(i.kind==='service'?' (service)':(i.stock===null?'':' · '+i.stock+' left'));
+  d.appendChild(n);d.appendChild(p);d.onclick=function(){add(i);};box.appendChild(d);});}
+function add(i){var k=i.kind+':'+i.id,c=cart[k]||(cart[k]={it:i,qty:0});if(i.stock!==null&&c.qty>=i.stock){$('err').textContent='Only '+i.stock+' of '+i.name+' in stock.';return;}c.qty++;$('err').textContent='';draw();}
+function sub(){var s=0;Object.keys(cart).forEach(function(k){var c=cart[k];s+=unit(c.it,c.qty)*c.qty;});return s;}
+function total(){var d=parseFloat($('disc').value)||0,s=sub();d=Math.min(Math.max(d,0),s);return s-d;}
+function draw(){var t=$('cart');while(t.rows.length>1)t.deleteRow(1);
+ Object.keys(cart).forEach(function(k){var c=cart[k],r=t.insertRow(),u=unit(c.it,c.qty);
+  r.insertCell().textContent=c.it.name+(c.qty>1&&u!==c.it.price?' @'+fmt(u):'');
+  var q=r.insertCell();var m=document.createElement('button');m.type='button';m.className='btn secondary';m.textContent='-';m.onclick=function(){c.qty--;if(c.qty<=0)delete cart[k];draw();};
+  var s=document.createElement('span');s.textContent=' '+c.qty+' ';var p=document.createElement('button');p.type='button';p.className='btn secondary';p.textContent='+';p.onclick=function(){add(c.it);};
+  q.appendChild(m);q.appendChild(s);q.appendChild(p);r.insertCell().textContent=fmt(u*c.qty);
+  var x=r.insertCell();var rm=document.createElement('button');rm.type='button';rm.className='btn danger';rm.textContent='x';rm.onclick=function(){delete cart[k];draw();};x.appendChild(rm);});
+ var tt=total();$('tot').textContent=B.currency+' '+fmt(tt);var td=parseFloat($('tend').value)||0;$('chg').textContent=($('pm').value==='cash'&&td>=tt&&tt>0)?'Change: '+B.currency+' '+fmt(td-tt):'';}
+['disc','tend','pm'].forEach(function(i){$(i).oninput=draw;$(i).onchange=draw;});$('q').oninput=drawItems;
+$('go').onclick=function(){var items=Object.keys(cart).map(function(k){var c=cart[k];return {kind:c.it.kind,id:c.it.id,qty:c.qty};});
+ if(!items.length){$('err').textContent='Add at least one item.';return;}$('go').disabled=true;$('err').textContent='';
+ fetch(B.checkout,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({items:items,payment_method:$('pm').value,discount:$('disc').value,tendered:$('tend').value,customer_name:$('cust').value})})
+ .then(function(r){return r.json();}).then(function(d){if(d.ok){location.href=d.receipt_url;}else{$('err').textContent=d.error||'Sale failed.';$('go').disabled=false;}})
+ .catch(function(){$('err').textContent='Network error. Nothing was charged; try again.';$('go').disabled=false;});};
+drawItems();draw();})();</script>''', b=b, boot=boot, recent=recent, methods=BH_PAY_METHODS)
+
+
+@app.route("/business/<business_id>/pos/checkout", methods=["POST"])
+@login_required
+def bh_pos_checkout(business_id):
+    b = _bh_owned(business_id)
+    if not b:
+        return jsonify({"ok": False, "error": "Business not found."}), 404
+    bid = str(business_id)
+    data = request.get_json(silent=True) or {}
+    method = data.get("payment_method") if data.get("payment_method") in BH_PAY_METHODS else "cash"
+    # 1) merge + validate lines
+    merged = {}
+    for raw in (data.get("items") or [])[:60]:
+        kind = raw.get("kind") if raw.get("kind") in ("product", "service") else None
+        iid, qty = clean(raw.get("id")), _bh_int(raw.get("qty"), 0, 0, 100000)
+        if not (kind and iid and qty > 0):
+            return jsonify({"ok": False, "error": "Invalid item in the sale."}), 400
+        merged[(kind, iid)] = merged.get((kind, iid), 0) + qty
+    if not merged:
+        return jsonify({"ok": False, "error": "Add at least one item."}), 400
+    tiers = _bh_rows("koja_business_price_tiers", {"business_id": bid}, limit=1000)
+    # 2) price every line on the server (client prices are ignored)
+    lines, subtotal = [], Decimal("0.00")
+    for (kind, iid), qty in merged.items():
+        if kind == "product":
+            row = _bh_first("koja_business_products", {"id": iid, "business_id": bid})
+            if not row: return jsonify({"ok": False, "error": "A product in the cart no longer exists."}), 400
+            unit, cost = _bh_d(_bh_unit_price(row, qty, tiers)), _bh_d(row.get("cost_price"))
+        else:
+            row = _bh_first("koja_business_services", {"id": iid, "business_id": bid})
+            if not row or not row.get("active", True): return jsonify({"ok": False, "error": "A service in the cart is unavailable."}), 400
+            if row.get("pricing_model") == "quote" or _bh_num(row.get("price")) <= 0:
+                return jsonify({"ok": False, "error": "'%s' is quote-only; invoice it instead." % row.get("name")}), 400
+            unit, cost = _bh_d(row.get("price")), Decimal("0.00")
+        if unit <= 0:
+            return jsonify({"ok": False, "error": "'%s' has no price set." % row.get("name")}), 400
+        total_line = (unit * qty).quantize(Decimal("0.01"))
+        subtotal += total_line
+        lines.append({"kind": kind, "id": iid, "name": row.get("name") or "", "qty": qty, "unit_price": float(unit), "cost_price": float(cost), "line_total": float(total_line)})
+    discount = min(_bh_d(max(0.0, _bh_num(data.get("discount"), 0, 0, 1e9))), subtotal)
+    total = (subtotal - discount).quantize(Decimal("0.01"))
+    tendered = _bh_d(data.get("tendered"))
+    if method == "cash" and tendered > 0 and tendered < total:
+        return jsonify({"ok": False, "error": "Cash tendered is less than the total."}), 400
+    change = (tendered - total) if (method == "cash" and tendered >= total and tendered > 0) else Decimal("0.00")
+    number = "RCP-" + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:6].upper()
+    uid = _bh_uid()
+    # 3) record the receipt first, so a failure can never leave stock taken with no record
+    receipt = {"id": str(uuid.uuid4()), "receipt_number": number, "business_id": bid, "cashier_id": uid,
+               "customer_name": _bh_text(data.get("customer_name"), 80), "payment_method": method, "lines": lines,
+               "subtotal": float(subtotal), "discount": float(discount), "total": float(total), "tendered": float(tendered),
+               "change_due": float(change), "currency": BH_CURRENCY, "status": "completed", "created_at": utc_now()}
+    _, rerr = db_insert("koja_business_pos_receipts", receipt)
+    if rerr:
+        return jsonify({"ok": False, "error": "Could not record the sale. Run the KOJA Business Hub migration."}), 500
+    # 4) reserve stock; if any line fails, put back what was taken and void the receipt
+    taken = []
+    for ln in lines:
+        if ln["kind"] != "product":
+            continue
+        new, err = _bh_stock_apply(bid, ln["id"], -ln["qty"], "pos_sale", number)
+        if err:
+            for pid, q in taken:
+                _bh_stock_apply(bid, pid, q, "pos_void", number)
+            db_update("koja_business_pos_receipts", {"id": receipt["id"]}, {"status": "void"})
+            return jsonify({"ok": False, "error": err}), 409
+        taken.append((ln["id"], ln["qty"]))
+    # 5) books: sales ledger (+ items for Business Intelligence) and double-entry posting
+    desc = "POS sale " + number
+    sale_row = {"business_id": bid, "description": desc, "total_amount": float(total), "amount": float(total), "created_at": utc_now()}
+    sale, serr = db_insert("koja_business_sales", dict(sale_row, payment_method=method, receipt_number=number, source="pos", customer_name=receipt["customer_name"]))
+    if serr:
+        sale, serr = db_insert("koja_business_sales", sale_row)       # older schema without the extra columns
+    sale_id = (sale or {}).get("id")
+    if sale_id:
+        db_update("koja_business_pos_receipts", {"id": receipt["id"]}, {"sale_id": str(sale_id)})
+        for ln in lines:
+            try:
+                db_insert("koja_business_sale_items", {"sale_id": sale_id, "product_id": ln["id"] if ln["kind"] == "product" else None, "name": ln["name"],
+                          "quantity": ln["qty"], "unit_price": ln["unit_price"], "cost_price": ln["cost_price"], "line_total": ln["line_total"]})
+            except Exception as exc:
+                logger.warning("POS sale item not saved: %s", exc)
+    try:
+        _post_simple_accounting_entry(bid, "sale", float(total), desc, "pos_sale", str(sale_id or number), payment_method=method)
+    except Exception as exc:
+        logger.warning("POS accounting posting failed: %s", exc)
+    _bh_audit("pos_sale", "business", bid, {"receipt": number, "total": float(total)})
+    return jsonify({"ok": True, "receipt_number": number, "total": float(total), "change": float(change),
+                    "receipt_url": url_for("bh_pos_receipt", business_id=bid, number=number)})
+
+
+@app.route("/business/<business_id>/pos/receipt/<number>")
+@login_required
+def bh_pos_receipt(business_id, number):
+    b = _bh_owned_or_404(business_id)
+    r = _bh_first("koja_business_pos_receipts", {"receipt_number": number, "business_id": str(business_id)})
+    if not r:
+        abort(404)
+    return _bh_page("Receipt " + number, r'''
+<div class="bh" style="max-width:420px"><div class="card" id="rcpt"><h2 style="margin:0">{{ b.name }}</h2><p class="muted">{{ b.location or '' }}{{ ' · ' + b.phone if b.phone else '' }}</p>
+<p><strong>{{ r.receipt_number }}</strong><br>{{ (r.created_at or '')[:16].replace('T',' ') }}{% if r.customer_name %}<br>Customer: {{ r.customer_name }}{% endif %}</p>
+{% if r.status == 'void' %}<p class="bh-chip bad">VOID</p>{% endif %}
+<table>{% for l in r.lines %}<tr><td>{{ l.name }}<br><span class="muted">{{ l.qty }} x {{ '%.2f' % l.unit_price }}</span></td><td style="text-align:right">{{ '%.2f' % l.line_total }}</td></tr>{% endfor %}
+<tr><td>Subtotal</td><td style="text-align:right">{{ '%.2f' % r.subtotal }}</td></tr>{% if r.discount %}<tr><td>Discount</td><td style="text-align:right">-{{ '%.2f' % r.discount }}</td></tr>{% endif %}
+<tr><td><strong>Total ({{ r.currency }})</strong></td><td style="text-align:right"><strong>{{ '%.2f' % r.total }}</strong></td></tr>
+<tr><td>Paid by</td><td style="text-align:right">{{ methods.get(r.payment_method, r.payment_method) }}</td></tr>
+{% if r.change_due %}<tr><td>Tendered / change</td><td style="text-align:right">{{ '%.2f' % r.tendered }} / {{ '%.2f' % r.change_due }}</td></tr>{% endif %}</table>
+<p class="muted" style="text-align:center">Thank you for your business.</p></div>
+<div class="bh-row"><button class="btn success" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('bh_pos', business_id=b.id) }}">New sale</a></div></div>''',
+                    b=b, r=r, methods=BH_PAY_METHODS)
+
+
+
+# ---- Connect+: RFQ board (suppliers discover open requests) -------------------
+@app.route("/business/connect-plus/rfqs")
+@login_required
+def bh_rfq_board():
+    mine = _bh_my_businesses()
+    owned = {str(x.get("id")) for x in mine}
+    q = _bh_text(request.args.get("q"), 80).lower()
+    rtype = clean(request.args.get("type"))
+    industry = clean(request.args.get("industry")); industry = industry if industry in BH_INDUSTRY_NAME else ""
+    rows = _bh_rows("koja_b2b_unified_requests", {"status": "open"}, order="created_at.desc", limit=300) + \
+           _bh_rows("koja_b2b_unified_requests", {"status": "quoted"}, order="created_at.desc", limit=300)
+    targets = {str(t.get("request_id")) for t in _bh_rows("koja_connectplus_rfq_targets", limit=2000) if str(t.get("target_business_id")) in owned}
+    quotes = _bh_rows("koja_b2b_v4_quotes", limit=3000)
+    qcount, mine_quoted = {}, set()
+    for qt in quotes:
+        rid = str(qt.get("request_id")); qcount[rid] = qcount.get(rid, 0) + 1
+        if str(qt.get("seller_business_id")) in owned: mine_quoted.add(rid)
+    out = []
+    for r in rows:
+        if str(r.get("buyer_business_id")) in owned:
+            continue
+        hay = " ".join(str(r.get(k) or "") for k in ("title", "description", "category", "location", "profession")).lower()
+        if q and q not in hay: continue
+        if rtype and r.get("request_type") != rtype: continue
+        if industry and BH_INDUSTRY_NAME[industry].lower() not in hay: continue
+        rid = str(r.get("id"))
+        out.append(dict(r, _directed=rid in targets, _quotes=qcount.get(rid, 0), _mine=rid in mine_quoted))
+    out.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    out.sort(key=lambda r: not r["_directed"])
+    return _bh_page("KOJA RFQ Board", r'''
+<div class="bh"><div class="hero"><h1>RFQ board</h1><p>Open requests from buyers across KOJA. Quote on the ones you can supply.</p></div>
+{% if not mine %}<div class="bh-note">You need a business to submit quotes. <a href="{{ url_for('business_new') }}">Create one</a>.</div>{% endif %}
+<div class="card"><form method="get" class="bh-row"><input name="q" value="{{ q }}" placeholder="Search requests" style="flex:2;min-width:180px">
+<select name="type" style="width:auto"><option value="">All types</option>{% for t in ['procurement','product','professional_service'] %}<option {{ 'selected' if t==rtype else '' }}>{{ t }}</option>{% endfor %}</select>
+<select name="industry" style="width:auto"><option value="">All industries</option>{% for k,n,d in industries %}<option value="{{ k }}" {{ 'selected' if k==industry else '' }}>{{ n }}</option>{% endfor %}</select><button class="btn" type="submit">Filter</button></form></div>
+<div class="bh-grid">{% for r in rows %}<div class="card"><div>{% if r._directed %}<span class="bh-chip ok">Sent to you</span>{% endif %}{% if r._mine %}<span class="bh-chip warn">You quoted</span>{% endif %}<span class="bh-chip">{{ r.request_type }}</span>{% if r.category %}<span class="bh-chip">{{ r.category }}</span>{% endif %}</div>
+<h3 style="margin:.3em 0">{{ r.title }}</h3><p>{{ (r.description or '')[:180] }}</p>
+<p class="muted">{{ r.location or 'Any location' }} &middot; Budget: {{ money(r.budget, r.currency or 'ZMW') if r.budget else 'Open' }}{% if r.deadline %} &middot; By {{ r.deadline }}{% endif %}</p>
+<p class="muted">{{ r._quotes }} quote(s) so far</p><a class="btn success" href="{{ url_for('b2bv4_request', request_id=r.id) }}">View &amp; quote</a></div>
+{% else %}<div class="card"><p>No open requests match right now.</p></div>{% endfor %}</div></div>''', mine=mine, rows=out, q=q, rtype=rtype, industry=industry)
+
+
+# ---- directed quote request from a company page ------------------------------
+@app.route("/companies/<slug>/rfq", methods=["GET", "POST"])
+@login_required
+def bh_company_rfq(slug):
+    p = _bh_first("koja_business_profiles", {"slug": slug})
+    if not p or p.get("status") != "published" or not p.get("accepts_rfq"):
+        abort(404)
+    target_id = str(p.get("business_id"))
+    mine = [x for x in _bh_my_businesses() if str(x.get("id")) != target_id]
+    if request.method == "POST":
+        f = request.form
+        buyer = _bh_owned(clean(f.get("buyer_business_id")))
+        title, desc = _bh_text(f.get("title"), 160), _bh_text(f.get("description"), 3000)
+        deadline = clean(f.get("deadline")) or None
+        if deadline and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline): deadline = None
+        if not buyer or str(buyer.get("id")) == target_id:
+            flash("Choose one of your own businesses to send the request from.", "danger")
+        elif not title or not desc:
+            flash("Add a title and a description.", "warning")
+        elif _rate_limited("bh-rfq:" + _bh_uid(), 10, 3600):
+            flash("You have sent many requests recently. Please wait a while.", "warning")
+        else:
+            payload = {"buyer_business_id": str(buyer.get("id")), "requester_user_id": _bh_uid(),
+                       "request_type": f.get("request_type") if f.get("request_type") in ("procurement", "product", "professional_service") else "procurement",
+                       "title": title, "description": desc, "category": BH_INDUSTRY_NAME.get(p.get("industry") or "", ""), "profession": "",
+                       "location": _bh_text(f.get("location"), 120), "online_allowed": _bh_bool(f.get("online_allowed")),
+                       "budget": _bh_num(f.get("budget"), 0, 0, 1e12), "currency": (re.sub(r"[^A-Z]", "", clean(f.get("currency")).upper())[:3] or "ZMW"),
+                       "deadline": deadline, "status": "open", "created_at": utc_now(), "updated_at": utc_now()}
+            row, err = db_insert("koja_b2b_unified_requests", payload)
+            if err or not row:
+                flash("Could not send the request: " + str(err)[:200], "danger")
+            else:
+                db_insert("koja_connectplus_rfq_targets", {"id": str(uuid.uuid4()), "request_id": str(row.get("id")), "target_business_id": target_id, "created_at": utc_now()})
+                owner = _bh_first("koja_businesses", {"id": target_id}) or {}
+                _bh_notify(owner.get("owner_id"), "New quote request", "%s asked %s for a quote: %s" % (buyer.get("name"), p.get("public_name"), title), "/b2b/v4/request/" + str(row.get("id")))
+                try: _b2bv4_event(request_id=row.get("id"), event_type="request_created", metadata={"business_id": str(buyer.get("id")), "directed_to": target_id})
+                except Exception: pass
+                flash("Quote request sent to %s. Other suppliers can also quote on it." % p.get("public_name"), "success")
+                return redirect(url_for("b2bv4_request", request_id=row.get("id")))
+        return redirect(url_for("bh_company_rfq", slug=slug))
+    return _bh_page("Request a quote", r'''
+<div class="bh"><div class="hero"><h1>Request a quote from {{ p.public_name }}</h1><p>They will be notified. The request also appears on the RFQ board so other suppliers can compete.</p></div>
+{% if not mine %}<div class="card"><p>You need your own business to request quotes. <a class="btn" href="{{ url_for('business_new') }}">Create a business</a></p></div>
+{% else %}<div class="card"><form method="post">{{ csrf }}<div class="bh-two">
+<div><label>Your business</label><select name="buyer_business_id">{% for m in mine %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}</select></div>
+<div><label>Type</label><select name="request_type"><option value="procurement">Procurement</option><option value="product">Product</option><option value="professional_service">Professional service</option></select></div>
+<div><label>Budget (optional)</label><input name="budget" type="number" min="0" step="0.01"></div><div><label>Currency</label><input name="currency" value="ZMW" maxlength="3"></div>
+<div><label>Delivery / work location</label><input name="location" maxlength="120"></div><div><label>Needed by</label><input name="deadline" type="date"></div></div>
+<label>Title</label><input name="title" maxlength="160" required><label>What do you need? (quantities, specs, timing)</label><textarea name="description" rows="6" maxlength="3000" required></textarea>
+<button class="btn success" type="submit">Send request</button> <a class="btn secondary" href="{{ url_for('bh_company', slug=p.slug) }}">Cancel</a></form></div>{% endif %}</div>''', p=p, mine=mine)
+
+
+# ---- contracts ----------------------------------------------------------------
+def _bh_biz_name(business_id):
+    b = _bh_first("koja_businesses", {"id": business_id}) if business_id else None
+    return (b or {}).get("name") or "Unknown business"
+
+
+def _bh_contract_hash(c):
+    canon = json.dumps({k: str(c.get(k) or "") for k in ("contract_no", "title", "party_a_business_id", "party_b_business_id", "terms", "value", "currency", "start_date", "end_date")}, sort_keys=True)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _bh_date(v):
+    v = clean(v)
+    return v if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) else ""
+
+
+@app.route("/business/<business_id>/contracts")
+@login_required
+def bh_contracts(business_id):
+    b = _bh_owned_or_404(business_id)
+    bid = str(business_id)
+    rows = _bh_rows("koja_connectplus_contracts", {"party_a_business_id": bid}, order="created_at.desc", limit=200) + \
+           _bh_rows("koja_connectplus_contracts", {"party_b_business_id": bid}, order="created_at.desc", limit=200)
+    rows = [r for r in rows if not (r.get("status") == "draft" and str(r.get("party_a_business_id")) != bid)]
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    for r in rows:
+        r["_other"] = _bh_biz_name(r.get("party_b_business_id") if str(r.get("party_a_business_id")) == bid else r.get("party_a_business_id"))
+        r["_role"] = "You offered" if str(r.get("party_a_business_id")) == bid else "Offered to you"
+    return _bh_page("Contracts", r'''
+<div class="bh"><div class="hero"><h1>Contracts</h1><p>{{ b.name }} &middot; agree terms with other KOJA businesses and keep a tamper-evident record.</p>
+<div class="actions"><a class="btn success" href="{{ url_for('bh_contract_new', business_id=b.id) }}">New contract</a><a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a></div></div>
+<div class="card"><table><tr><th>No.</th><th>Title</th><th>With</th><th>Value</th><th>Status</th><th></th></tr>
+{% for c in rows %}<tr><td>{{ c.contract_no }}</td><td>{{ c.title }}<br><span class="muted">{{ c._role }}</span></td><td>{{ c._other }}</td><td>{{ money(c.value, c.currency or 'ZMW') if c.value else '-' }}</td>
+<td><span class="bh-chip {{ 'ok' if c.status in ['active','completed'] else ('bad' if c.status in ['rejected','terminated','withdrawn'] else 'warn') }}">{{ c.status }}</span></td>
+<td><a class="btn secondary" href="{{ url_for('bh_contract_view', cid=c.id) }}">Open</a></td></tr>
+{% else %}<tr><td colspan="6">No contracts yet.</td></tr>{% endfor %}</table></div></div>''', b=b, rows=rows)
+
+
+@app.route("/business/<business_id>/contracts/new", methods=["GET", "POST"])
+@login_required
+def bh_contract_new(business_id):
+    b = _bh_owned_or_404(business_id)
+    if request.method == "POST":
+        f = request.form
+        code = clean(f.get("counterparty_number")).upper()
+        other = _bh_first("koja_businesses", {"business_number": code}) if code else None
+        title, terms = _bh_text(f.get("title"), 160), _bh_text(f.get("terms"), 8000)
+        start, end = _bh_date(f.get("start_date")), _bh_date(f.get("end_date"))
+        errs = []
+        if not other: errs.append("No business has that KOJA Business Number.")
+        elif str(other.get("id")) == str(business_id): errs.append("You cannot contract with your own business.")
+        if not title or len(terms) < 20: errs.append("Add a title and the contract terms (at least 20 characters).")
+        if start and end and end < start: errs.append("The end date is before the start date.")
+        if errs:
+            for e in errs: flash(e, "danger")
+            return redirect(url_for("bh_contract_new", business_id=business_id))
+        row = {"id": str(uuid.uuid4()), "contract_no": "KC-%s-%s" % (datetime.now(timezone.utc).strftime("%Y"), uuid.uuid4().hex[:6].upper()),
+               "title": title, "party_a_business_id": str(business_id), "party_b_business_id": str(other.get("id")), "created_by": _bh_uid(),
+               "terms": terms, "value": _bh_num(f.get("value"), 0, 0, 1e12), "currency": (re.sub(r"[^A-Z]", "", clean(f.get("currency")).upper())[:3] or "ZMW"),
+               "start_date": start or None, "end_date": end or None, "reference": _bh_text(f.get("reference"), 120), "status": "draft",
+               "created_at": utc_now(), "updated_at": utc_now()}
+        saved, err = db_insert("koja_connectplus_contracts", row)
+        if err: flash("Could not save the contract (run the Business Hub migration).", "danger"); return redirect(url_for("bh_contract_new", business_id=business_id))
+        flash("Draft saved. Review it, then send it to the other business.", "success")
+        return redirect(url_for("bh_contract_view", cid=row["id"]))
+    return _bh_page("New contract", r'''
+<div class="bh"><div class="hero"><h1>New contract</h1><p>From {{ b.name }}. The other business must accept before it becomes active.</p></div>
+<div class="bh-note">This is a KOJA workspace record of agreed terms with a tamper-evident fingerprint. It is not legal advice; for high-value agreements have a lawyer review the terms.</div>
+<div class="card"><form method="post">{{ csrf }}<div class="bh-two">
+<div><label>Other business&rsquo;s KOJA Business Number</label><input name="counterparty_number" placeholder="KJ-BIZ-2026-XXXXXXXX" required></div>
+<div><label>Title</label><input name="title" maxlength="160" required></div>
+<div><label>Value (optional)</label><input name="value" type="number" min="0" step="0.01"></div><div><label>Currency</label><input name="currency" value="ZMW" maxlength="3"></div>
+<div><label>Start date</label><input name="start_date" type="date"></div><div><label>End date</label><input name="end_date" type="date"></div></div>
+<label>Reference (RFQ / order, optional)</label><input name="reference" maxlength="120"><label>Terms</label><textarea name="terms" rows="10" maxlength="8000" required></textarea>
+<button class="btn success" type="submit">Save draft</button> <a class="btn secondary" href="{{ url_for('bh_contracts', business_id=b.id) }}">Cancel</a></form></div></div>''', b=b)
+
+
+def _bh_contract_party(c):
+    a, b = _bh_owned(c.get("party_a_business_id")), _bh_owned(c.get("party_b_business_id"))
+    return a, b
+
+
+@app.route("/business/contracts/<cid>")
+@login_required
+def bh_contract_view(cid):
+    c = _bh_first("koja_connectplus_contracts", {"id": cid})
+    if not c:
+        abort(404)
+    mine_a, mine_b = _bh_contract_party(c)
+    if not (mine_a or mine_b) or (c.get("status") == "draft" and not mine_a):
+        abort(404)
+    fp_ok = (not c.get("terms_hash")) or c.get("terms_hash") == _bh_contract_hash(c)
+    return _bh_page("Contract " + str(c.get("contract_no")), r'''
+<div class="bh"><div class="hero"><h1>{{ c.title }}</h1><p>{{ c.contract_no }} &middot; <span class="bh-chip {{ 'ok' if c.status in ['active','completed'] else ('bad' if c.status in ['rejected','terminated','withdrawn'] else 'warn') }}">{{ c.status }}</span></p></div>
+<div class="card"><div class="bh-two"><div><div class="muted">Party A (offering)</div><strong>{{ a_name }}</strong></div><div><div class="muted">Party B (receiving)</div><strong>{{ b_name }}</strong></div>
+<div><div class="muted">Value</div>{{ money(c.value, c.currency or 'ZMW') if c.value else '-' }}</div><div><div class="muted">Period</div>{{ c.start_date or '-' }} to {{ c.end_date or '-' }}</div></div>
+{% if c.reference %}<p class="muted">Reference: {{ c.reference }}</p>{% endif %}<h3>Terms</h3><p style="white-space:pre-wrap">{{ c.terms }}</p>
+{% if c.terms_hash %}<p class="muted">Fingerprint (SHA-256): <code style="word-break:break-all">{{ c.terms_hash }}</code><br>{% if fp_ok %}<span class="bh-chip ok">Terms unchanged since sent</span>{% else %}<span class="bh-chip bad">Terms differ from the sent version</span>{% endif %}</p>{% endif %}
+{% if c.accepted_at %}<p class="muted">Accepted {{ c.accepted_at[:16].replace('T',' ') }}</p>{% endif %}{% if c.closed_reason %}<p class="muted">Reason: {{ c.closed_reason }}</p>{% endif %}</div>
+<div class="card"><h3>Actions</h3><div class="bh-row">
+{% if mine_a and c.status == 'draft' %}<form method="post" action="{{ url_for('bh_contract_action', cid=c.id, action='send') }}">{{ csrf }}<button class="btn success">Send to {{ b_name }}</button></form>{% endif %}
+{% if mine_a and c.status in ['draft','sent'] %}<form method="post" action="{{ url_for('bh_contract_action', cid=c.id, action='withdraw') }}">{{ csrf }}<button class="btn danger">Withdraw</button></form>{% endif %}
+{% if mine_b and c.status == 'sent' %}<form method="post" action="{{ url_for('bh_contract_action', cid=c.id, action='accept') }}" class="bh-row">{{ csrf }}
+<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="authorised" value="1" style="width:auto" required> I am authorised to bind {{ b_name }}</label><button class="btn success">Accept</button></form>
+<form method="post" action="{{ url_for('bh_contract_action', cid=c.id, action='reject') }}">{{ csrf }}<button class="btn danger">Reject</button></form>{% endif %}
+{% if c.status == 'active' %}<form method="post" action="{{ url_for('bh_contract_action', cid=c.id, action='complete') }}">{{ csrf }}<button class="btn success">Mark completed</button></form>
+<form method="post" action="{{ url_for('bh_contract_action', cid=c.id, action='terminate') }}" class="bh-row">{{ csrf }}<input name="reason" placeholder="Reason" maxlength="200" required style="min-width:200px"><button class="btn danger">Terminate</button></form>{% endif %}
+</div><a class="btn secondary" href="{{ url_for('bh_contracts', business_id=(mine_a or mine_b).id) }}" style="margin-top:10px">All contracts</a></div></div>''',
+                    c=c, mine_a=mine_a, mine_b=mine_b, a_name=_bh_biz_name(c.get("party_a_business_id")), b_name=_bh_biz_name(c.get("party_b_business_id")), fp_ok=fp_ok)
+
+
+@app.route("/business/contracts/<cid>/<action>", methods=["POST"])
+@login_required
+def bh_contract_action(cid, action):
+    c = _bh_first("koja_connectplus_contracts", {"id": cid})
+    if not c:
+        abort(404)
+    mine_a, mine_b = _bh_contract_party(c)
+    if not (mine_a or mine_b):
+        abort(404)
+    st, now, upd, notify_to, msg = c.get("status"), utc_now(), None, None, ""
+    a_owner = (_bh_first("koja_businesses", {"id": c.get("party_a_business_id")}) or {}).get("owner_id")
+    b_owner = (_bh_first("koja_businesses", {"id": c.get("party_b_business_id")}) or {}).get("owner_id")
+    if action == "send" and mine_a and st == "draft":
+        upd = {"status": "sent", "sent_at": now, "terms_hash": _bh_contract_hash(c)}; notify_to, msg = b_owner, "sent you a contract"
+    elif action == "withdraw" and mine_a and st in ("draft", "sent"):
+        upd = {"status": "withdrawn", "closed_reason": "Withdrawn by the offering business"}; notify_to, msg = b_owner if st == "sent" else None, "withdrew a contract"
+    elif action == "accept" and mine_b and st == "sent":
+        if not _bh_bool(request.form.get("authorised")):
+            flash("Confirm you are authorised to accept on behalf of the business.", "warning"); return redirect(url_for("bh_contract_view", cid=cid))
+        if c.get("terms_hash") != _bh_contract_hash(c):
+            flash("The terms no longer match the version that was sent. Ask for a new contract.", "danger"); return redirect(url_for("bh_contract_view", cid=cid))
+        upd = {"status": "active", "accepted_by": _bh_uid(), "accepted_at": now}; notify_to, msg = a_owner, "accepted your contract"
+    elif action == "reject" and mine_b and st == "sent":
+        upd = {"status": "rejected", "closed_reason": "Rejected by the receiving business"}; notify_to, msg = a_owner, "rejected your contract"
+    elif action == "complete" and st == "active":
+        upd = {"status": "completed", "closed_reason": "Marked completed"}; notify_to, msg = (b_owner if mine_a else a_owner), "marked a contract completed"
+    elif action == "terminate" and st == "active":
+        reason = _bh_text(request.form.get("reason"), 200)
+        if not reason:
+            flash("Give a reason for terminating.", "warning"); return redirect(url_for("bh_contract_view", cid=cid))
+        upd = {"status": "terminated", "closed_reason": reason}; notify_to, msg = (b_owner if mine_a else a_owner), "terminated a contract"
+    if not upd:
+        flash("That action is not available for this contract right now.", "warning"); return redirect(url_for("bh_contract_view", cid=cid))
+    upd["updated_at"] = now
+    _, err = db_update("koja_connectplus_contracts", {"id": cid}, upd)
+    if err:
+        flash("Could not update the contract.", "danger")
+    else:
+        who = (mine_a or mine_b).get("name")
+        _bh_notify(notify_to, "Contract update", "%s %s: %s" % (who, msg, c.get("title")), "/business/contracts/" + str(cid))
+        _bh_audit("contract_" + action, "contract", cid, {"to": upd["status"]})
+        flash("Contract %s." % upd["status"], "success")
+    return redirect(url_for("bh_contract_view", cid=cid))
+
+
+# ---- partnerships --------------------------------------------------------------
+BH_PARTNERSHIP_TYPES = {"supplier": "Supplier", "distributor": "Distributor", "reseller": "Reseller", "joint_venture": "Joint venture",
+                        "referral": "Referral partner", "other": "Other"}
+
+
+def _bh_propose_partnership(proposer, partner_id, ptype, message):
+    """Returns (ok, message)."""
+    if str(proposer.get("id")) == str(partner_id):
+        return False, "A business cannot partner with itself."
+    pid, rid = str(proposer.get("id")), str(partner_id)
+    for a, b2 in ((pid, rid), (rid, pid)):
+        for x in _bh_rows("koja_connectplus_partnerships", {"proposer_business_id": a, "partner_business_id": b2}, limit=20):
+            if x.get("status") in ("proposed", "accepted"):
+                return False, "A partnership with this business is already %s." % x.get("status")
+    row = {"id": str(uuid.uuid4()), "proposer_business_id": pid, "partner_business_id": rid, "partnership_type": ptype if ptype in BH_PARTNERSHIP_TYPES else "other",
+           "message": _bh_text(message, 600), "status": "proposed", "created_by": _bh_uid(), "created_at": utc_now(), "updated_at": utc_now()}
+    _, err = db_insert("koja_connectplus_partnerships", row)
+    if err:
+        return False, "Could not save the proposal (run the Business Hub migration)."
+    owner = (_bh_first("koja_businesses", {"id": rid}) or {}).get("owner_id")
+    _bh_notify(owner, "Partnership proposal", "%s proposed a %s partnership." % (proposer.get("name"), BH_PARTNERSHIP_TYPES[row["partnership_type"]].lower()), "/business/%s/partnerships" % rid)
+    return True, "Partnership proposed."
+
+
+@app.route("/business/<business_id>/partnerships", methods=["GET", "POST"])
+@login_required
+def bh_partnerships(business_id):
+    b = _bh_owned_or_404(business_id)
+    bid = str(business_id)
+    if request.method == "POST":
+        code = clean(request.form.get("partner_number")).upper()
+        other = _bh_first("koja_businesses", {"business_number": code}) if code else None
+        if not other:
+            flash("No business has that KOJA Business Number.", "danger")
+        elif _rate_limited("bh-partner:" + _bh_uid(), 20, 3600):
+            flash("Too many proposals; please wait a while.", "warning")
+        else:
+            ok, msg = _bh_propose_partnership(b, other.get("id"), request.form.get("partnership_type"), request.form.get("message"))
+            flash(msg, "success" if ok else "warning")
+        return redirect(url_for("bh_partnerships", business_id=business_id))
+    rows = _bh_rows("koja_connectplus_partnerships", {"proposer_business_id": bid}, order="created_at.desc", limit=200) + \
+           _bh_rows("koja_connectplus_partnerships", {"partner_business_id": bid}, order="created_at.desc", limit=200)
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    for r in rows:
+        mine_proposed = str(r.get("proposer_business_id")) == bid
+        r["_mine_proposed"] = mine_proposed
+        r["_other"] = _bh_biz_name(r.get("partner_business_id") if mine_proposed else r.get("proposer_business_id"))
+    return _bh_page("Partnerships", r'''
+<div class="bh"><div class="hero"><h1>Partnerships</h1><p>{{ b.name }} &middot; suppliers, distributors, resellers and joint ventures.</p></div>
+<div class="card"><h3>Propose a partnership</h3><form method="post" class="bh-two">{{ csrf }}
+<div><label>Their KOJA Business Number</label><input name="partner_number" placeholder="KJ-BIZ-2026-XXXXXXXX" required></div>
+<div><label>Type</label><select name="partnership_type">{% for k,v in types.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></div>
+<div style="grid-column:1/-1"><label>Message</label><textarea name="message" rows="3" maxlength="600"></textarea></div><div><button class="btn success" type="submit">Send proposal</button></div></form>
+<p class="muted">Tip: find companies in the <a href="{{ url_for('business_directory_v2') }}">directory</a> and use &ldquo;Propose partnership&rdquo; on their page.</p></div>
+<div class="card"><h3>Your partnerships</h3><table><tr><th>Business</th><th>Type</th><th>Direction</th><th>Status</th><th></th></tr>
+{% for r in rows %}<tr><td>{{ r._other }}<br><span class="muted">{{ r.message or '' }}</span></td><td>{{ types.get(r.partnership_type, r.partnership_type) }}</td><td>{{ 'You proposed' if r._mine_proposed else 'Proposed to you' }}</td>
+<td><span class="bh-chip {{ 'ok' if r.status=='accepted' else ('bad' if r.status in ['declined','ended','withdrawn'] else 'warn') }}">{{ r.status }}</span></td>
+<td><div class="bh-row">{% if r.status=='proposed' and not r._mine_proposed %}<form method="post" action="{{ url_for('bh_partnership_action', pid=r.id, action='accept') }}">{{ csrf }}<button class="btn success">Accept</button></form>
+<form method="post" action="{{ url_for('bh_partnership_action', pid=r.id, action='decline') }}">{{ csrf }}<button class="btn danger">Decline</button></form>{% endif %}
+{% if r.status=='proposed' and r._mine_proposed %}<form method="post" action="{{ url_for('bh_partnership_action', pid=r.id, action='withdraw') }}">{{ csrf }}<button class="btn secondary">Withdraw</button></form>{% endif %}
+{% if r.status=='accepted' %}<form method="post" action="{{ url_for('bh_partnership_action', pid=r.id, action='end') }}">{{ csrf }}<button class="btn danger">End</button></form>{% endif %}</div></td></tr>
+{% else %}<tr><td colspan="5">No partnerships yet.</td></tr>{% endfor %}</table><a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a></div></div>''', b=b, rows=rows, types=BH_PARTNERSHIP_TYPES)
+
+
+@app.route("/business/partnerships/<pid>/<action>", methods=["POST"])
+@login_required
+def bh_partnership_action(pid, action):
+    r = _bh_first("koja_connectplus_partnerships", {"id": pid})
+    if not r:
+        abort(404)
+    prop, part = _bh_owned(r.get("proposer_business_id")), _bh_owned(r.get("partner_business_id"))
+    if not (prop or part):
+        abort(404)
+    st, upd = r.get("status"), None
+    if action == "accept" and part and st == "proposed": upd = "accepted"
+    elif action == "decline" and part and st == "proposed": upd = "declined"
+    elif action == "withdraw" and prop and st == "proposed": upd = "withdrawn"
+    elif action == "end" and st == "accepted": upd = "ended"
+    home = url_for("bh_partnerships", business_id=(part or prop).get("id"))
+    if not upd:
+        flash("That action is not available right now.", "warning"); return redirect(home)
+    _, err = db_update("koja_connectplus_partnerships", {"id": pid}, {"status": upd, "updated_at": utc_now(), "responded_at": utc_now()})
+    if err:
+        flash("Could not update the partnership.", "danger")
+    else:
+        other_id = r.get("proposer_business_id") if (part and not prop) or (part and action in ("accept", "decline")) else r.get("partner_business_id")
+        owner = (_bh_first("koja_businesses", {"id": other_id}) or {}).get("owner_id")
+        _bh_notify(owner, "Partnership " + upd, "%s: partnership %s." % ((part or prop).get("name"), upd), "/business/%s/partnerships" % other_id)
+        _bh_audit("partnership_" + action, "partnership", pid, {"to": upd})
+        flash("Partnership %s." % upd, "success")
+    return redirect(home)
+
+
+@app.route("/companies/<slug>/partner", methods=["GET", "POST"])
+@login_required
+def bh_company_partner(slug):
+    p = _bh_first("koja_business_profiles", {"slug": slug})
+    if not p or p.get("status") != "published":
+        abort(404)
+    target = str(p.get("business_id"))
+    mine = [x for x in _bh_my_businesses() if str(x.get("id")) != target]
+    if request.method == "POST":
+        me = _bh_owned(clean(request.form.get("business_id")))
+        if not me:
+            flash("Choose one of your businesses.", "danger")
+        elif _rate_limited("bh-partner:" + _bh_uid(), 20, 3600):
+            flash("Too many proposals; please wait a while.", "warning")
+        else:
+            ok, msg = _bh_propose_partnership(me, target, request.form.get("partnership_type"), request.form.get("message"))
+            flash(msg, "success" if ok else "warning")
+            if ok: return redirect(url_for("bh_partnerships", business_id=me.get("id")))
+        return redirect(url_for("bh_company_partner", slug=slug))
+    return _bh_page("Propose partnership", r'''
+<div class="bh"><div class="hero"><h1>Propose a partnership with {{ p.public_name }}</h1></div>
+{% if not mine %}<div class="card"><p>You need your own business first. <a class="btn" href="{{ url_for('business_new') }}">Create a business</a></p></div>
+{% else %}<div class="card"><form method="post">{{ csrf }}<div class="bh-two"><div><label>Your business</label><select name="business_id">{% for m in mine %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}</select></div>
+<div><label>Type</label><select name="partnership_type">{% for k,v in types.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></div></div>
+<label>Message</label><textarea name="message" rows="4" maxlength="600"></textarea><button class="btn success" type="submit">Send proposal</button> <a class="btn secondary" href="{{ url_for('bh_company', slug=p.slug) }}">Cancel</a></form></div>{% endif %}</div>''', p=p, mine=mine, types=BH_PARTNERSHIP_TYPES)
+
+
+
+# ---- investors -----------------------------------------------------------------
+BH_INVEST_NOTE = ("KOJA Connect+ only introduces businesses and investors. KOJA does not give investment advice, arrange or sell securities, "
+                  "hold investor money, or guarantee any listing. Investing carries risk, including loss of all capital. Do your own due diligence "
+                  "and take professional advice before committing funds.")
+BH_INSTRUMENTS = {"equity": "Equity", "debt": "Debt / loan", "revenue_share": "Revenue share", "convertible": "Convertible", "other": "Other"}
+
+
+def _bh_investor(uid=None):
+    return _bh_first("koja_connectplus_investor_profiles", {"user_id": uid or _bh_uid()}) if (uid or _bh_uid()) else None
+
+
+def _bh_investor_ok(uid=None):
+    p = _bh_investor(uid)
+    return bool(p and p.get("status") == "approved")
+
+
+@app.route("/business/connect-plus/investors")
+@login_required
+def bh_investors_home():
+    inv = _bh_investor()
+    published = len(_bh_rows("koja_connectplus_investment_listings", {"status": "published"}, limit=500))
+    return _bh_page("KOJA Investors", r'''
+<div class="bh"><div class="hero"><h1>Investors &amp; fundraising</h1><p>Introduce growing African businesses to investors who understand them.</p></div>
+<div class="bh-note">{{ note }}</div>
+<div class="bh-grid" style="margin-top:12px">
+<div class="card"><h3>I am an investor</h3><p class="muted">Register, get approved, then browse {{ published }} live opportunit{{ 'y' if published==1 else 'ies' }}.</p>
+{% if inv %}<p>Status: <span class="bh-chip {{ 'ok' if inv.status=='approved' else ('bad' if inv.status in ['rejected','suspended'] else 'warn') }}">{{ inv.status }}</span></p>{% endif %}
+<a class="btn" href="{{ url_for('bh_investor_register') }}">{{ 'Update investor profile' if inv else 'Register as investor' }}</a>
+{% if inv and inv.status == 'approved' %} <a class="btn success" href="{{ url_for('bh_investments') }}">Browse opportunities</a>{% endif %}</div>
+<div class="card"><h3>I want to raise funds</h3><p class="muted">Create a funding request for one of your businesses. KOJA reviews it before investors see it.</p>
+{% for m in mine %}<p><a class="btn secondary" href="{{ url_for('bh_fundraising', business_id=m.id) }}">{{ m.name }}</a></p>{% else %}<a class="btn" href="{{ url_for('business_new') }}">Create a business first</a>{% endfor %}</div></div></div>''',
+                    inv=inv, published=published, mine=_bh_my_businesses(), note=BH_INVEST_NOTE)
+
+
+@app.route("/business/connect-plus/investor/register", methods=["GET", "POST"])
+@login_required
+def bh_investor_register():
+    me = current_user() or {}
+    p = _bh_investor()
+    if request.method == "POST":
+        f = request.form
+        name, email = _bh_text(f.get("display_name"), 120), _bh_email(f.get("contact_email") or me.get("email"))
+        tmin, tmax = _bh_num(f.get("ticket_min"), 0, 0, 1e13), _bh_num(f.get("ticket_max"), 0, 0, 1e13)
+        inds = [i for i in f.getlist("industries") if i in BH_INDUSTRY_NAME]
+        errs = []
+        if not name: errs.append("Display name is required.")
+        if not email: errs.append("A valid contact email is required.")
+        if tmax and tmax < tmin: errs.append("Maximum ticket is below the minimum.")
+        if not _bh_bool(f.get("declaration")): errs.append("Please accept the investor declaration.")
+        if errs:
+            for e in errs: flash(e, "danger")
+            return redirect(url_for("bh_investor_register"))
+        payload = {"user_id": _bh_uid(), "display_name": name, "organisation": _bh_text(f.get("organisation"), 160), "thesis": _bh_text(f.get("thesis"), 1500),
+                   "ticket_min": tmin, "ticket_max": tmax, "currency": (re.sub(r"[^A-Z]", "", clean(f.get("currency")).upper())[:3] or "USD"),
+                   "industries": inds, "countries": _bh_text(f.get("countries"), 200), "contact_email": email, "declaration_at": utc_now(), "updated_at": utc_now()}
+        if p:
+            if p.get("status") == "suspended":
+                flash("This investor profile is suspended. Contact KOJA support.", "danger"); return redirect(url_for("bh_investors_home"))
+            if p.get("status") == "rejected": payload["status"] = "pending"
+            _, err = db_update("koja_connectplus_investor_profiles", {"id": p.get("id")}, payload)
+        else:
+            payload.update(id=str(uuid.uuid4()), status="pending", created_at=utc_now())
+            _, err = db_insert("koja_connectplus_investor_profiles", payload)
+        flash("Saved. KOJA will review new investor profiles before opportunities are shown." if not err else "Could not save (run the Business Hub migration).", "success" if not err else "danger")
+        return redirect(url_for("bh_investors_home"))
+    d = p or {"contact_email": me.get("email"), "currency": "USD", "industries": []}
+    return _bh_page("Investor profile", r'''
+<div class="bh"><div class="hero"><h1>Investor profile</h1><p>Shown to businesses only after you express interest in their listing.</p></div><div class="bh-note">{{ note }}</div>
+<div class="card"><form method="post">{{ csrf }}<div class="bh-two"><div><label>Display name</label><input name="display_name" maxlength="120" value="{{ d.display_name or '' }}" required></div>
+<div><label>Organisation (optional)</label><input name="organisation" maxlength="160" value="{{ d.organisation or '' }}"></div>
+<div><label>Contact email</label><input name="contact_email" maxlength="160" value="{{ d.contact_email or '' }}" required></div><div><label>Currency</label><input name="currency" maxlength="3" value="{{ d.currency or 'USD' }}"></div>
+<div><label>Typical minimum ticket</label><input name="ticket_min" type="number" min="0" step="0.01" value="{{ d.ticket_min or '' }}"></div><div><label>Typical maximum ticket</label><input name="ticket_max" type="number" min="0" step="0.01" value="{{ d.ticket_max or '' }}"></div></div>
+<label>Industries of interest</label><div class="bh-row">{% for k,n,x in industries %}<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="industries" value="{{ k }}" style="width:auto" {{ 'checked' if k in (d.industries or []) else '' }}> {{ n }}</label>{% endfor %}</div>
+<label>Countries / regions</label><input name="countries" maxlength="200" value="{{ d.countries or '' }}"><label>Investment thesis</label><textarea name="thesis" rows="5" maxlength="1500">{{ d.thesis or '' }}</textarea>
+<label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="declaration" value="1" style="width:auto;margin-top:4px" required> <span>I confirm I am investing on my own account or am authorised to invest for my organisation, I understand the risks, and I will do my own due diligence.</span></label>
+<button class="btn success" type="submit" style="margin-top:10px">Save</button> <a class="btn secondary" href="{{ url_for('bh_investors_home') }}">Back</a></form></div></div>''', d=d, note=BH_INVEST_NOTE)
+
+
+@app.route("/business/connect-plus/investments")
+@login_required
+def bh_investments():
+    inv = _bh_investor()
+    if not (inv and inv.get("status") == "approved"):
+        flash("Opportunities are shown to approved investors only.", "warning")
+        return redirect(url_for("bh_investors_home"))
+    mine = {str(m.get("id")) for m in _bh_my_businesses()}
+    industry = clean(request.args.get("industry")); industry = industry if industry in BH_INDUSTRY_NAME else ""
+    verified = _bh_verified_ids()
+    sent = {str(i.get("listing_id")): i for i in _bh_rows("koja_connectplus_investor_interests", {"investor_user_id": _bh_uid()}, limit=500)}
+    rows = []
+    for l in _bh_rows("koja_connectplus_investment_listings", {"status": "published"}, order="created_at.desc", limit=300):
+        if str(l.get("business_id")) in mine or (industry and l.get("industry") != industry): continue
+        prof = _bh_profile(l.get("business_id"))
+        rows.append(dict(l, _biz=_bh_biz_name(l.get("business_id")), _verified=str(l.get("business_id")) in verified,
+                         _slug=(prof or {}).get("slug") if (prof or {}).get("status") == "published" else None, _interest=sent.get(str(l.get("id")))))
+    return _bh_page("Investment opportunities", r'''
+<div class="bh"><div class="hero"><h1>Opportunities</h1><p>Reviewed by KOJA for completeness, not for merit. Do your own due diligence.</p></div><div class="bh-note">{{ note }}</div>
+<div class="card"><form method="get" class="bh-row"><select name="industry" style="width:auto"><option value="">All industries</option>{% for k,n,d in industries %}<option value="{{ k }}" {{ 'selected' if k==industry else '' }}>{{ n }}</option>{% endfor %}</select><button class="btn" type="submit">Filter</button></form></div>
+<div class="bh-grid">{% for l in rows %}<div class="card"><div>{% if l._verified %}<span class="bh-chip ok">KOJA Verified</span>{% endif %}<span class="bh-chip">{{ instruments.get(l.instrument, l.instrument) }}</span>{% if l.industry %}<span class="bh-chip">{{ names.get(l.industry) }}</span>{% endif %}</div>
+<h3 style="margin:.3em 0">{{ l.title }}</h3><p class="muted">{% if l._slug %}<a href="{{ url_for('bh_company', slug=l._slug) }}">{{ l._biz }}</a>{% else %}{{ l._biz }}{% endif %}</p>
+<p class="big">{{ money(l.amount_sought, l.currency or 'USD') }}</p><p>{{ l.summary }}</p>{% if l.use_of_funds %}<p><strong>Use of funds:</strong> {{ l.use_of_funds }}</p>{% endif %}
+{% if l._interest %}<p><span class="bh-chip {{ 'ok' if l._interest.status=='accepted' else 'warn' }}">Interest {{ l._interest.status }}</span></p>
+{% else %}<form method="post" action="{{ url_for('bh_invest_interest', lid=l.id) }}">{{ csrf }}<textarea name="message" rows="3" maxlength="600" placeholder="Introduce yourself and what you would like to discuss"></textarea><button class="btn success" type="submit">Express interest</button></form>{% endif %}</div>
+{% else %}<div class="card"><p>No opportunities match right now.</p></div>{% endfor %}</div></div>''', rows=rows, industry=industry, note=BH_INVEST_NOTE, instruments=BH_INSTRUMENTS, names=BH_INDUSTRY_NAME)
+
+
+@app.route("/business/connect-plus/investments/<lid>/interest", methods=["POST"])
+@login_required
+def bh_invest_interest(lid):
+    inv = _bh_investor()
+    l = _bh_first("koja_connectplus_investment_listings", {"id": lid})
+    if not (inv and inv.get("status") == "approved") or not l or l.get("status") != "published":
+        abort(404)
+    if _bh_owned(l.get("business_id")):
+        flash("You cannot invest in your own business.", "warning"); return redirect(url_for("bh_investments"))
+    if _bh_first("koja_connectplus_investor_interests", {"listing_id": lid, "investor_user_id": _bh_uid()}):
+        flash("You have already expressed interest in this listing.", "info"); return redirect(url_for("bh_investments"))
+    if _rate_limited("bh-interest:" + _bh_uid(), 20, 3600):
+        flash("Too many requests; please wait a while.", "warning"); return redirect(url_for("bh_investments"))
+    row = {"id": str(uuid.uuid4()), "listing_id": str(lid), "investor_user_id": _bh_uid(), "investor_profile_id": str(inv.get("id")),
+           "message": _bh_text(request.form.get("message"), 600), "status": "sent", "created_at": utc_now(), "updated_at": utc_now()}
+    _, err = db_insert("koja_connectplus_investor_interests", row)
+    if err:
+        flash("Could not send your interest.", "danger")
+    else:
+        owner = (_bh_first("koja_businesses", {"id": l.get("business_id")}) or {}).get("owner_id")
+        _bh_notify(owner, "Investor interest", "%s is interested in your funding request: %s" % (inv.get("display_name"), l.get("title")), "/business/%s/fundraising" % l.get("business_id"))
+        flash("Interest sent. The business will respond if they want to proceed.", "success")
+    return redirect(url_for("bh_investments"))
+
+
+@app.route("/business/<business_id>/fundraising", methods=["GET", "POST"])
+@login_required
+def bh_fundraising(business_id):
+    b = _bh_owned_or_404(business_id)
+    bid = str(business_id)
+    if request.method == "POST":
+        f = request.form
+        title, summary = _bh_text(f.get("title"), 160), _bh_text(f.get("summary"), 2000)
+        amount = _bh_num(f.get("amount_sought"), 0, 0, 1e13)
+        instrument = f.get("instrument") if f.get("instrument") in BH_INSTRUMENTS else "other"
+        industry = clean(f.get("industry")); industry = industry if industry in BH_INDUSTRY_NAME else ((_bh_profile(bid) or {}).get("industry") or "")
+        if not title or len(summary) < 50 or amount <= 0:
+            flash("Add a title, an amount, and a summary of at least 50 characters.", "danger")
+        elif len([x for x in _bh_rows("koja_connectplus_investment_listings", {"business_id": bid}, limit=100) if x.get("status") in ("pending", "published")]) >= 3:
+            flash("You already have three active funding requests. Close one first.", "warning")
+        else:
+            _, err = db_insert("koja_connectplus_investment_listings", {"id": str(uuid.uuid4()), "business_id": bid, "title": title, "summary": summary,
+                               "amount_sought": amount, "currency": (re.sub(r"[^A-Z]", "", clean(f.get("currency")).upper())[:3] or "USD"), "instrument": instrument,
+                               "industry": industry, "use_of_funds": _bh_text(f.get("use_of_funds"), 800), "status": "pending", "created_by": _bh_uid(),
+                               "created_at": utc_now(), "updated_at": utc_now()})
+            flash("Submitted for KOJA review. Investors see it once it is approved." if not err else "Could not save (run the Business Hub migration).", "success" if not err else "danger")
+        return redirect(url_for("bh_fundraising", business_id=business_id))
+    listings = _bh_rows("koja_connectplus_investment_listings", {"business_id": bid}, order="created_at.desc", limit=50)
+    for l in listings:
+        l["_interests"] = []
+        for i in _bh_rows("koja_connectplus_investor_interests", {"listing_id": str(l.get("id"))}, order="created_at.desc", limit=100):
+            ip = _bh_first("koja_connectplus_investor_profiles", {"id": i.get("investor_profile_id")}) or {}
+            l["_interests"].append(dict(i, _name=ip.get("display_name") or "Investor", _org=ip.get("organisation") or "",
+                                        _email=ip.get("contact_email") if i.get("status") == "accepted" else None))
+    return _bh_page("Fundraising", r'''
+<div class="bh"><div class="hero"><h1>Fundraising</h1><p>{{ b.name }} &middot; funding requests are reviewed by KOJA before investors can see them.</p></div><div class="bh-note">{{ note }}</div>
+<div class="card"><h3>New funding request</h3><form method="post">{{ csrf }}<div class="bh-two"><div><label>Title</label><input name="title" maxlength="160" required></div>
+<div><label>Amount sought</label><input name="amount_sought" type="number" min="1" step="0.01" required></div><div><label>Currency</label><input name="currency" value="USD" maxlength="3"></div>
+<div><label>Instrument</label><select name="instrument">{% for k,v in instruments.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></div>
+<div><label>Industry</label><select name="industry"><option value="">Use my profile</option>{% for k,n,x in industries %}<option value="{{ k }}">{{ n }}</option>{% endfor %}</select></div></div>
+<label>Summary (what the business does, traction, the ask)</label><textarea name="summary" rows="5" maxlength="2000" required></textarea><label>Use of funds</label><textarea name="use_of_funds" rows="3" maxlength="800"></textarea>
+<p class="muted">Publishing financial details is your choice: do not include anything you are not willing to share with approved investors.</p><button class="btn success" type="submit">Submit for review</button></form></div>
+{% for l in listings %}<div class="card"><div class="bh-row"><h3 style="margin:0">{{ l.title }}</h3><span class="bh-chip {{ 'ok' if l.status=='published' else ('bad' if l.status in ['rejected','closed'] else 'warn') }}">{{ l.status }}</span></div>
+<p>{{ money(l.amount_sought, l.currency or 'USD') }} &middot; {{ instruments.get(l.instrument, l.instrument) }}</p>{% if l.review_note %}<p class="muted">KOJA note: {{ l.review_note }}</p>{% endif %}
+{% if l.status in ['pending','published'] %}<form method="post" action="{{ url_for('bh_listing_close', business_id=b.id, lid=l.id) }}">{{ csrf }}<button class="btn secondary">Close request</button></form>{% endif %}
+{% if l._interests %}<h4>Interest ({{ l._interests|length }})</h4><table>{% for i in l._interests %}<tr><td><strong>{{ i._name }}</strong>{{ ' · ' + i._org if i._org else '' }}<br><span class="muted">{{ i.message or '' }}</span>{% if i._email %}<br>Contact: {{ i._email }}{% endif %}</td>
+<td><span class="bh-chip {{ 'ok' if i.status=='accepted' else ('bad' if i.status=='declined' else 'warn') }}">{{ i.status }}</span></td>
+<td>{% if i.status=='sent' %}<div class="bh-row"><form method="post" action="{{ url_for('bh_interest_action', iid=i.id, action='accept') }}">{{ csrf }}<button class="btn success">Accept &amp; share contact</button></form>
+<form method="post" action="{{ url_for('bh_interest_action', iid=i.id, action='decline') }}">{{ csrf }}<button class="btn danger">Decline</button></form></div>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</div>
+{% else %}<div class="card"><p>No funding requests yet.</p></div>{% endfor %}<a class="btn secondary" href="{{ url_for('bh_hub', business_id=b.id) }}">Back to Hub</a></div>''',
+                    b=b, listings=listings, instruments=BH_INSTRUMENTS, note=BH_INVEST_NOTE)
+
+
+@app.route("/business/<business_id>/fundraising/<lid>/close", methods=["POST"])
+@login_required
+def bh_listing_close(business_id, lid):
+    _bh_owned_or_404(business_id)
+    l = _bh_first("koja_connectplus_investment_listings", {"id": lid, "business_id": str(business_id)})
+    if l and l.get("status") in ("pending", "published"):
+        db_update("koja_connectplus_investment_listings", {"id": lid}, {"status": "closed", "updated_at": utc_now()})
+        flash("Funding request closed.", "success")
+    return redirect(url_for("bh_fundraising", business_id=business_id))
+
+
+@app.route("/business/connect-plus/interest/<iid>/<action>", methods=["POST"])
+@login_required
+def bh_interest_action(iid, action):
+    i = _bh_first("koja_connectplus_investor_interests", {"id": iid})
+    l = _bh_first("koja_connectplus_investment_listings", {"id": i.get("listing_id")}) if i else None
+    b = _bh_owned(l.get("business_id")) if l else None
+    if not (i and l and b) or action not in ("accept", "decline") or i.get("status") != "sent":
+        abort(404)
+    new = "accepted" if action == "accept" else "declined"
+    db_update("koja_connectplus_investor_interests", {"id": iid}, {"status": new, "updated_at": utc_now()})
+    _bh_notify(i.get("investor_user_id"), "Investor interest " + new, "%s %s your interest in: %s" % (b.get("name"), new, l.get("title")), "/business/connect-plus/investments")
+    _bh_audit("investor_interest_" + new, "listing", l.get("id"), {})
+    flash("Interest %s." % new, "success")
+    return redirect(url_for("bh_fundraising", business_id=b.get("id")))
+
+
+# ---- admin: moderation console --------------------------------------------------
+@app.route("/admin/business-hub")
+@admin_required
+def bh_admin():
+    return _bh_page("Business Hub Admin", r'''
+<div class="bh"><div class="hero"><h1>Business Hub moderation</h1><p>Approve investors and funding requests, and suspend public company profiles that break the rules.</p></div>
+{% macro act(kind, id, action, label, cls='secondary') %}<form method="post" action="{{ url_for('bh_admin_action') }}" style="display:inline">{{ csrf }}<input type="hidden" name="kind" value="{{ kind }}"><input type="hidden" name="id" value="{{ id }}"><input type="hidden" name="action" value="{{ action }}"><button class="btn {{ cls }}">{{ label }}</button></form>{% endmacro %}
+<div class="card"><h2>Investor profiles awaiting review ({{ inv|length }})</h2><table>{% for p in inv %}<tr><td><strong>{{ p.display_name }}</strong> {{ p.organisation or '' }}<br><span class="muted">{{ p.thesis or '' }} &middot; {{ p.currency }} {{ p.ticket_min }}-{{ p.ticket_max }} &middot; {{ p.contact_email }}</span></td><td>{{ act('investor', p.id, 'approve', 'Approve', 'success') }} {{ act('investor', p.id, 'reject', 'Reject', 'danger') }}</td></tr>{% else %}<tr><td>None.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Funding requests awaiting review ({{ lst|length }})</h2><table>{% for l in lst %}<tr><td><strong>{{ l.title }}</strong> &middot; {{ l._biz }} {{ '(verified)' if l._verified else '(NOT verified)' }}<br>{{ l.currency }} {{ l.amount_sought }} &middot; {{ l.instrument }}<br><span class="muted">{{ l.summary }}</span></td>
+<td>{{ act('listing', l.id, 'approve', 'Publish', 'success') }} {{ act('listing', l.id, 'reject', 'Reject', 'danger') }}</td></tr>{% else %}<tr><td>None.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Public company profiles ({{ profs|length }})</h2><table><tr><th>Company</th><th>Status</th><th></th></tr>{% for p in profs %}<tr><td><a href="{{ url_for('bh_company', slug=p.slug) }}">{{ p.public_name }}</a><br><span class="muted">{{ p.industry }} &middot; {{ p.location }}</span></td><td>{{ p.status }}</td>
+<td>{% if p.status == 'published' %}{{ act('profile', p.id, 'suspend', 'Suspend', 'danger') }}{% elif p.status == 'suspended' %}{{ act('profile', p.id, 'restore', 'Restore to draft') }}{% endif %}</td></tr>{% else %}<tr><td colspan="3">None.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Approved investors ({{ approved|length }})</h2><table>{% for p in approved %}<tr><td>{{ p.display_name }} {{ p.organisation or '' }}</td><td>{{ act('investor', p.id, 'suspend', 'Suspend', 'danger') }}</td></tr>{% else %}<tr><td>None.</td></tr>{% endfor %}</table></div></div>''',
+                    inv=_bh_rows("koja_connectplus_investor_profiles", {"status": "pending"}, order="created_at.desc", limit=100),
+                    approved=_bh_rows("koja_connectplus_investor_profiles", {"status": "approved"}, order="created_at.desc", limit=100),
+                    lst=[dict(l, _biz=_bh_biz_name(l.get("business_id")), _verified=str(l.get("business_id")) in _bh_verified_ids())
+                         for l in _bh_rows("koja_connectplus_investment_listings", {"status": "pending"}, order="created_at.desc", limit=100)],
+                    profs=_bh_rows("koja_business_profiles", order="updated_at.desc", limit=200))
+
+
+@app.route("/admin/business-hub/action", methods=["POST"])
+@admin_required
+def bh_admin_action():
+    kind, rid, action = clean(request.form.get("kind")), clean(request.form.get("id")), clean(request.form.get("action"))
+    table = {"investor": "koja_connectplus_investor_profiles", "listing": "koja_connectplus_investment_listings", "profile": "koja_business_profiles"}.get(kind)
+    status = {("investor", "approve"): "approved", ("investor", "reject"): "rejected", ("investor", "suspend"): "suspended",
+              ("listing", "approve"): "published", ("listing", "reject"): "rejected",
+              ("profile", "suspend"): "suspended", ("profile", "restore"): "draft"}.get((kind, action))
+    row = _bh_first(table, {"id": rid}) if table else None
+    if not (table and status and row):
+        flash("Unknown moderation action.", "danger"); return redirect(url_for("bh_admin"))
+    upd = {"status": status, "updated_at": utc_now()}
+    if kind != "profile":
+        upd.update(reviewed_by=_bh_uid(), reviewed_at=utc_now())
+    db_update(table, {"id": rid}, upd)
+    owner = row.get("user_id") if kind == "investor" else (_bh_first("koja_businesses", {"id": row.get("business_id")}) or {}).get("owner_id")
+    _bh_notify(owner, "KOJA review: " + status, "Your %s was %s by KOJA." % ({"investor": "investor profile", "listing": "funding request", "profile": "company profile"}[kind], status), "/business")
+    _bh_audit("bh_admin_" + kind + "_" + action, kind, rid, {"status": status})
+    flash("%s %s." % (kind.capitalize(), status), "success")
+    return redirect(url_for("bh_admin"))
 
 
 if __name__=="__main__":

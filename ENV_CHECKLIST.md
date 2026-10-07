@@ -72,6 +72,16 @@ URL + key into OBS (Settings > Stream > Custom) or the SRT details into a hardwa
 or mobile encoder; (5) wait for **Encoder: connected**, then press **Go Live**.
 No Cloudflare? Paste any HTTPS HLS URL into the studio's "Manual HLS URL" field.
 
+## KOJA BUSINESS HUB (no new environment variables)
+1. Run `koja_business_hub_schema.sql` in the Supabase SQL editor (safe to re-run; it also
+   adds optional columns to `koja_business_sales` / `koja_business_sale_items` if they exist).
+2. Open `/admin/production-health-v2` and confirm the new `koja_business_*` and
+   `koja_connectplus_*` tables show READY.
+3. Logos upload to the public `koja-files` bucket (same bucket as KOJA MUSIC).
+4. Moderation: `/admin/business-hub` (approve investors and funding requests, suspend profiles).
+5. Approving a business in `/admin/business-verification-v2` is what shows the "Verified" badge
+   in the directory, on company pages and in the funding-request review screen.
+
 ## KOJA MUSIC setup (3 steps)
 1. Run `koja_music_schema.sql` in the Supabase SQL editor (tables + public `koja-files` bucket).
 2. Supabase free plan caps a single file at 50 MB. Raise it in Storage settings
