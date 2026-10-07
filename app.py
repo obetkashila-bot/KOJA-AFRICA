@@ -6163,10 +6163,35 @@ def _music_initial_catalogue(q=''):
     return rows
 
 def _music_artist_profiles_for_user(user):
+    """Return MUSIC artist profiles owned by the authenticated account.
+
+    user_id is the canonical ownership field. For artist rows created before the
+    user_id migration, created_by is used only as a legacy lookup and the exact
+    matching rows are immediately backfilled with user_id.
+    """
     if not user or not user.get('id'):
         return []
+    uid = str(user.get('id'))
     try:
-        return _music_rows('koja_music_artists', {'user_id': str(user.get('id'))}, order='created_at.desc', limit=100)
+        rows = _music_rows('koja_music_artists', {'user_id': uid}, order='created_at.desc', limit=100)
+        if rows:
+            return rows
+        legacy = _music_rows('koja_music_artists', {'created_by': uid}, order='created_at.desc', limit=100)
+        repaired = []
+        for row in legacy:
+            aid = row.get('id')
+            if aid and not row.get('user_id'):
+                try:
+                    db_update('koja_music_artists', {'id': aid}, {'user_id': uid, 'updated_at': utc_now()})
+                except Exception:
+                    try:
+                        db_update('koja_music_artists', {'id': aid}, {'user_id': uid})
+                    except Exception:
+                        pass
+                row = dict(row)
+                row['user_id'] = uid
+            repaired.append(row)
+        return repaired
     except Exception:
         return []
 
@@ -6414,6 +6439,19 @@ def music_admin():
                 if update_err:
                     updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'active':False})
             artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
+            # Repair legacy MUSIC ownership on the exact artist row before granting access.
+            # created_by is legacy metadata; user_id remains the canonical owner field.
+            if artist_row and not artist_row.get('user_id') and artist_row.get('created_by'):
+                legacy_owner = str(artist_row.get('created_by'))
+                try:
+                    db_update('koja_music_artists', {'id':artist_id}, {'user_id':legacy_owner, 'updated_at':utc_now()})
+                except Exception:
+                    try:
+                        db_update('koja_music_artists', {'id':artist_id}, {'user_id':legacy_owner})
+                    except Exception:
+                        pass
+                artist_row = dict(artist_row)
+                artist_row['user_id'] = legacy_owner
             verified_status = str((artist_row or {}).get('status') or '').lower()
             verified_active = bool((artist_row or {}).get('active'))
             if action == 'artist_publish' and artist_row and (verified_active or verified_status in ('published','approved','active')):
@@ -6762,7 +6800,7 @@ def _music_lifecycle_readiness(uid):
     and royalty/accounting records are treated as control points, while distribution,
     promotion and media are operational stages.
     """
-    artists = _music_rows('koja_music_artists', {'created_by': uid}, limit=200) if uid else []
+    artists = _music_artist_profiles_for_user({'id': uid}) if uid else []
     out = []
     for artist in artists:
         aid = artist.get('id')
@@ -6799,7 +6837,7 @@ def _music_lifecycle_readiness(uid):
 
 def _music_lifecycle_artist_ids(uid):
     if not uid: return set()
-    return {str(x.get('id')) for x in _music_rows('koja_music_artists', {'created_by':uid}, limit=500) if x.get('id')}
+    return {str(x.get('id')) for x in _music_artist_profiles_for_user({'id': uid}) if x.get('id')}
 
 def _music_lifecycle_owned_rows(table, uid, limit=500):
     # Best-effort ownership filtering for lifecycle tables.
@@ -6816,7 +6854,7 @@ def _music_lifecycle_counts(uid):
 @music_artist_required
 def music_industry_suite():
     uid=_music_lifecycle_user_id(); counts=_music_lifecycle_counts(uid)
-    artists=_music_rows('koja_music_artists', {'created_by':uid}, limit=100)
+    artists=_music_artist_profiles_for_user({'id': uid})
     tracks=[]
     for a in artists:
         tracks += _music_rows('koja_music_tracks', {'artist_id':a.get('id')}, order='created_at.desc', limit=200)
