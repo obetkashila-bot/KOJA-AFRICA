@@ -664,15 +664,23 @@ def delete_storage(path):
 # DECORATORS / LOGGING
 # ============================================================
 
+# CONSENT POLICY (KOJA-wide)
+# Terms & Conditions and the Privacy Policy are accepted ONCE, when the KOJA account is
+# created (registration checkbox, or the first sign-in for social sign-ups). That single
+# acceptance covers every KOJA service. Individual services (Music, Business, News, Market,
+# NEXUS, ...) never re-ask for it and never block access because of it. A newer
+# TERMS_VERSION is stamped on NEW acceptances for the audit trail only; it does not force
+# existing users to accept again.
 def _terms_acceptance_status(user_id):
-    """Return True/False when the consent table is available; None if unavailable."""
+    """True if the account has accepted the KOJA Terms/Privacy at any version, False if there is
+    no acceptance on record, None if the consent table is unavailable (then nothing is enforced)."""
     if not user_id or not supabase_configured():
         return None
     try:
         r = requests.get(
             sb_rest_url("koja_terms_acceptances"),
             headers=sb_headers(),
-            params={"select":"id,accepted,terms_version,accepted_at,created_at","user_id":f"eq.{user_id}","terms_version":f"eq.{TERMS_VERSION}","accepted":"eq.true","order":"created_at.desc","limit":"1"},
+            params={"select":"id,accepted,terms_version,accepted_at,created_at","user_id":f"eq.{user_id}","accepted":"eq.true","order":"created_at.desc","limit":"1"},
             timeout=10,
         )
         if r.status_code in (404, 406, 427):
@@ -713,8 +721,7 @@ def login_required(fn):
         if not user:
             flash("Please log in first.", "warning")
             return redirect(url_for("login", next=request.path))
-        if request.path not in ("/terms", "/terms/decision") and _terms_required_for_user(user):
-            return redirect(url_for("public_terms", required=1, next=request.path))
+        # Consent is handled once at account creation / first sign-in, not inside services.
         return fn(*args, **kwargs)
     return wrapper
 
@@ -741,6 +748,9 @@ def music_artist_required(fn):
             flash("Artist login required.", "warning")
             return redirect(url_for("login", next=request.path))
         if not _music_artist_user(user):
+            if request.method == "GET":
+                flash("Create your artist profile to enter MUSIC Studio.", "info")
+                return redirect(url_for("music_artist_new"))
             abort(403)
         return fn(*args, **kwargs)
     return wrapper
@@ -6329,8 +6339,6 @@ def music_track(track_id):
 @music_artist_required
 def music_studio():
     u=current_user()
-    if not _music_artist_user(u):
-        abort(403)
     artists=_music_artist_profiles_for_user(u); active_artist_ids=[str(a.get('id')) for a in artists if str(a.get('status') or '').lower()=='published']; artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
     for aid in artist_ids: tracks.extend(_music_rows('koja_music_tracks', {'artist_id':aid}, order='created_at.desc', limit=300))
     artist_active=bool(active_artist_ids)
@@ -6526,7 +6534,7 @@ def music_artist_new():
 <label>Country</label><input name="country" maxlength="80" placeholder="Zambia">
 <label>Primary genre</label><input name="genre" maxlength="100" placeholder="Afrobeats, Gospel, Hip-Hop...">
 <label>Artist bio</label><textarea name="bio" rows="6" maxlength="5000" placeholder="Tell listeners about the artist..."></textarea>
-<div class="actions" style="margin-top:14px"><button class="btn success" type="submit">Create Artist</button><a class="btn secondary" href="{{ url_for('music_studio') }}">Back to Studio</a></div>
+<div class="actions" style="margin-top:14px"><button class="btn success" type="submit">Create Artist</button><a class="btn secondary" href="{{ url_for('music_home') }}">Back to MUSIC</a></div>
 </form></div>''')
 
 

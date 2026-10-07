@@ -72,6 +72,13 @@ URL + key into OBS (Settings > Stream > Custom) or the SRT details into a hardwa
 or mobile encoder; (5) wait for **Encoder: connected**, then press **Go Live**.
 No Cloudflare? Paste any HTTPS HLS URL into the studio's "Manual HLS URL" field.
 
+## Consent policy (all KOJA services)
+Terms & Conditions and the Privacy Policy are accepted once, at account creation (registration
+checkbox; for Google/Facebook sign-ups, the first sign-in). That acceptance applies to every KOJA
+service: services never re-ask and never block access over consent. A newer `TERMS_VERSION` is
+recorded on new acceptances for the audit trail but does not force existing users to re-accept.
+Accounts with no acceptance on record at all are asked once at sign-in, never inside a service.
+
 ## KOJA BUSINESS HUB (no new environment variables)
 1. Run `koja_business_hub_schema.sql` in the Supabase SQL editor (safe to re-run; it also
    adds optional columns to `koja_business_sales` / `koja_business_sale_items` if they exist).
