@@ -17134,18 +17134,53 @@ def _academic_live_token(room, identity, name, can_publish=False):
 
 
 @app.route('/academic')
+@login_required
 def academic_hub():
     uid = _academic_uid()
+    teacher = _academic_teacher(uid)
     assignments_rows = db_select('assignments', {'owner_id': uid}, order='created_at.desc', limit=20) or []
     classes = db_select(ACADEMIC_CLASS_TABLE, {'status': 'published'}, order='created_at.desc', limit=30) or []
-    teacher = _academic_teacher(uid)
-    sessions = db_select(ACADEMIC_BOOKING_TABLE, {'learner_user_id': uid}, order='created_at.desc', limit=20) or []
+    enrollments = db_select(ACADEMIC_ENROLL_TABLE, {'learner_user_id': uid}, order='created_at.desc', limit=50) or []
+    tutoring = db_select(ACADEMIC_TUTOR_TABLE, {'learner_user_id': uid}, order='created_at.desc', limit=50) or []
+    teacher_requests = db_select(ACADEMIC_REQUEST_TABLE, {'teacher_user_id': uid}, order='created_at.desc', limit=50) if teacher else []
+    my_classes = db_select(ACADEMIC_CLASS_TABLE, {'teacher_user_id': uid}, order='created_at.desc', limit=50) if teacher else []
+    earnings_rows = db_select(ACADEMIC_LEDGER_TABLE, {'teacher_user_id': uid, 'status': 'posted'}, order='created_at.desc', limit=200) if teacher else []
+    withdrawal_rows = db_select(ACADEMIC_WITHDRAW_TABLE, {'teacher_user_id': uid}, order='created_at.desc', limit=50) if teacher and table_exists(ACADEMIC_WITHDRAW_TABLE) else []
+    available_earnings = sum(_academic_amount(x.get('net_amount')) for x in (earnings_rows or []))
     return render_page('KOJA Academic', r'''
-<div class="hero"><h1>KOJA Academic</h1><p>Assignments, teachers, live tutoring and live classes in one KOJA ecosystem.</p>
-<div class="actions"><a class="btn" href="{{ url_for('academic_teachers') }}">Find a Teacher</a><a class="btn secondary" href="{{ url_for('academic_classes') }}">Live Classes</a><a class="btn secondary" href="{{ url_for('assignments') }}">My Assignments</a>{% if teacher %}<a class="btn success" href="{{ url_for('academic_teacher_dashboard') }}">Teacher Dashboard</a>{% else %}<a class="btn secondary" href="{{ url_for('academic_teacher_register') }}">Become a Teacher</a>{% endif %}</div></div>
-<div class="grid"><div class="card"><h3>My Assignments</h3><h2>{{ assignments|length }}</h2><p>Assignments can be connected to teacher assistance and tutoring.</p></div><div class="card"><h3>Published Classes</h3><h2>{{ classes|length }}</h2><p>Discover classes currently recruiting learners.</p></div><div class="card"><h3>My Tutoring</h3><h2>{{ sessions|length }}</h2><p>Bookings and tutoring sessions linked to your account.</p></div></div>
-<div class="card"><h2>Academic flow</h2><p><strong>Assignment → AI assistance → Find a Teacher → Book → Live Teaching → Learn → Complete</strong></p><p class="small">Live teaching uses KOJA's existing LiveKit infrastructure when configured. If it is unavailable, the booking and learning workflow remains available.</p></div>
-''', assignments=assignments_rows, classes=classes, sessions=sessions, teacher=teacher)
+<div class="hero">
+  <h1>KOJA Academic</h1>
+  <p>Assignments, verified teachers, tutoring, live classes, learning materials, payments and academic support in one place.</p>
+  <div class="actions">
+    <a class="btn" href="{{ url_for('academic_teachers') }}">Find a Teacher</a>
+    <a class="btn" href="{{ url_for('academic_classes') }}">Live Classes</a>
+    <a class="btn secondary" href="{{ url_for('assignments') }}">My Assignments</a>
+    {% if teacher %}<a class="btn success" href="{{ url_for('academic_teacher_dashboard') }}">Teacher Dashboard</a>{% else %}<a class="btn secondary" href="{{ url_for('academic_teacher_register') }}">Become a Teacher</a>{% endif %}
+  </div>
+</div>
+<div class="card"><h2>Academic Services</h2><div class="grid">
+  <div class="card"><h3>Find a Teacher</h3><p>Search verified teachers by subject, topic and level.</p><a class="btn" href="{{ url_for('academic_teachers') }}">Find Teacher</a></div>
+  <div class="card"><h3>One-to-One Tutoring</h3><p>Book a private teacher and enter a secure tutoring room.</p><a class="btn" href="{{ url_for('academic_teachers') }}">Book Tutoring</a></div>
+  <div class="card"><h3>Live Classes</h3><p>Discover, enroll in and attend group classes.</p><a class="btn" href="{{ url_for('academic_classes') }}">Browse Classes</a></div>
+  <div class="card"><h3>My Learning</h3><p>{{ enrollments|length }} class enrollment(s) · {{ tutoring|length }} tutoring session(s).</p><a class="btn secondary" href="{{ url_for('academic_classes') }}">Open Classes</a></div>
+  <div class="card"><h3>Assignments & AI</h3><p>Upload assignments and open Academic Intelligence for question extraction and teacher matching.</p><a class="btn secondary" href="{{ url_for('assignments') }}">Open Assignments</a></div>
+  <div class="card"><h3>Connect</h3><p>Academic class conversations use KOJA Connect when a class conversation is available.</p><a class="btn secondary" href="{{ url_for('communication_next') }}">Open Connect</a></div>
+</div></div>
+{% if teacher %}<div class="card"><h2>Teacher Centre</h2><p><span class="badge">{{ teacher.status|capitalize }}</span> {{ teacher.display_name }}</p><div class="grid">
+  <div class="card"><h3>Teacher Requests</h3><h2>{{ teacher_requests|length }}</h2><a class="btn" href="{{ url_for('academic_teacher_requests') }}">Review Requests</a></div>
+  <div class="card"><h3>My Classes</h3><h2>{{ my_classes|length }}</h2><a class="btn" href="{{ url_for('academic_teacher_dashboard') }}">Manage Classes</a></div>
+  <div class="card"><h3>Create a Class</h3><p>Publish a new class and recruit learners.</p><a class="btn success" href="{{ url_for('academic_class_new') }}">Create Class</a></div>
+  <div class="card"><h3>Teaching Materials</h3><p>Upload materials inside each class and present them during live teaching.</p><a class="btn secondary" href="{{ url_for('academic_teacher_dashboard') }}">Manage Materials</a></div>
+  <div class="card"><h3>Earnings</h3><h2>{{ money(available_earnings,'ZMW') }}</h2><a class="btn" href="{{ url_for('academic_teacher_earnings') }}">Earnings & Withdraw</a></div>
+  <div class="card"><h3>Withdrawals</h3><p>{{ withdrawal_rows|length }} request(s).</p><a class="btn secondary" href="{{ url_for('academic_teacher_earnings') }}">Open Withdrawals</a></div>
+</div></div>{% endif %}
+<div class="card"><h2>Quick Test Flow</h2><div class="actions">
+  <a class="btn" href="{{ url_for('academic_teachers') }}">1. Find Teacher</a><a class="btn" href="{{ url_for('academic_classes') }}">2. Join Class</a><a class="btn" href="{{ url_for('assignments') }}">3. Upload Assignment</a>
+  {% if teacher %}<a class="btn" href="{{ url_for('academic_teacher_requests') }}">4. Accept / Reject</a>{% else %}<a class="btn" href="{{ url_for('academic_teacher_register') }}">4. Register as Teacher</a>{% endif %}
+</div></div>
+''', assignments=assignments_rows, classes=classes, enrollments=enrollments, tutoring=tutoring, teacher=teacher,
+        teacher_requests=teacher_requests or [], my_classes=my_classes or [], earnings_rows=earnings_rows or [],
+        withdrawal_rows=withdrawal_rows or [], available_earnings=available_earnings, money=market_money)
 
 
 @app.route('/academic/teachers')
