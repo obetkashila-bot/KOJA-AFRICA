@@ -1002,7 +1002,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
-<a class="nexus-nav-link" href="{{ url_for('koja_nexus_home_alias') }}">KOJA NEXUS</a>
+<a class="nexus-nav-link" href="{{ url_for('koja_nexus_home') }}">KOJA NEXUS</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
 <div class="dropdown" id="moreMenu" role="menu">
@@ -6163,35 +6163,10 @@ def _music_initial_catalogue(q=''):
     return rows
 
 def _music_artist_profiles_for_user(user):
-    """Return MUSIC artist profiles owned by the authenticated account.
-
-    user_id is the canonical ownership field. For artist rows created before the
-    user_id migration, created_by is used only as a legacy lookup and the exact
-    matching rows are immediately backfilled with user_id.
-    """
     if not user or not user.get('id'):
         return []
-    uid = str(user.get('id'))
     try:
-        rows = _music_rows('koja_music_artists', {'user_id': uid}, order='created_at.desc', limit=100)
-        if rows:
-            return rows
-        legacy = _music_rows('koja_music_artists', {'created_by': uid}, order='created_at.desc', limit=100)
-        repaired = []
-        for row in legacy:
-            aid = row.get('id')
-            if aid and not row.get('user_id'):
-                try:
-                    db_update('koja_music_artists', {'id': aid}, {'user_id': uid, 'updated_at': utc_now()})
-                except Exception:
-                    try:
-                        db_update('koja_music_artists', {'id': aid}, {'user_id': uid})
-                    except Exception:
-                        pass
-                row = dict(row)
-                row['user_id'] = uid
-            repaired.append(row)
-        return repaired
+        return _music_rows('koja_music_artists', {'created_by': user.get('id')}, order='created_at.desc', limit=100)
     except Exception:
         return []
 
@@ -6364,7 +6339,7 @@ def music_track(track_id):
 @music_artist_required
 def music_studio():
     u=current_user()
-    artists=_music_artist_profiles_for_user(u); active_artist_ids=[str(a.get('id')) for a in artists if bool(a.get('active')) or str(a.get('status') or '').strip().lower() in ('published','approved','active')]; artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
+    artists=_music_artist_profiles_for_user(u); active_artist_ids=[str(a.get('id')) for a in artists if str(a.get('status') or '').lower()=='published']; artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
     for aid in artist_ids: tracks.extend(_music_rows('koja_music_tracks', {'artist_id':aid}, order='created_at.desc', limit=300))
     artist_active=bool(active_artist_ids)
     return render_page('KOJA MUSIC Studio', r'''
@@ -6380,7 +6355,7 @@ def music_artist_upload():
     u=current_user()
     if not _music_artist_user(u):
         abort(403)
-    artist_id=clean(request.form.get('artist_id')); own_artists=_music_rows('koja_music_artists', {'user_id':str(u.get('id'))}, limit=100)
+    artist_id=clean(request.form.get('artist_id')); own_artists=_music_rows('koja_music_artists', {'created_by':u.get('id')}, limit=100)
     selected_artist = next((a for a in own_artists if str(a.get('id')) == artist_id), None)
     if not selected_artist: abort(403)
     if str(selected_artist.get('status') or '').lower() != 'published':
@@ -6439,23 +6414,19 @@ def music_admin():
                 if update_err:
                     updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'active':False})
             artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
-            # Repair legacy MUSIC ownership on the exact artist row before granting access.
-            # created_by is legacy metadata; user_id remains the canonical owner field.
-            if artist_row and not artist_row.get('user_id') and artist_row.get('created_by'):
-                legacy_owner = str(artist_row.get('created_by'))
-                try:
-                    db_update('koja_music_artists', {'id':artist_id}, {'user_id':legacy_owner, 'updated_at':utc_now()})
-                except Exception:
-                    try:
-                        db_update('koja_music_artists', {'id':artist_id}, {'user_id':legacy_owner})
-                    except Exception:
-                        pass
-                artist_row = dict(artist_row)
-                artist_row['user_id'] = legacy_owner
             verified_status = str((artist_row or {}).get('status') or '').lower()
             verified_active = bool((artist_row or {}).get('active'))
+            if action == 'artist_publish' and not (verified_active or verified_status in ('published','approved','active')):
+                # Some older deployments have duplicate/legacy artist records keyed by created_by.
+                owner_id = (artist_row or {}).get('created_by')
+                if owner_id:
+                    db_update('koja_music_artists', {'created_by':owner_id}, {'active':True})
+                    db_update('koja_music_artists', {'created_by':owner_id}, {'status':'published'})
+                    artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
+                    verified_status = str((artist_row or {}).get('status') or '').lower()
+                    verified_active = bool((artist_row or {}).get('active'))
             if action == 'artist_publish' and artist_row and (verified_active or verified_status in ('published','approved','active')):
-                owner_id = artist_row.get('user_id')
+                owner_id = artist_row.get('created_by')
                 # Give the activated artist the MUSIC role and keep the account active.
                 if owner_id:
                     role_updated, role_err = db_update('profiles', {'id':owner_id}, {'role':'artist','is_active':True,'updated_at':utc_now()})
@@ -6548,15 +6519,11 @@ def music_artist_new():
         if not name:
             flash('Artist name is required.','danger')
             return redirect(url_for('music_artist_new'))
-        uid = str((user or {}).get('id') or '').strip()
-        if not uid:
-            flash('Your account could not be identified. Please sign in again.', 'danger')
-            return redirect(url_for('music_artist_new'))
-        existing=_music_rows('koja_music_artists', {'user_id':uid}, limit=100)
+        existing=_music_rows('koja_music_artists', {'created_by':user.get('id')}, limit=100)
         if any(str(x.get('artist_name','')).strip().lower()==name.lower() for x in existing):
             flash('You already have an artist profile with that name.','warning')
             return redirect(url_for('music_studio'))
-        payload={'id':str(uuid.uuid4()),'user_id':uid,'artist_name':name,'country':country,'genre':genre,'bio':bio,'status':'published','featured':False,'created_at':utc_now(),'updated_at':utc_now()}
+        payload={'id':str(uuid.uuid4()),'created_by':user.get('id'),'artist_name':name,'country':country,'genre':genre,'bio':bio,'status':'published','featured':False,'created_at':utc_now(),'updated_at':utc_now()}
         _,err=db_insert('koja_music_artists',payload)
         flash('Artist profile created.' if not err else 'Artist profile could not be saved: '+str(err),'success' if not err else 'danger')
         return redirect(url_for('music_studio'))
@@ -6630,7 +6597,7 @@ def music_play_api(track_id):
 @app.route('/music/dashboard')
 @music_artist_required
 def music_dashboard_v2():
-    u=current_user(); artists=_music_rows('koja_music_artists',{'user_id':str(u.get('id'))},limit=100)
+    u=current_user(); artists=_music_rows('koja_music_artists',{'created_by':u.get('id')},limit=100)
     ids={str(a.get('id')) for a in artists}; tracks=[]
     for aid in ids: tracks.extend(_music_rows('koja_music_tracks',{'artist_id':aid},limit=500))
     plays=[]; likes=[]
@@ -6800,7 +6767,7 @@ def _music_lifecycle_readiness(uid):
     and royalty/accounting records are treated as control points, while distribution,
     promotion and media are operational stages.
     """
-    artists = _music_artist_profiles_for_user({'id': uid}) if uid else []
+    artists = _music_rows('koja_music_artists', {'created_by': uid}, limit=200) if uid else []
     out = []
     for artist in artists:
         aid = artist.get('id')
@@ -6837,7 +6804,7 @@ def _music_lifecycle_readiness(uid):
 
 def _music_lifecycle_artist_ids(uid):
     if not uid: return set()
-    return {str(x.get('id')) for x in _music_artist_profiles_for_user({'id': uid}) if x.get('id')}
+    return {str(x.get('id')) for x in _music_rows('koja_music_artists', {'created_by':uid}, limit=500) if x.get('id')}
 
 def _music_lifecycle_owned_rows(table, uid, limit=500):
     # Best-effort ownership filtering for lifecycle tables.
@@ -6854,7 +6821,7 @@ def _music_lifecycle_counts(uid):
 @music_artist_required
 def music_industry_suite():
     uid=_music_lifecycle_user_id(); counts=_music_lifecycle_counts(uid)
-    artists=_music_artist_profiles_for_user({'id': uid})
+    artists=_music_rows('koja_music_artists', {'created_by':uid}, limit=100)
     tracks=[]
     for a in artists:
         tracks += _music_rows('koja_music_tracks', {'artist_id':a.get('id')}, order='created_at.desc', limit=200)
@@ -6919,7 +6886,7 @@ def music_lifecycle_module(module):
         flash(f'{label} record saved.' if not err else f'{label} record could not be saved. Run the KOJA MUSIC lifecycle migration in Supabase.','success' if not err else 'danger')
         return redirect(url_for('music_lifecycle_module',module=module))
     rows=_music_lifecycle_owned_rows(table,uid,300)
-    artists=_music_rows('koja_music_artists',{'user_id':str(uid)},limit=100)
+    artists=_music_rows('koja_music_artists',{'created_by':uid},limit=100)
     tracks=[]
     for a in artists: tracks += _music_rows('koja_music_tracks',{'artist_id':a.get('id')},limit=200)
     return render_page(f'KOJA MUSIC · {label}',r'''
@@ -14556,9 +14523,244 @@ def _world_score(row, query=""):
     if _world_verified(row): score += 5
     return score
 
+
+# ============================================================
+# KOJA NEXUS — END-TO-END DISCOVERY HUB (ADDITIVE)
+# Existing NEXUS/world services, Africa Now, market data and admin
+# remain authoritative. These routes compose them into one discovery layer.
+# ============================================================
+
+def _nexus_safe_rows(table, filters=None, order="created_at.desc", limit=100):
+    try:
+        if not table_exists(table):
+            return []
+        return db_select(table, filters or {}, order=order, limit=limit) or []
+    except Exception:
+        return []
+
+def _nexus_text(row):
+    return " ".join(str(row.get(k) or "") for k in ("name","title","description","summary","category","country_name","country","tags","industry","sector","location"))
+
+def _nexus_match(row, q):
+    q=clean(q).lower()
+    return not q or q in _nexus_text(row).lower()
+
+def _nexus_business_rows(q="", country=""):
+    rows=_nexus_safe_rows("koja_business_profiles", order="created_at.desc", limit=500)
+    out=[]
+    for r in rows:
+        if country and str(r.get("country_code") or r.get("country") or "").upper()!=country.upper(): continue
+        if _nexus_match(r,q): out.append(r)
+    return out
+
+def _nexus_news_rows(q="", category="", country="", limit=100):
+    rows=_nexus_safe_rows("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=500)
+    out=[]
+    for r in rows:
+        if category and str(r.get("category") or "").lower()!=category.lower(): continue
+        rc=str(r.get("country") or r.get("country_code") or "")
+        if country and rc.upper()!=country.upper(): continue
+        if _nexus_match(r,q): out.append(r)
+    return out[:limit]
+
+def _nexus_opportunity_rows(q="", country="", limit=100):
+    rows=_nexus_news_rows(q,"Jobs & Opportunities",country,limit=500)
+    for r in rows:
+        r.setdefault("opportunity_type", r.get("job_type") or "Opportunity")
+        r.setdefault("source_type", "Africa Now")
+    return rows[:limit]
+
+def _nexus_market_rows(q="", limit=100):
+    candidates=[]
+    for table in ("koja_market_products","koja_marketplace_products"):
+        candidates.extend(_nexus_safe_rows(table, order="created_at.desc", limit=250))
+    return [r for r in candidates if _nexus_match(r,q)][:limit]
+
+def _nexus_country_profile(code):
+    code=clean(code).upper()
+    if code not in KOJA_WORLD_COUNTRIES: abort(404)
+    name=KOJA_WORLD_COUNTRIES[code]
+    services=[r for r in _world_rows() if str(r.get("country_code") or "").upper()==code]
+    news=_nexus_news_rows(country=code,limit=8)
+    businesses=_nexus_business_rows(country=code)[:8]
+    opportunities=_nexus_opportunity_rows(country=code,limit=8)
+    return {"code":code,"name":name,"services":services[:12],"news":news,"businesses":businesses,"opportunities":opportunities}
+
+def _nexus_saved():
+    # Session-backed initially so NEXUS can operate without introducing a new table.
+    raw=session.get("nexus_saved") or []
+    return raw if isinstance(raw,list) else []
+
+def _nexus_save(item_type,item_id):
+    saved=_nexus_saved(); key=f"{item_type}:{item_id}"
+    saved=[x for x in saved if f"{x.get('type')}:{x.get('id')}"!=key]
+    saved.insert(0,{"type":item_type,"id":str(item_id)})
+    session["nexus_saved"]=saved[:200]; session.modified=True
+
+def _nexus_unsave(item_type,item_id):
+    key=f"{item_type}:{item_id}"
+    session["nexus_saved"]=[x for x in _nexus_saved() if f"{x.get('type')}:{x.get('id')}"!=key]; session.modified=True
+
+def _nexus_shell(title, body, **ctx):
+    return render_page(title, r'''
+<style>
+.nxh{max-width:1450px;margin:auto}.nxnav{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}.nxnav a{padding:8px 11px;border:1px solid rgba(90,110,135,.18);border-radius:999px;text-decoration:none;color:inherit;font-size:12px}.nxhero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:24px;padding:30px;margin-bottom:18px}.nxhero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.nxhero p{max-width:900px;line-height:1.65;color:rgba(255,255,255,.84)}.nxsearch{display:flex;gap:8px;max-width:900px}.nxsearch input{flex:1;min-width:0}.nxgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.nxgrid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.nxcard{border:1px solid rgba(90,110,135,.20);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.06)}.nxcard h2,.nxcard h3{margin-top:0}.nxmuted{font-size:13px;color:#718096}.nxpill{display:inline-block;font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;margin:3px 3px 3px 0}.nxpending{background:#fff4dc;color:#8a5b00}.nxlist{display:grid;gap:9px}.nxitem{padding:12px;border-bottom:1px solid rgba(90,110,135,.15)}.nxitem:last-child{border-bottom:0}.nxactions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.nxcrumb{font-size:12px;color:#718096;margin:8px 0 14px}.nxstat strong{display:block;font-size:27px}.nxstat span{font-size:12px;color:#718096}@media(max-width:1000px){.nxgrid{grid-template-columns:repeat(2,1fr)}.nxgrid4{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.nxgrid,.nxgrid4{grid-template-columns:1fr}.nxsearch{flex-direction:column}}
+</style>
+<div class="nxh">
+<nav class="nxnav"><a href="{{ url_for('koja_nexus_home') }}">NEXUS</a><a href="{{ url_for('nexus_africa') }}">Africa</a><a href="{{ url_for('nexus_search') }}">Search</a><a href="{{ url_for('nexus_business') }}">Business</a><a href="{{ url_for('nexus_services') }}">Services</a><a href="{{ url_for('nexus_news') }}">Africa Now</a><a href="{{ url_for('nexus_market') }}">Market</a><a href="{{ url_for('nexus_opportunities') }}">Opportunities</a><a href="{{ url_for('nexus_education') }}">Education</a><a href="{{ url_for('nexus_organisations') }}">Organisations</a><a href="{{ url_for('nexus_intelligence') }}">Intelligence</a><a href="{{ url_for('nexus_saved') }}">Saved</a><a href="{{ url_for('nexus_connect') }}">Connect</a></nav>
+''' + body + r'''
+</div>
+''', **ctx)
+
+def _nexus_home_page():
+    services=_world_rows(); news=_nexus_news_rows(limit=6); opps=_nexus_opportunity_rows(limit=6); businesses=_nexus_business_rows()[:6]
+    verified=sum(1 for x in services if _world_verified(x))
+    return _nexus_shell("KOJA NEXUS",r'''
+<div class="nxhero"><div class="nxcrumb">KOJA / NEXUS</div><h1>KOJA NEXUS</h1><p>Discover Africa's countries, services, businesses, organisations, markets, news and opportunities — then continue into the specialised KOJA service that executes the next step.</p><form class="nxsearch" action="{{ url_for('nexus_search') }}"><input name="q" placeholder="Search Africa, countries, services, businesses, opportunities, news..."><button class="btn" type="submit">Global Search</button></form></div>
+<div class="nxgrid4"><div class="nxcard nxstat"><strong>{{ countries|length }}</strong><span>African countries</span></div><div class="nxcard nxstat"><strong>{{ services|length }}</strong><span>Indexed services</span></div><div class="nxcard nxstat"><strong>{{ verified }}</strong><span>Verified services</span></div><div class="nxcard nxstat"><strong>{{ opps|length }}</strong><span>Current opportunities</span></div></div>
+<section class="nxcard" style="margin-top:18px"><h2>Explore Africa</h2><div class="nxgrid4">{% for code,name in countries[:12] %}<a class="nxcard" href="{{ url_for('nexus_country',country=code.lower()) }}"><strong>{{ name }}</strong><div class="nxmuted">{{ code }}</div></a>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_africa') }}">View all 54 countries</a></div></section>
+<div class="nxgrid" style="margin-top:18px"><section class="nxcard"><h2>Africa Now</h2><div class="nxlist">{% for x in news %}<div class="nxitem"><strong>{{ x.title }}</strong><div class="nxmuted">{{ x.category or 'Africa' }} · {{ x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No current stories available.</p>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_news') }}">Open Africa Now</a></div></section><section class="nxcard"><h2>Opportunities</h2><div class="nxlist">{% for x in opps %}<div class="nxitem"><strong>{{ x.title }}</strong><div class="nxmuted">{{ x.job_type or x.opportunity_type or 'Opportunity' }} · {{ x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No current opportunities available.</p>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_opportunities') }}">Find opportunities</a></div></section><section class="nxcard"><h2>Featured organisations</h2><div class="nxlist">{% for x in businesses %}<div class="nxitem"><strong>{{ x.name or x.business_name or 'Business' }}</strong><div class="nxmuted">{{ x.country_name or x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No indexed business profiles available.</p>{% endfor %}</div><div class="nxactions"><a class="btn" href="{{ url_for('nexus_business') }}">Discover business</a></div></section></div>
+<section class="nxcard" style="margin-top:18px"><h2>KOJA Ecosystem</h2><p class="nxmuted">NEXUS discovers and routes the user into the specialised KOJA services that execute deeper activity.</p><div class="nxgrid4">{% for n,u in ecosystem %}<a class="nxcard" href="{{ u }}"><strong>{{ n }}</strong><div class="nxmuted">Continue</div></a>{% endfor %}</div></section>
+''', countries=KOJA_AFRICA_54, services=services, verified=verified, opps=opps, news=news, businesses=businesses, ecosystem=[("KOJA NEWS","/news"),("KOJA BUSINESS","/business-directory"),("KOJA EDUCATION","/education"),("KOJA MARKET","/market"),("KOJA MEDIA","/media-next"),("KOJA MUSIC","/music"),("KOJA CONNECT+","/communication-next"),("KOJA DELIVERY","/deliver"),("KOJA CLOUD","https://higher-education-at-easy.onrender.com")])
+
 @app.route("/nexus")
-def koja_nexus_home_alias():
-    return koja_world()
+def koja_nexus_home():
+    return _nexus_home_page()
+
+@app.route("/nexus/search")
+def nexus_search():
+    q=clean(request.args.get("q")); country=clean(request.args.get("country")).upper(); category=clean(request.args.get("category"))
+    services=[x for x in _world_rows() if _world_matches(x,q,country,category)]
+    businesses=_nexus_business_rows(q,country)[:50]
+    news=_nexus_news_rows(q,category,country,50)
+    opps=_nexus_opportunity_rows(q,country,50)
+    market=_nexus_market_rows(q,50)
+    return _nexus_shell("NEXUS Search",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Search</div><h1>Global & Africa Search</h1><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Search..." autofocus><select name="country"><option value="">All Africa</option>{% for code,name in countries %}<option value="{{ code }}" {% if country==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select><button class="btn">Search</button></form></div>
+<div class="nxgrid"><section class="nxcard"><h2>Services <span class="nxmuted">({{ services|length }})</span></h2>{% for x in services[:15] %}<div class="nxitem"><strong>{{ service_name(x) }}</strong><div class="nxmuted">{{ x.country_code }} · {{ x.category }}</div><div class="nxactions"><a class="btn secondary" href="{{ url_for('nexus_service',id=x.id) }}">Explore</a></div></div>{% else %}<p class="nxmuted">No matching services.</p>{% endfor %}</section><section class="nxcard"><h2>Businesses <span class="nxmuted">({{ businesses|length }})</span></h2>{% for x in businesses[:15] %}<div class="nxitem"><strong>{{ x.name or x.business_name or 'Business' }}</strong><div class="nxmuted">{{ x.country_name or x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No indexed businesses.</p>{% endfor %}</section><section class="nxcard"><h2>News & Opportunities</h2>{% for x in (news[:8]+opps[:8]) %}<div class="nxitem"><strong>{{ x.title }}</strong><div class="nxmuted">{{ x.category or 'Opportunity' }} · {{ x.country or 'Africa' }}</div></div>{% else %}<p class="nxmuted">No matching information.</p>{% endfor %}</section></div>
+''',q=q,country=country,countries=KOJA_AFRICA_54,services=services,businesses=businesses,news=news,opps=opps,market=market,service_name=_world_service_name)
+
+@app.route("/nexus/africa")
+def nexus_africa():
+    return _nexus_shell("NEXUS Africa",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Africa</div><h1>All 54 African Countries</h1><p>Explore country profiles, public services, businesses, organisations, education, opportunities, news, markets, trade and official links.</p></div><div class="nxgrid4">{% for code,name in countries %}<a class="nxcard" href="{{ url_for('nexus_country',country=code.lower()) }}"><strong>{{ name }}</strong><div class="nxmuted">{{ code }}</div></a>{% endfor %}</div>
+''',countries=KOJA_AFRICA_54)
+
+@app.route("/nexus/<country>")
+def nexus_country(country):
+    p=_nexus_country_profile(country); return _nexus_shell(f"NEXUS {p['name']}",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Africa / {{ p.name }}</div><h1>{{ p.name }}</h1><p>{{ p.code }} country discovery hub. NEXUS only presents information that exists in its indexed sources; official providers remain responsible for their services.</p><div class="nxactions"><a class="btn" href="{{ url_for('nexus_search',country=p.code) }}">Search {{ p.name }}</a><a class="btn secondary" href="{{ url_for('nexus_compare',country=p.code) }}">Compare</a></div></div>
+<div class="nxgrid"><section class="nxcard"><h2>Public Services</h2>{% for x in p.services %}<div class="nxitem"><strong>{{ service_name(x) }}</strong><div class="nxmuted">{{ x.category }}</div><span class="nxpill {% if not verified(x) %}nxpending{% endif %}">{{ 'Verified' if verified(x) else 'Verification pending' }}</span></div>{% else %}<p class="nxmuted">No indexed services yet.</p>{% endfor %}</section><section class="nxcard"><h2>Business</h2>{% for x in p.businesses %}<div class="nxitem"><strong>{{ x.name or x.business_name or 'Business' }}</strong><div class="nxmuted">{{ x.industry or x.category or 'Business' }}</div></div>{% else %}<p class="nxmuted">No indexed business profiles yet.</p>{% endfor %}</section><section class="nxcard"><h2>Opportunities</h2>{% for x in p.opportunities %}<div class="nxitem"><strong>{{ x.title }}</strong><div class="nxmuted">{{ x.job_type or x.opportunity_type or 'Opportunity' }}</div></div>{% else %}<p class="nxmuted">No current opportunities indexed.</p>{% endfor %}</section></div><section class="nxcard" style="margin-top:18px"><h2>News</h2><div class="nxgrid">{% for x in p.news %}<div class="nxcard"><strong>{{ x.title }}</strong><div class="nxmuted">{{ x.category or 'Africa Now' }}</div><p>{{ x.summary or '' }}</p></div>{% else %}<p class="nxmuted">No current country stories.</p>{% endfor %}</div></section><section class="nxcard" style="margin-top:18px"><h2>Country sections</h2><div class="nxgrid4">{% for x in ['Overview','Government','Public Services','Businesses','Organisations','Universities / Education','Healthcare','Jobs','Opportunities','News','Markets','Trade','Official Links'] %}<div class="nxcard"><strong>{{ x }}</strong><div class="nxmuted">Explore indexed information</div></div>{% endfor %}</div></section>
+''',p=p,service_name=_world_service_name,verified=_world_verified)
+
+@app.route("/nexus/compare")
+def nexus_compare():
+    codes=[x.strip().upper() for x in clean(request.args.get("countries")).split(",") if x.strip()][:4] or ["ZM","ZA"]
+    rows=[]
+    for c in codes:
+        if c in KOJA_WORLD_COUNTRIES:
+            rows.append({"code":c,"name":KOJA_WORLD_COUNTRIES[c],"services":len([x for x in _world_rows() if str(x.get('country_code') or '').upper()==c]),"news":len(_nexus_news_rows(country=c,limit=100)),"opportunities":len(_nexus_opportunity_rows(country=c,limit=100))})
+    return _nexus_shell("NEXUS Country Comparison",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Africa / Comparison</div><h1>Country Comparison</h1><form class="nxsearch"><input name="countries" value="{{ codes }}" placeholder="Country codes, e.g. ZM,ZA,NG,KE"><button class="btn">Compare</button></form></div><div class="nxgrid">{% for x in rows %}<section class="nxcard"><h2>{{ x.name }}</h2><div class="nxstat"><strong>{{ x.services }}</strong><span>Indexed services</span></div><div class="nxstat"><strong>{{ x.news }}</strong><span>News items</span></div><div class="nxstat"><strong>{{ x.opportunities }}</strong><span>Opportunities</span></div></section>{% endfor %}</div>
+''',rows=rows,codes=','.join(codes))
+
+@app.route("/nexus/services")
+def nexus_services():
+    q=clean(request.args.get("q")); country=clean(request.args.get("country")).upper(); category=clean(request.args.get("category")); rows=[x for x in _world_rows() if _world_matches(x,q,country,category)]
+    return _nexus_shell("NEXUS Services",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Services</div><h1>Public & Government Services</h1><p>Discover government, immigration, tax, registration, healthcare, education, transport, utilities and emergency services. Verification remains explicit.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Search services..."><select name="country"><option value="">All Africa</option>{% for c,n in countries %}<option value="{{ c }}" {% if country==c %}selected{% endif %}>{{ n }}</option>{% endfor %}</select><select name="category"><option value="">All categories</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select><button class="btn">Search</button></form></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">{{ x.category or 'Public Service' }}</span><h2>{{ service_name(x) }}</h2><div class="nxmuted">{{ x.country_code }} · {{ x.country_name }}</div><p>{{ x.description or '' }}</p><span class="nxpill {% if not verified(x) %}nxpending{% endif %}">{{ 'Verified' if verified(x) else 'Verification pending' }}</span><span class="nxpill">Official provider</span><div class="nxactions"><a class="btn" href="{{ url_for('nexus_service',id=x.id) }}">Explore service</a></div></article>{% else %}<div class="nxcard"><h3>No matching services.</h3></div>{% endfor %}</div>''',q=q,country=country,category=category,countries=KOJA_AFRICA_54,categories=KOJA_WORLD_CATEGORIES,rows=rows,service_name=_world_service_name,verified=_world_verified)
+
+@app.route("/nexus/services/<id>")
+def nexus_service(id):
+    row=first_row("koja_world_services",{"id":id})
+    if not row or not _world_active(row): abort(404)
+    return _nexus_shell("NEXUS Service",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Services / {{ row.country_code }}</div><h1>{{ service_name(row) }}</h1><p>{{ row.description or 'This service is indexed in KOJA NEXUS.' }}</p><span class="nxpill">{{ row.category or 'Public Service' }}</span><span class="nxpill {% if not verified(row) %}nxpending{% endif %}">{{ 'Verified' if verified(row) else 'Verification pending' }}</span><span class="nxpill">Official provider</span><div class="nxactions">{% if target %}<a class="btn" href="{{ target }}" target="_blank" rel="noopener">Open official service</a>{% endif %}<a class="btn secondary" href="{{ url_for('nexus_country',country=row.country_code|lower) }}">Country profile</a><a class="btn secondary" href="{{ url_for('nexus_save_action',item_type='service',item_id=row.id) }}">Save</a></div></div><div class="nxgrid"><section class="nxcard"><h2>Trust & provider</h2><p class="nxmuted">KOJA NEXUS is the discovery layer. The official provider controls applications, accounts, eligibility and transactions.</p><strong>{{ 'Verified' if verified(row) else 'Verification pending' }}</strong></section><section class="nxcard"><h2>Related discovery</h2><div class="nxactions"><a class="btn secondary" href="{{ url_for('nexus_search',country=row.country_code) }}">More in {{ row.country_code }}</a><a class="btn secondary" href="{{ url_for('nexus_news') }}">Africa Now</a></div></section></div>''',row=row,target=_world_clean_url(first_nonempty(row.get('official_url'),row.get('url'))),service_name=_world_service_name,verified=_world_verified)
+
+@app.route("/nexus/business")
+def nexus_business():
+    q=clean(request.args.get("q")); country=clean(request.args.get("country")).upper(); rows=_nexus_business_rows(q,country)
+    return _nexus_shell("NEXUS Business",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Business</div><h1>African Business Directory</h1><p>Discover businesses indexed from the existing KOJA BUSINESS data layer.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Business, industry, service..."><select name="country"><option value="">All Africa</option>{% for c,n in countries %}<option value="{{ c }}" {% if country==c %}selected{% endif %}>{{ n }}</option>{% endfor %}</select><button class="btn">Search</button></form></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">Business</span><h2>{{ x.name or x.business_name or 'Business' }}</h2><div class="nxmuted">{{ x.country_name or x.country or 'Africa' }}</div><p>{{ x.description or x.about or 'Business profile available through KOJA.' }}</p><div class="nxactions"><a class="btn" href="{{ url_for('nexus_business_detail',id=x.id) }}">Business profile</a></div></article>{% else %}<div class="nxcard"><h3>No matching businesses</h3><p class="nxmuted">NEXUS does not fabricate business listings.</p></div>{% endfor %}</div>
+''',q=q,country=country,countries=KOJA_AFRICA_54,rows=rows)
+
+@app.route("/nexus/business/<id>")
+def nexus_business_detail(id):
+    row=first_row("koja_business_profiles",{"id":id})
+    if not row: abort(404)
+    return _nexus_shell("NEXUS Business Profile",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Business / {{ row.name or row.business_name }}</div><h1>{{ row.name or row.business_name or 'Business' }}</h1><p>{{ row.description or row.about or 'Business profile from the existing KOJA BUSINESS directory.' }}</p><div class="nxactions"><a class="btn" href="{{ '/business/' ~ row.id ~ '/hub' }}">Continue to KOJA BUSINESS</a><a class="btn secondary" href="{{ url_for('nexus_save_action',item_type='business',item_id=row.id) }}">Save</a></div></div><div class="nxgrid"><section class="nxcard"><h2>Business information</h2>{% for k,v in row.items() if k in ['country','country_name','country_code','industry','category','email','phone','website','description'] and v %}<div class="nxitem"><strong>{{ k|replace('_',' ')|title }}</strong><div class="nxmuted">{{ v }}</div></div>{% endfor %}</section><section class="nxcard"><h2>B2B</h2><p class="nxmuted">Use KOJA BUSINESS and B2B workflows for RFQs, suppliers, buyers, quotations and transactions.</p><div class="nxactions"><a class="btn" href="{{ url_for('nexus_b2b') }}">Open B2B Network</a></div></section></div>
+''',row=row)
+
+@app.route("/nexus/b2b")
+def nexus_b2b():
+    return _nexus_shell("NEXUS B2B",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Business / B2B</div><h1>African B2B Network</h1><p>Discover suppliers, buyers, distributors, service providers, investors and RFQ workflows, then continue into KOJA BUSINESS.</p></div><div class="nxgrid4">{% for title,desc,url in [('Suppliers','Find African suppliers','/business-directory'),('Buyers','Connect with buyers','/business/connect-plus/rfqs'),('Investors','Explore investor connections','/business/connect-plus/investors'),('RFQ','Request quotations','/business/connect-plus/rfqs'),('Partnerships','Build partnerships','/business/connect-plus/investments'),('African Trade','Continue into business commerce','/business-directory') ] %}<a class="nxcard" href="{{ url }}"><h3>{{ title }}</h3><div class="nxmuted">{{ desc }}</div></a>{% endfor %}</div>''')
+
+@app.route("/nexus/news")
+def nexus_news():
+    category=clean(request.args.get("category")); country=clean(request.args.get("country")).upper(); rows=_nexus_news_rows(category=category,country=country,limit=100)
+    cats=['Top Stories','Latest','Politics','Business','Economy','Technology','Education','Health','Science','Sports','Culture']
+    return _nexus_shell("NEXUS Africa Now",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Africa Now</div><h1>Africa Now</h1><p>Current African news and opportunity information from the existing KOJA Africa Now collector.</p><div class="nxactions">{% for c in cats %}<a class="btn secondary" href="{{ url_for('nexus_news',category=c) }}">{{ c }}</a>{% endfor %}</div></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">{{ x.category or 'Africa' }}</span><h2>{{ x.title }}</h2><div class="nxmuted">{{ x.country or 'Africa' }} · {{ x.source_name or 'Source' }}</div><p>{{ x.summary or '' }}</p>{% if x.url %}<div class="nxactions"><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener">Open story</a></div>{% endif %}</article>{% else %}<div class="nxcard"><h3>No stories in this filter.</h3></div>{% endfor %}</div>
+''',rows=rows,cats=cats)
+
+@app.route("/nexus/market")
+def nexus_market():
+    rows=_nexus_market_rows(clean(request.args.get("q")),100)
+    return _nexus_shell("NEXUS Market",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Market</div><h1>African Market Discovery</h1><p>Market and commerce information assembled from existing KOJA market data. For live financial data, NEXUS links to the existing market intelligence layer.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Products, companies, markets..."><button class="btn">Search Market</button></form></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">Market</span><h2>{{ x.name or x.title or x.product_name or 'Market item' }}</h2><div class="nxmuted">{{ x.category or x.industry or 'Market' }}</div><p>{{ x.description or x.summary or '' }}</p></article>{% else %}<div class="nxcard"><h3>Market snapshot</h3><p class="nxmuted">Existing KOJA market data is available through the specialised KOJA MARKET module.</p><a class="btn" href="/market">Open KOJA MARKET</a></div>{% endfor %}</div>''',rows=rows,q=clean(request.args.get("q")))
+
+@app.route("/nexus/opportunities")
+def nexus_opportunities():
+    q=clean(request.args.get("q")); country=clean(request.args.get("country")).upper(); rows=_nexus_opportunity_rows(q,country,100)
+    return _nexus_shell("NEXUS Opportunities",r'''
+<div class="nxhero"><div class="nxcrumb">NEXUS / Opportunities</div><h1>Africa Opportunities</h1><p>Jobs, scholarships, internships, fellowships, grants, tenders, contracts, procurement, investment and partnerships are surfaced only when indexed from existing sources.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Jobs, grants, scholarships, tenders..."><select name="country"><option value="">All Africa</option>{% for c,n in countries %}<option value="{{ c }}" {% if country==c %}selected{% endif %}>{{ n }}</option>{% endfor %}</select><button class="btn">Search</button></form></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">{{ x.job_type or x.opportunity_type or 'Opportunity' }}</span><h2>{{ x.title }}</h2><div class="nxmuted">{{ x.country or 'Africa' }} · {{ x.source_name or 'Source' }}</div><p>{{ x.summary or '' }}</p>{% if x.url %}<div class="nxactions"><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener">View opportunity</a></div>{% endif %}</article>{% else %}<div class="nxcard"><h3>No current opportunities found.</h3></div>{% endfor %}</div>''',q=q,country=country,countries=KOJA_AFRICA_54,rows=rows)
+
+@app.route("/nexus/opportunities/<id>")
+def nexus_opportunity_detail(id):
+    row=first_row("koja_nexus_africa_now",{"id":id})
+    if not row: abort(404)
+    return _nexus_shell("NEXUS Opportunity",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Opportunities</div><h1>{{ row.title }}</h1><p>{{ row.summary or '' }}</p><div class="nxactions">{% if row.url %}<a class="btn" href="{{ row.url }}" target="_blank" rel="noopener">Open source / Apply</a>{% endif %}<a class="btn secondary" href="{{ url_for('nexus_save_action',item_type='opportunity',item_id=row.id) }}">Save</a></div></div><div class="nxcard"><div class="nxpill">{{ row.job_type or 'Opportunity' }}</div><p>{{ row.summary or 'Opportunity information from the Africa Now collector.' }}</p><div class="nxmuted">Country: {{ row.country or 'Africa' }} · Source: {{ row.source_name or 'Source' }}</div></div>''',row=row)
+
+@app.route("/nexus/education")
+def nexus_education():
+    rows=_nexus_safe_rows("koja_core_organizations",order="created_at.desc",limit=200)
+    rows=[r for r in rows if any(w in _nexus_text(r).lower() for w in ("univers", "college", "education", "school"))][:100]
+    return _nexus_shell("NEXUS Education",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Education & Research</div><h1>Education & Research</h1><p>Discover indexed universities, colleges, research institutions and academic opportunities, then continue into KOJA EDUCATION where available.</p></div><div class="nxgrid">{% for x in rows %}<div class="nxcard"><h2>{{ x.name or x.organization_name or 'Institution' }}</h2><div class="nxmuted">{{ x.country_name or x.country or 'Africa' }}</div></div>{% else %}<div class="nxcard"><h3>KOJA EDUCATION</h3><p class="nxmuted">No indexed institution records are available in the current NEXUS data layer.</p><a class="btn" href="/education">Open KOJA EDUCATION</a></div>{% endfor %}</div>''',rows=rows)
+
+@app.route("/nexus/organisations")
+def nexus_organisations():
+    rows=_nexus_safe_rows("koja_core_organizations",order="created_at.desc",limit=300)
+    return _nexus_shell("NEXUS Organisations",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Organisations</div><h1>Organisations</h1><p>Discover indexed government institutions, companies, universities, NGOs, financial institutions, media and research organisations.</p></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">{{ x.organization_type or x.type or 'Organisation' }}</span><h2>{{ x.name or x.organization_name or 'Organisation' }}</h2><div class="nxmuted">{{ x.country_name or x.country or 'Africa' }}</div><p>{{ x.description or '' }}</p>{% if x.id %}<div class="nxactions"><a class="btn" href="{{ url_for('nexus_organisation_detail',id=x.id) }}">Profile</a></div>{% endif %}</article>{% else %}<div class="nxcard"><h3>No indexed organisations.</h3></div>{% endfor %}</div>''',rows=rows)
+
+@app.route("/nexus/organisation/<id>")
+def nexus_organisation_detail(id):
+    row=first_row("koja_core_organizations",{"id":id})
+    if not row: abort(404)
+    return _nexus_shell("NEXUS Organisation",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Organisations</div><h1>{{ row.name or row.organization_name or 'Organisation' }}</h1><p>{{ row.description or '' }}</p><div class="nxactions"><a class="btn" href="{{ url_for('nexus_save_action',item_type='organisation',item_id=row.id) }}">Save</a><a class="btn secondary" href="{{ url_for('nexus_connect') }}">Connect</a></div></div><div class="nxcard">{% for k,v in row.items() if v and k not in ['id'] %}<div class="nxitem"><strong>{{ k|replace('_',' ')|title }}</strong><div class="nxmuted">{{ v }}</div></div>{% endfor %}</div>''',row=row)
+
+@app.route("/nexus/trade")
+def nexus_trade():
+    return _nexus_shell("NEXUS Trade",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Trade</div><h1>African Trade</h1><p>Discover trade opportunities and continue into KOJA BUSINESS/B2B for RFQs, buyers, suppliers, quotations and execution.</p></div><div class="nxgrid4">{% for t,d,u in [('Suppliers','Find suppliers across Africa','/business-directory'),('Buyers','Discover buyer/RFQ workflows','/business/connect-plus/rfqs'),('Investors','Explore investment connections','/business/connect-plus/investors'),('Partnerships','Connect businesses and organisations','/business/connect-plus/investments')]}<a class="nxcard" href="{{ u }}"><h3>{{ t }}</h3><div class="nxmuted">{{ d }}</div></a>{% endfor %}</div>''')
+
+@app.route("/nexus/intelligence")
+def nexus_intelligence():
+    return _nexus_shell("NEXUS Intelligence",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Africa Intelligence</div><h1>Africa Intelligence</h1><p>NEXUS intelligence is an aggregation layer over verified/indexed country, business, market, news, economic, industry and opportunity information. It does not invent facts or verification.</p></div><div class="nxgrid4">{% for t,d in [('Country Intelligence','Country profiles, services, news and opportunities.'),('Business Intelligence','Businesses, organisations and B2B discovery.'),('Market Intelligence','Market and commerce information.'),('News Intelligence','Africa Now stories and source signals.'),('Economic Intelligence','Economic and market indicators when available.'),('Industry Intelligence','Industry and business discovery.'),('Opportunity Intelligence','Jobs and opportunity signals.')]}<div class="nxcard"><h3>{{ t }}</h3><div class="nxmuted">{{ d }}</div><div class="nxactions"><a class="btn secondary" href="{{ url_for('nexus_search') }}">Explore</a></div></div>{% endfor %}</div>''')
+
+@app.route("/nexus/saved")
+def nexus_saved():
+    return _nexus_shell("NEXUS Saved",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Saved</div><h1>Saved Discovery</h1><p>Your saved NEXUS items are kept in your current KOJA session until persistent NEXUS storage is enabled.</p></div><div class="nxgrid">{% for x in saved %}<div class="nxcard"><span class="nxpill">{{ x.type }}</span><h3>{{ x.id }}</h3><a class="btn secondary" href="{{ url_for('nexus_unsave_action',item_type=x.type,item_id=x.id) }}">Remove</a></div>{% else %}<div class="nxcard"><h3>No saved items</h3><p class="nxmuted">Use Save on a NEXUS business, organisation or opportunity.</p></div>{% endfor %}</div>''',saved=_nexus_saved())
+
+@app.route("/nexus/save/<item_type>/<item_id>")
+def nexus_save_action(item_type,item_id):
+    _nexus_save(item_type,item_id); flash("Saved to KOJA NEXUS.","success"); return redirect(request.referrer or url_for("nexus_saved"))
+
+@app.route("/nexus/unsave/<item_type>/<item_id>")
+def nexus_unsave_action(item_type,item_id):
+    _nexus_unsave(item_type,item_id); flash("Removed from NEXUS saved items.","success"); return redirect(request.referrer or url_for("nexus_saved"))
+
+@app.route("/nexus/connect")
+def nexus_connect():
+    return _nexus_shell("NEXUS Connect",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Connect</div><h1>Connect & Continue</h1><p>NEXUS identifies the next action; specialised KOJA services execute it.</p></div><div class="nxgrid4">{% for t,d,u in [('Contact','Use KOJA CONNECT+ for communication and contacts.','/communication-next'),('Request Information','Contact the relevant organisation or service.','/communication-next'),('Request Quotation','Use KOJA BUSINESS RFQ workflows.','/business/connect-plus/rfqs'),('Apply','Open the official provider or opportunity source.','/nexus/opportunities'),('Connect','Continue into KOJA CONNECT+.','/communication-next')]}<a class="nxcard" href="{{ u }}"><h3>{{ t }}</h3><div class="nxmuted">{{ d }}</div></a>{% endfor %}</div>''')
+
 
 @app.route("/world/service/<service_id>")
 def koja_nexus_service_details(service_id):
@@ -14594,6 +14796,32 @@ def koja_nexus_meta_api():
 @app.route("/api/nexus/services")
 def koja_nexus_services_api_alias():
     return koja_world_services_api()
+
+
+@app.route("/admin/nexus/<section>")
+@admin_required
+def admin_nexus_section(section):
+    allowed={"countries","services","businesses","organisations","opportunities","news","market","verification","categories","partners","search-index","analytics"}
+    if section not in allowed: abort(404)
+    service_rows=_world_rows(include_inactive=True)
+    datasets={
+        "countries": list(KOJA_AFRICA_54),
+        "services": service_rows,
+        "businesses": _nexus_safe_rows("koja_business_profiles",order="created_at.desc",limit=500),
+        "organisations": _nexus_safe_rows("koja_core_organizations",order="created_at.desc",limit=500),
+        "opportunities": _nexus_opportunity_rows(limit=500),
+        "news": _nexus_news_rows(limit=500),
+        "market": _nexus_market_rows(limit=500),
+        "verification": [x for x in service_rows if not _world_verified(x)],
+        "categories": sorted(set([str(x.get("category") or "Other") for x in service_rows])),
+        "partners": _nexus_safe_rows("koja_connectplus_partnerships",order="created_at.desc",limit=500),
+        "search-index": service_rows+_nexus_safe_rows("koja_business_profiles",order="created_at.desc",limit=500),
+        "analytics": [],
+    }
+    if section=="analytics":
+        datasets[section]=[{"metric":"countries","value":len(KOJA_AFRICA_54)},{"metric":"services","value":len(service_rows)},{"metric":"verified_services","value":sum(1 for x in service_rows if _world_verified(x))},{"metric":"business_profiles","value":len(datasets["businesses"])},{"metric":"organisations","value":len(datasets["organisations"])},{"metric":"news_items","value":len(datasets["news"])},{"metric":"opportunities","value":len(datasets["opportunities"])}]
+    rows=datasets[section]
+    return render_page("NEXUS Admin · "+section.replace("-"," ").title(),r'''<style>.nxa{max-width:1400px;margin:auto}.nxa-nav{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}.nxa-nav a{padding:8px 10px;border:1px solid rgba(90,110,135,.2);border-radius:999px;text-decoration:none;color:inherit;font-size:12px}.nxa-table{overflow:auto}.nxa-table table{width:100%;border-collapse:collapse;min-width:700px}.nxa-table th,.nxa-table td{padding:9px;border-bottom:1px solid rgba(90,110,135,.15);text-align:left;font-size:12px}@media(max-width:850px){.nxa-nav{max-height:160px;overflow:auto}}</style><div class="nxa"><div class="hero"><h1>KOJA NEXUS Admin</h1><p>Control-plane view for {{ section.replace('-',' ').title() }}. Existing authoritative datasets remain unchanged.</p></div><nav class="nxa-nav"><a href="{{ url_for('admin_koja_nexus') }}">Dashboard</a>{% for x in sections %}<a href="{{ url_for('admin_nexus_section',section=x) }}">{{ x.replace('-',' ').title() }}</a>{% endfor %}</nav><div class="card"><strong>{{ rows|length }}</strong> records / items</div><div class="card nxa-table" style="margin-top:14px"><table><thead><tr><th>Identity</th><th>Country / Category</th><th>Status / Details</th></tr></thead><tbody>{% for r in rows[:300] %}<tr><td><strong>{{ r.name or r.business_name or r.organization_name or r.title or r.metric or r[1] or r[0] or 'Record' }}</strong><br><small>{{ r.id or r.code or '' }}</small></td><td>{{ r.country_name or r.country or r.country_code or r.category or r.metric or '' }}</td><td>{% if r.verified is defined %}{{ 'VERIFIED' if r.verified else 'PENDING' }}{% elif r.status is defined %}{{ r.status }}{% elif r.value is defined %}{{ r.value }}{% else %}Indexed{% endif %}</td></tr>{% else %}<tr><td colspan="3">No records currently available.</td></tr>{% endfor %}</tbody></table></div></div>''',rows=rows,section=section,sections=sorted(allowed))
 
 @app.route("/admin/nexus", methods=["GET", "POST"])
 @admin_required
