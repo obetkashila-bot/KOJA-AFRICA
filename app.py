@@ -2972,8 +2972,6 @@ def assignments():
             })
         row,error=db_insert("assignments",payload)
         if error:
-            if uploaded:
-                delete_storage_path(uploaded.get("path"))
             minimal={"id":payload["id"],"title":title,"description":description,
                       "student_id":user["id"],"user_id":user["id"],
                       "owner_id":user["id"],"sender_id":user["id"],
@@ -2982,9 +2980,15 @@ def assignments():
                 minimal.update({"file_name":uploaded["file_name"],"file_path":uploaded["path"],"file_url":uploaded["url"]})
             row,error=db_insert("assignments",minimal)
         if error:
+            if uploaded:
+                delete_storage_path(uploaded.get("path"))
             flash("Assignment could not be saved. Check assignments table columns.","danger")
         else:
             flash("Assignment uploaded successfully.","success")
+            try:
+                if row:
+                    threading.Thread(target=_academic_process_assignment,args=(row,),daemon=True).start()
+            except Exception: logger.exception('Academic assignment processing could not be queued')
         return redirect(url_for("assignments"))
 
     if user.get("is_admin"):
@@ -17449,6 +17453,452 @@ def admin_academic_teacher_status(teacher_id,status):
     notify_user(t.get('user_id'),'KOJA Teacher profile update',f'Your KOJA Academic teacher profile is now {status}.','academic',teacher_id,'/academic/teacher/dashboard')
     flash('Teacher status updated.','success')
     return redirect(url_for('admin_academic'))
+
+
+
+# ============================================================
+# KOJA ACADEMIC V2 — payments, matching, workflow, materials,
+# attendance, reviews, earnings, withdrawals, Connect chat,
+# whiteboard state and assignment intelligence/OCR.
+# Additive: existing KOJA routes and tables are preserved.
+# ============================================================
+ACADEMIC_INTEL_TABLE='koja_academic_assignment_intelligence'
+ACADEMIC_WITHDRAW_TABLE='koja_academic_withdrawals'
+ACADEMIC_WHITEBOARD_TABLE='koja_academic_whiteboard'
+ACADEMIC_CHAT_TABLE='koja_academic_class_chat'
+ACADEMIC_MATCH_TABLE='koja_academic_assignment_matches'
+ACADEMIC_COMMISSION=float(os.getenv('KOJA_ACADEMIC_COMMISSION_PERCENT','15'))
+ACADEMIC_MIN_WITHDRAWAL=float(os.getenv('KOJA_ACADEMIC_MIN_WITHDRAWAL','50'))
+
+
+def _academic_teacher_uid(class_row):
+    return str((class_row or {}).get('teacher_user_id') or '')
+
+
+def _academic_amount(v):
+    try: return round(float(v or 0),2)
+    except Exception: return 0.0
+
+
+def _academic_tx_ref(kind, row_id):
+    return 'KOJA-ACADEMIC-'+str(kind).upper()+'-'+str(row_id)+'-'+secrets.token_hex(5).upper()
+
+
+def _academic_allowed_assignment(a, uid):
+    return bool(a and (str(assignment_owner_id(a))==str(uid) or (current_user() or {}).get('is_admin')))
+
+
+def _academic_extract_assignment_file(a):
+    path=a.get('file_path') or a.get('storage_path') or a.get('file_url') or ''
+    if not path: return ''
+    # Only local files are directly readable. Storage extraction is attempted below when available.
+    data=b''
+    try:
+        if path.startswith('/') and os.path.exists(path): data=open(path,'rb').read()
+        elif path.startswith('http'):
+            r=requests.get(path,timeout=30); data=r.content if r.ok else b''
+    except Exception: data=b''
+    name=str(a.get('original_filename') or a.get('filename') or path).lower()
+    if not data and path and supabase_configured():
+        try:
+            rr=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
+            if rr.ok: data=rr.content
+        except Exception: logger.exception('Academic assignment storage download failed')
+    if not data: return ''
+    try:
+        if not data and path and supabase_configured():
+            rr=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
+            if rr.ok: data=rr.content
+        if not data and name.lower().endswith(('.jpg','.jpeg','.png','.webp')):
+            return ''
+        if name.endswith('.pdf') and PdfReader:
+            import io
+            reader=PdfReader(io.BytesIO(data)); return '\n'.join((p.extract_text() or '') for p in reader.pages).strip()
+        if name.endswith(('.docx','.doc')) and DocxDocument:
+            import io
+            d=DocxDocument(io.BytesIO(data)); return '\n'.join(x.text for x in d.paragraphs if x.text).strip()
+        if name.endswith(('.txt','.csv','.md')): return data.decode('utf-8','ignore').strip()
+    except Exception: logger.exception('Academic assignment extraction failed')
+    if data and name.endswith(('.jpg','.jpeg','.png','.webp')):
+        return _academic_ocr_bytes(data,name)
+    return ''
+
+
+def _academic_ocr_bytes(data, filename=''):
+    try:
+        from PIL import Image
+        import io
+        img=Image.open(io.BytesIO(data))
+        try:
+            import pytesseract
+            return pytesseract.image_to_string(img).strip()
+        except Exception:
+            return ''
+    except Exception:
+        return ''
+
+
+def _academic_process_assignment(a):
+    aid=str(a.get('id'))
+    existing=first_row(ACADEMIC_INTEL_TABLE,{'assignment_id':aid})
+    payload={'assignment_id':aid,'owner_id':assignment_owner_id(a),'stage':'PROCESSING','updated_at':utc_now()}
+    if existing: db_update(ACADEMIC_INTEL_TABLE,{'assignment_id':aid},payload)
+    else: db_insert(ACADEMIC_INTEL_TABLE,payload)
+    text=_academic_extract_assignment_file(a)
+    if not text:
+        text=clean(a.get('description'))
+    if text:
+        stage='QUESTIONS IDENTIFIED'
+        prompt=('Extract the academic questions from the source text below. Preserve the original wording exactly; '
+                'do not paraphrase, correct grammar, invent missing content, or change numbering. Return JSON only with '
+                'keys questions (array of strings), subject, level, topics, confidence. If diagrams/equations are unclear, '
+                'state that in topics. SOURCE:\n'+text[:30000])
+        ai_raw=''
+        try: ai_raw=_ai_call(prompt,'You are KOJA Academic extraction engine. Preserve source wording exactly.',max_output_tokens=12000)
+        except Exception: logger.exception('Academic extraction AI failed')
+        parsed={}
+        try:
+            raw=ai_raw.strip().replace('```json','').replace('```','').strip(); parsed=json.loads(raw)
+        except Exception: parsed={}
+        questions=parsed.get('questions') if isinstance(parsed,dict) else []
+        if not isinstance(questions,list): questions=[]
+        payload.update({'stage':'AI ANALYSIS','extracted_text':text[:100000],'questions_json':json.dumps(questions,ensure_ascii=False),'subject':clean(parsed.get('subject')) if isinstance(parsed,dict) else '','level':clean(parsed.get('level')) if isinstance(parsed,dict) else '','topics':json.dumps(parsed.get('topics') or [],ensure_ascii=False) if isinstance(parsed,dict) else '[]','ai_analysis':ai_raw[:30000],'updated_at':utc_now()})
+        db_update(ACADEMIC_INTEL_TABLE,{'assignment_id':aid},payload)
+        return True
+    db_update(ACADEMIC_INTEL_TABLE,{'assignment_id':aid},{'stage':'MANUAL REVIEW / OCR REQUIRED','updated_at':utc_now()})
+    return False
+
+
+def _academic_match_teachers(intel):
+    teachers=db_select(ACADEMIC_TEACHER_TABLE,{'status':'verified'},order='rating.desc,completed_sessions.desc',limit=100) or []
+    subject=clean(intel.get('subject')).lower(); level=clean(intel.get('level')).lower(); topics=clean(intel.get('topics')).lower()
+    scored=[]
+    for t in teachers:
+        blob=' '.join(str(t.get(k) or '') for k in ('subjects','levels','topics','bio')).lower()
+        score=(5 if subject and subject in blob else 0)+(3 if level and level in blob else 0)+(2 if any(x and x in blob for x in topics.replace('[','').replace(']','').replace('"','').split(',')) else 0)+min(2,float(t.get('rating') or 0)/5)
+        scored.append((score,t))
+    matched=[(score,t) for score,t in sorted(scored,key=lambda x:x[0],reverse=True)[:10]]
+    assignment_id=intel.get('assignment_id') if intel else None
+    if assignment_id:
+        for score,t in matched:
+            existing=first_row(ACADEMIC_MATCH_TABLE,{'assignment_id':assignment_id,'teacher_user_id':t.get('user_id')})
+            if not existing:
+                db_insert(ACADEMIC_MATCH_TABLE,{'id':str(uuid.uuid4()),'assignment_id':assignment_id,'teacher_id':t.get('id'),'teacher_user_id':t.get('user_id'),'score':round(float(score),4),'status':'suggested','created_at':utc_now()})
+    return [t for _,t in matched]
+
+
+def _academic_finalize_payment(tx_ref,tx):
+    if not _flutterwave_payment_valid(tx,tx_ref,0,tx.get('currency') or 'ZMW'):
+        return False
+    # Tutoring
+    sess=first_row(ACADEMIC_TUTOR_TABLE,{'payment_reference':tx_ref})
+    if sess:
+        if not _flutterwave_payment_valid(tx,tx_ref,sess.get('amount'),sess.get('currency') or 'ZMW'): return False
+        if str(sess.get('payment_status'))!='paid':
+            db_update(ACADEMIC_TUTOR_TABLE,{'id':sess['id']},{'payment_status':'paid','payment_transaction_id':str(tx.get('id') or ''),'status':'confirmed','updated_at':utc_now()})
+            _academic_post_earnings(sess.get('teacher_user_id'),sess.get('id'),'tutoring',sess.get('amount'),sess.get('currency') or 'ZMW',tx_ref,str(tx.get('id') or ''),sess.get('learner_user_id'))
+            notify_user(sess.get('teacher_user_id'),'Tutoring payment confirmed','A learner payment has been verified.','academic',sess.get('id'),'/academic/teacher/dashboard')
+        return True
+    enr=first_row(ACADEMIC_ENROLL_TABLE,{'payment_reference':tx_ref})
+    if enr:
+        cls=_academic_class(enr.get('class_id'))
+        if not cls or not _flutterwave_payment_valid(tx,tx_ref,cls.get('price_per_learner'),cls.get('currency') or 'ZMW'): return False
+        db_update(ACADEMIC_ENROLL_TABLE,{'id':enr['id']},{'payment_status':'paid','status':'enrolled','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
+        _academic_post_earnings(_academic_teacher_uid(cls),enr.get('id'),'class',cls.get('price_per_learner'),cls.get('currency') or 'ZMW',tx_ref,str(tx.get('id') or ''),enr.get('learner_user_id'))
+        notify_user(enr.get('learner_user_id'),'Class enrollment confirmed',f'You are enrolled in {cls.get("title")}.','academic',cls.get('id'),f'/academic/classes/{cls.get("id")}')
+        return True
+    return False
+
+
+def _academic_post_earnings(teacher_user_id,source_id,kind,gross,currency='ZMW',payment_reference=None,payment_transaction_id=None,learner_user_id=None):
+    gross=_academic_amount(gross); commission=round(gross*ACADEMIC_COMMISSION/100,2); net=round(gross-commission,2)
+    existing=first_row(ACADEMIC_LEDGER_TABLE,{'source_id':source_id})
+    if existing: return existing
+    row,err=db_insert(ACADEMIC_LEDGER_TABLE,{'id':str(uuid.uuid4()),'teacher_user_id':teacher_user_id,'source_id':source_id,'source_type':kind,'gross_amount':gross,'platform_commission':commission,'net_amount':net,'currency':currency,'status':'posted','payment_reference':payment_reference,'payment_transaction_id':payment_transaction_id,'learner_user_id':learner_user_id,'created_at':utc_now()})
+    return row
+
+
+def _academic_connect_teacher(teacher_uid,subject):
+    try: return _direct_conversation(_academic_uid(),teacher_uid)
+    except Exception: return None
+
+
+@app.route('/academic/assignment/<assignment_id>/intelligence')
+@login_required
+def academic_assignment_intelligence(assignment_id):
+    a=first_row('assignments',{'id':assignment_id})
+    if not _academic_allowed_assignment(a,_academic_uid()): abort(403)
+    intel=first_row(ACADEMIC_INTEL_TABLE,{'assignment_id':assignment_id})
+    if not intel:
+        _academic_process_assignment(a); intel=first_row(ACADEMIC_INTEL_TABLE,{'assignment_id':assignment_id})
+    teachers=_academic_match_teachers(intel or {})
+    return render_page('Assignment Intelligence',r'''<div class="hero"><h1>KOJA Assignment Intelligence</h1><p>Pipeline: {{ i.stage if i else 'PROCESSING' }}</p></div><div class="card"><h2>Extracted Questions</h2><pre style="white-space:pre-wrap">{{ questions }}</pre><p>{{ i.ai_analysis if i else '' }}</p></div><div class="card"><h2>Recommended Teachers</h2>{% for t in teachers %}<div class="actions"><strong>{{ t.display_name }}</strong><span>{{ t.subjects }}</span><a class="btn" href="{{ url_for('academic_teacher_book',teacher_id=t.id) }}">Request Teacher</a></div>{% else %}<p>No verified teacher matched yet.</p>{% endfor %}</div>''',i=intel,questions=(json.loads(intel.get('questions_json') or '[]') if intel and str(intel.get('questions_json') or '').startswith('[') else []),teachers=teachers)
+
+
+@app.route('/academic/tutoring/request/<assignment_id>',methods=['GET','POST'])
+@login_required
+def academic_tutoring_request_v2(assignment_id):
+    a=first_row('assignments',{'id':assignment_id}); uid=_academic_uid()
+    if not _academic_allowed_assignment(a,uid): abort(403)
+    intel=first_row(ACADEMIC_INTEL_TABLE,{'assignment_id':assignment_id})
+    if not intel: _academic_process_assignment(a); intel=first_row(ACADEMIC_INTEL_TABLE,{'assignment_id':assignment_id})
+    teachers=_academic_match_teachers(intel or {})
+    if request.method=='POST':
+        teacher_id=clean(request.form.get('teacher_id')); teacher=first_row(ACADEMIC_TEACHER_TABLE,{'id':teacher_id,'status':'verified'})
+        if not teacher: flash('Teacher is unavailable.','danger'); return redirect(request.url)
+        row,err=db_insert(ACADEMIC_REQUEST_TABLE,{'id':str(uuid.uuid4()),'assignment_id':assignment_id,'learner_user_id':uid,'teacher_user_id':teacher.get('user_id'),'teacher_id':teacher_id,'status':'pending','subject':teacher.get('subjects'),'created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash('Could not create teacher request.','danger')
+        else:
+            notify_user(teacher.get('user_id'),'New Academic tutoring request','A learner requested your help with an assignment.','academic',row.get('id'),'/academic/teacher/dashboard')
+            flash('Teacher request sent.','success')
+        return redirect(url_for('academic_assignment_intelligence',assignment_id=assignment_id))
+    return render_page('Request Teacher',r'''<div class="hero"><h1>Request a Teacher</h1><p>KOJA matched verified teachers to this assignment.</p></div><div class="grid">{% for t in teachers %}<div class="card"><h2>{{ t.display_name }}</h2><p>{{ t.subjects }}</p><p>{{ t.qualifications or '' }}</p><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="teacher_id" value="{{ t.id }}"><button class="btn">Request this teacher</button></form></div>{% endfor %}</div>''',teachers=teachers)
+
+
+@app.route('/academic/teacher/requests')
+@login_required
+def academic_teacher_requests():
+    t=_academic_teacher_or_404(); rows=db_select(ACADEMIC_REQUEST_TABLE,{'teacher_user_id':_academic_uid()},order='created_at.desc',limit=100) or []
+    return render_page('Teacher Requests',r'''<div class="hero"><h1>Teacher Requests</h1></div><div class="card">{% for r in rows %}<div class="actions"><span><strong>{{ r.assignment_id }}</strong> · {{ r.status }}</span><form method="post" action="{{ url_for('academic_teacher_request_action',request_id=r.id,action='accept') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn success">Accept</button></form><form method="post" action="{{ url_for('academic_teacher_request_action',request_id=r.id,action='reject') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger">Reject</button></form></div>{% else %}<p>No requests.</p>{% endfor %}</div>''',teacher=t,rows=rows)
+
+
+@app.route('/academic/teacher/requests/<request_id>/<action>',methods=['POST'])
+@login_required
+def academic_teacher_request_action(request_id,action):
+    if action not in ('accept','reject'): abort(400)
+    r=first_row(ACADEMIC_REQUEST_TABLE,{'id':request_id,'teacher_user_id':_academic_uid()})
+    if not r: abort(404)
+    status='accepted' if action=='accept' else 'rejected'
+    db_update(ACADEMIC_REQUEST_TABLE,{'id':request_id},{'status':status,'responded_at':utc_now(),'updated_at':utc_now()})
+    if action=='accept':
+        teacher=first_row(ACADEMIC_TEACHER_TABLE,{'user_id':_academic_uid()})
+        price=_academic_amount(teacher.get('hourly_rate') or teacher.get('rate') or 0) if teacher else 0
+        sess,err=db_insert(ACADEMIC_TUTOR_TABLE,{'id':str(uuid.uuid4()),'assignment_id':r.get('assignment_id'),'learner_user_id':r.get('learner_user_id'),'teacher_user_id':_academic_uid(),'status':'confirmed','payment_status':'paid' if price<=0 else 'pending','amount':price,'currency':'ZMW','room_name':'koja-tutor-'+uuid.uuid4().hex,'created_at':utc_now(),'updated_at':utc_now()})
+        if sess and price<=0: _academic_post_earnings(_academic_uid(),sess.get('id'),'tutoring',0)
+        notify_user(r.get('learner_user_id'),'Teacher accepted your request','Your teacher has accepted the tutoring request.','academic',r.get('assignment_id'),'/academic')
+    else: notify_user(r.get('learner_user_id'),'Teacher request declined','The teacher could not take this request. You can choose another teacher.','academic',r.get('assignment_id'),'/academic/teachers')
+    return redirect(url_for('academic_teacher_requests'))
+
+
+@app.route('/academic/tutoring/<session_id>/pay',methods=['POST'])
+@login_required
+def academic_tutoring_pay(session_id):
+    s=first_row(ACADEMIC_TUTOR_TABLE,{'id':session_id,'learner_user_id':_academic_uid()})
+    if not s: abort(404)
+    if not FLW_SECRET_KEY: flash('Flutterwave is not configured.','warning'); return redirect(url_for('academic_tutoring',session_id=session_id))
+    tx_ref=_academic_tx_ref('TUTOR',session_id); db_update(ACADEMIC_TUTOR_TABLE,{'id':session_id},{'payment_reference':tx_ref,'payment_status':'pending','updated_at':utc_now()})
+    u=current_user() or {}; payload={'tx_ref':tx_ref,'amount':int(round(_academic_amount(s.get('amount')))),'currency':str(s.get('currency') or 'ZMW'),'email':clean(u.get('email')).lower(),'fullname':first_nonempty(u.get('name'),u.get('full_name'),u.get('email'),'KOJA Learner'),'phone_number':clean(u.get('phone')),'redirect_url':url_for('academic_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_academic_tutoring_id':session_id}}
+    try:
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=30); data=json_or_empty(r)
+        link=(data.get('data') or {}).get('link') if isinstance(data.get('data'),dict) else None
+        if link: return redirect(link)
+    except Exception: logger.exception('Academic tutoring payment error')
+    flash('Payment checkout could not be started.','danger'); return redirect(url_for('academic_tutoring',session_id=session_id))
+
+
+@app.route('/academic/classes/<class_id>/pay',methods=['POST'])
+@login_required
+def academic_class_pay(class_id):
+    e=first_row(ACADEMIC_ENROLL_TABLE,{'class_id':class_id,'learner_user_id':_academic_uid()})
+    c=_academic_class(class_id)
+    if not e or not c: abort(404)
+    if not FLW_SECRET_KEY: flash('Flutterwave is not configured.','warning'); return redirect(url_for('academic_class_detail',class_id=class_id))
+    tx_ref=_academic_tx_ref('CLASS',e.get('id')); db_update(ACADEMIC_ENROLL_TABLE,{'id':e['id']},{'payment_reference':tx_ref,'payment_status':'pending','status':'pending_payment','updated_at':utc_now()})
+    u=current_user() or {}; payload={'tx_ref':tx_ref,'amount':int(round(_academic_amount(c.get('price')))),'currency':str(c.get('currency') or 'ZMW'),'email':clean(u.get('email')).lower(),'fullname':first_nonempty(u.get('name'),u.get('full_name'),u.get('email'),'KOJA Learner'),'phone_number':clean(u.get('phone')),'redirect_url':url_for('academic_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_academic_enrollment_id':e.get('id'),'koja_academic_class_id':class_id}}
+    try:
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=30); data=json_or_empty(r); link=(data.get('data') or {}).get('link') if isinstance(data.get('data'),dict) else None
+        if link:return redirect(link)
+    except Exception: logger.exception('Academic class payment error')
+    flash('Payment checkout could not be started.','danger'); return redirect(url_for('academic_class_detail',class_id=class_id))
+
+
+@app.route('/academic/payment/callback')
+@login_required
+def academic_payment_callback():
+    tx_ref=clean(request.args.get('tx_ref') or request.args.get('transaction_reference')); tid=clean(request.args.get('transaction_id'))
+    tx=_flutterwave_verify(tid,tx_ref) if tx_ref else None
+    ok=bool(tx and _academic_finalize_payment(tx_ref,tx))
+    flash('Academic payment verified successfully.' if ok else 'Payment is still pending verification.','success' if ok else 'warning')
+    return redirect(url_for('academic'))
+
+
+@app.route('/academic/teacher/earnings')
+@login_required
+def academic_teacher_earnings():
+    t=_academic_teacher_or_404(); rows=db_select(ACADEMIC_LEDGER_TABLE,{'teacher_user_id':_academic_uid()},order='created_at.desc',limit=200) or []
+    available=sum(_academic_amount(x.get('net_amount')) for x in rows if str(x.get('status'))=='posted')
+    return render_page('Teacher Earnings',r'''<div class="hero"><h1>Teacher Earnings</h1><p>Gross, KOJA commission, net earnings and withdrawals.</p></div><div class="grid"><div class="card"><h3>Available</h3><h2>{{ money(available,'ZMW') }}</h2></div><div class="card"><h3>Commission</h3><h2>{{ commission }}%</h2></div></div><div class="card"><h2>Withdraw</h2><form method="post" action="{{ url_for('academic_withdraw') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input name="amount" type="number" step="0.01" min="{{ minimum }}" placeholder="Amount"><select name="method"><option value="mobile_money">Mobile Money</option><option value="bank">Bank</option></select><input name="destination" required placeholder="Destination/account"><button class="btn">Request Withdrawal</button></form></div><div class="card"><h2>Ledger</h2>{% for x in rows %}<p>{{ x.created_at }} · {{ money(x.net_amount,x.currency or 'ZMW') }} · {{ x.status }}</p>{% else %}<p>No earnings yet.</p>{% endfor %}</div>''',teacher=t,rows=rows,available=available,commission=ACADEMIC_COMMISSION,minimum=ACADEMIC_MIN_WITHDRAWAL,money=market_money)
+
+
+@app.route('/academic/teacher/withdraw',methods=['POST'])
+@login_required
+def academic_withdraw():
+    t=_academic_teacher_or_404(); amount=_academic_amount(request.form.get('amount')); method=clean(request.form.get('method')); dest=clean(request.form.get('destination'))
+    if amount<ACADEMIC_MIN_WITHDRAWAL: flash(f'Minimum withdrawal is {ACADEMIC_MIN_WITHDRAWAL:.2f} ZMW.','warning'); return redirect(url_for('academic_teacher_earnings'))
+    rows=db_select(ACADEMIC_LEDGER_TABLE,{'teacher_user_id':_academic_uid(),'status':'posted'},limit=500) or []; gross_available=sum(_academic_amount(x.get('net_amount')) for x in rows)
+    pending_rows=db_select(ACADEMIC_WITHDRAW_TABLE,{'teacher_user_id':_academic_uid(),'status':'in.({requested,processing})'},limit=500) or []
+    reserved=sum(_academic_amount(x.get('amount')) for x in pending_rows); available=max(0,gross_available-reserved)
+    if amount>available: flash('Withdrawal exceeds available earnings after pending withdrawals.','danger'); return redirect(url_for('academic_teacher_earnings'))
+    row,err=db_insert(ACADEMIC_WITHDRAW_TABLE,{'id':str(uuid.uuid4()),'teacher_user_id':_academic_uid(),'amount':amount,'currency':'ZMW','method':method,'destination':dest,'status':'requested','created_at':utc_now(),'updated_at':utc_now()})
+    if err: flash('Withdrawal request failed.','danger')
+    else: flash('Withdrawal requested for admin settlement.','success')
+    return redirect(url_for('academic_teacher_earnings'))
+
+
+@app.route('/academic/classes/<class_id>/attendance',methods=['POST'])
+@login_required
+def academic_attendance_event(class_id):
+    c=_academic_class(class_id); uid=_academic_uid()
+    if not c or (str(_academic_teacher_uid(c))!=str(uid) and not _academic_enrolled(class_id,uid)): abort(403)
+    event=clean((request.get_json(silent=True) or {}).get('event') or request.form.get('event')).lower()
+    if event not in ('join','leave'): abort(400)
+    if event=='join':
+        open_row=db_select(ACADEMIC_ATTENDANCE_TABLE,{'class_id':class_id,'learner_user_id':uid,'left_at':None},order='created_at.desc',limit=1)
+        if not open_row: db_insert(ACADEMIC_ATTENDANCE_TABLE,{'id':str(uuid.uuid4()),'class_id':class_id,'learner_user_id':uid,'user_id':uid,'joined_at':utc_now(),'event':'join','occurred_at':utc_now(),'created_at':utc_now()})
+    else:
+        open_row=db_select(ACADEMIC_ATTENDANCE_TABLE,{'class_id':class_id,'learner_user_id':uid,'left_at':None},order='created_at.desc',limit=1)
+        if open_row:
+            row=open_row[0]; joined=row.get('joined_at'); seconds=0
+            try: seconds=max(0,int((datetime.fromisoformat(utc_now())-datetime.fromisoformat(str(joined).replace('Z','+00:00'))).total_seconds()))
+            except Exception: pass
+            db_update(ACADEMIC_ATTENDANCE_TABLE,{'id':row.get('id')},{'left_at':utc_now(),'duration_seconds':seconds,'completed':seconds>=300,'event':'leave','occurred_at':utc_now()})
+    return jsonify(ok=True,event=event)
+
+
+@app.route('/api/academic/classes/<class_id>/presentation',methods=['GET','POST'])
+@login_required
+def academic_presentation(class_id):
+    c=_academic_class(class_id); uid=_academic_uid()
+    if not c or (str(_academic_teacher_uid(c))!=str(uid) and not _academic_enrolled(class_id,uid)): abort(403)
+    row=first_row(ACADEMIC_WHITEBOARD_TABLE,{'class_id':class_id})
+    state={}
+    try: state=json.loads((row or {}).get('state_json') or '{}')
+    except Exception: state={}
+    if request.method=='POST':
+        if str(_academic_teacher_uid(c))!=str(uid): abort(403)
+        d=request.get_json(silent=True) or {}; state['material_id']=d.get('material_id'); state['page']=d.get('page',1); state['updated_at']=utc_now()
+        if row: db_update(ACADEMIC_WHITEBOARD_TABLE,{'class_id':class_id},{'state_json':json.dumps(state),'updated_by':uid,'version':int(row.get('version') or 0)+1,'updated_at':utc_now()})
+        else: db_insert(ACADEMIC_WHITEBOARD_TABLE,{'id':str(uuid.uuid4()),'class_id':class_id,'state_json':json.dumps(state),'updated_by':uid,'version':1,'updated_at':utc_now()})
+        return jsonify(ok=True,state=state)
+    return jsonify(state=state)
+
+
+@app.route('/academic/classes/<class_id>/materials',methods=['GET','POST'])
+@login_required
+def academic_materials(class_id):
+    c=_academic_class(class_id); uid=_academic_uid()
+    if not c or (str(_academic_teacher_uid(c))!=str(uid) and not _academic_enrolled(class_id,uid)): abort(403)
+    if request.method=='POST':
+        if str(_academic_teacher_uid(c))!=str(uid): abort(403)
+        f=request.files.get('file')
+        if not f or not f.filename: flash('Select a material.','warning'); return redirect(request.url)
+        uploaded,err=upload_storage(f,f'academic/{class_id}/materials',public=False)
+        if err: flash('Material upload failed.','danger'); return redirect(request.url)
+        db_insert(ACADEMIC_MATERIAL_TABLE,{'id':str(uuid.uuid4()),'class_id':class_id,'owner_user_id':uid,'title':clean(request.form.get('title')) or f.filename,'file_path':uploaded.get('path'),'file_name':uploaded.get('file_name'),'file_size':uploaded.get('file_size'),'mime_type':uploaded.get('mime_type'),'created_at':utc_now()})
+        flash('Material uploaded.','success'); return redirect(request.url)
+    rows=db_select(ACADEMIC_MATERIAL_TABLE,{'class_id':class_id},order='created_at.desc',limit=200) or []
+    return render_page('Class Materials',r'''<div class="hero"><h1>Class Materials</h1></div>{% if is_teacher %}<div class="card"><form method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input name="title" placeholder="Material title"><input name="file" type="file" required><button class="btn">Upload</button></form></div>{% endif %}<div class="card">{% for m in rows %}<div class="actions"><strong>{{ m.title }}</strong><span>{{ m.mime_type }}</span><a class="btn" href="{{ url_for('academic_material_open',material_id=m.id) }}">Open</a></div>{% else %}<p>No materials yet.</p>{% endfor %}</div>''',rows=rows,is_teacher=str(_academic_teacher_uid(c))==str(uid))
+
+
+@app.route('/academic/materials/<material_id>')
+@login_required
+def academic_material_open(material_id):
+    m=first_row(ACADEMIC_MATERIAL_TABLE,{'id':material_id});
+    if not m: abort(404)
+    c=_academic_class(m.get('class_id')); uid=_academic_uid()
+    if not c or (str(_academic_teacher_uid(c))!=str(uid) and not _academic_enrolled(c.get('id'),uid)): abort(403)
+    # Existing storage helper may return a signed URL when used by callers; create a short-lived private link directly.
+    try:
+        r=requests.post(f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET,safe='')}/{quote(m.get('file_path'),safe='/')}",headers=sb_headers(),json={'expiresIn':3600},timeout=20)
+        body=json_or_empty(r); signed=body.get('signedURL') or body.get('signedUrl')
+        if signed: return redirect((SUPABASE_URL.rstrip('/')+'/storage/v1'+signed) if str(signed).startswith('/object') else signed)
+    except Exception: logger.exception('Material signing failed')
+    abort(404)
+
+
+@app.route('/api/academic/classes/<class_id>/whiteboard',methods=['GET','POST'])
+@login_required
+def academic_whiteboard(class_id):
+    c=_academic_class(class_id); uid=_academic_uid()
+    if not c or (str(_academic_teacher_uid(c))!=str(uid) and not _academic_enrolled(class_id,uid)): abort(403)
+    if request.method=='POST':
+        d=request.get_json(silent=True) or {}; state=d.get('state')
+        if not isinstance(state,(dict,list)): abort(400)
+        row=first_row(ACADEMIC_WHITEBOARD_TABLE,{'class_id':class_id})
+        if row: db_update(ACADEMIC_WHITEBOARD_TABLE,{'class_id':class_id},{'state_json':json.dumps(state,ensure_ascii=False),'updated_by':uid,'updated_at':utc_now()})
+        else: db_insert(ACADEMIC_WHITEBOARD_TABLE,{'id':str(uuid.uuid4()),'class_id':class_id,'state_json':json.dumps(state,ensure_ascii=False),'updated_by':uid,'updated_at':utc_now()})
+        return jsonify(ok=True)
+    row=first_row(ACADEMIC_WHITEBOARD_TABLE,{'class_id':class_id});
+    try: state=json.loads(row.get('state_json') or '{}') if row else {}
+    except Exception: state={}
+    return jsonify(state=state,updated_at=(row or {}).get('updated_at'))
+
+
+def _academic_class_conversation(c, uid=None):
+    uid=str(uid or _academic_uid()); teacher=str(_academic_teacher_uid(c))
+    rows=db_select('koja_conversations',{'conversation_type':'group','created_by':teacher},order='created_at.desc',limit=100) or []
+    name='KOJA Academic · '+str(c.get('title') or 'Class')
+    conv=next((x for x in rows if str(x.get('name'))==name),None)
+    if not conv:
+        conv,err=db_insert('koja_conversations',{'id':str(uuid.uuid4()),'conversation_type':'group','created_by':teacher,'name':name,'created_at':utc_now(),'updated_at':utc_now()})
+        if err:return None
+        db_insert('koja_conversation_members',{'conversation_id':conv['id'],'user_id':teacher,'role':'admin','joined_at':utc_now()})
+    if not first_row('koja_conversation_members',{'conversation_id':conv['id'],'user_id':uid}):
+        db_insert('koja_conversation_members',{'conversation_id':conv['id'],'user_id':uid,'role':'member','joined_at':utc_now()})
+    return conv.get('id')
+
+
+@app.route('/api/academic/classes/<class_id>/connect-chat',methods=['GET','POST'])
+@login_required
+def academic_connect_chat(class_id):
+    c=_academic_class(class_id); uid=_academic_uid()
+    if not c or (str(_academic_teacher_uid(c))!=str(uid) and not _academic_enrolled(class_id,uid)): abort(403)
+    teacher_uid=_academic_teacher_uid(c)
+    # Teacher + each enrolled learner share a normal KOJA Connect conversation, preserving existing messaging/calls/files.
+    if request.method=='POST':
+        body=clean((request.get_json(silent=True) or {}).get('message'))
+        if not body: abort(400)
+        conv=_academic_class_conversation(c,uid)
+        if not conv: return jsonify(error='Connect conversation unavailable'),503
+        r,e=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conv,'sender_id':uid,'message_type':'text','body':f'[Academic Class: {c.get("title")}] {body}','created_at':utc_now()})
+        if e:return jsonify(error=e),500
+        return jsonify(message=r,conversation_id=conv)
+    conv=_academic_class_conversation(c,uid)
+    if not conv:return jsonify(messages=[],conversation_id=None)
+    rows=db_select('koja_messages',{'conversation_id':conv},order='created_at.asc',limit=100) or []
+    return jsonify(messages=rows,conversation_id=conv)
+
+
+@app.route('/academic/classes/<class_id>/review',methods=['POST'])
+@login_required
+def academic_review(class_id):
+    c=_academic_class(class_id); uid=_academic_uid(); e=first_row(ACADEMIC_ENROLL_TABLE,{'class_id':class_id,'user_id':uid,'status':'enrolled'})
+    if not c or not e: abort(403)
+    rating=max(1,min(5,int(request.form.get('rating') or 5))); review=clean(request.form.get('review'))
+    if first_row(ACADEMIC_REVIEW_TABLE,{'class_id':class_id,'learner_user_id':uid}): flash('You already reviewed this class.','warning')
+    else:
+        db_insert(ACADEMIC_REVIEW_TABLE,{'id':str(uuid.uuid4()),'class_id':class_id,'learner_user_id':uid,'teacher_user_id':_academic_teacher_uid(c),'overall':rating,'review_text':review,'created_at':utc_now()})
+        reviews=db_select(ACADEMIC_REVIEW_TABLE,{'teacher_user_id':_academic_teacher_uid(c)},limit=500) or []; avg=round(sum(int(x.get('overall') or 0) for x in reviews)/len(reviews),2) if reviews else 0
+        db_update(ACADEMIC_TEACHER_TABLE,{'user_id':_academic_teacher_uid(c)},{'rating':avg,'updated_at':utc_now()}); flash('Review submitted.','success')
+    return redirect(url_for('academic_class_detail',class_id=class_id))
+
+
+# Admin settlement endpoint for withdrawals. Actual money movement remains explicit and verified; this never pretends a payout occurred.
+@app.route('/admin/academic/withdrawals')
+@admin_required
+def admin_academic_withdrawals():
+    rows=db_select(ACADEMIC_WITHDRAW_TABLE,order='created_at.asc',limit=300) or []
+    return render_page('Academic Withdrawals',r'''<div class="hero"><h1>Academic Withdrawals</h1><p>Review and settle teacher payout requests.</p></div><div class="card">{% for r in rows %}<div class="actions"><span>{{ r.teacher_user_id }} · {{ r.amount }} {{ r.currency }} · {{ r.method }} · {{ r.status }}</span>{% if r.status=='requested' %}<form method="post" action="{{ url_for('admin_academic_withdrawal_status',withdrawal_id=r.id,status='paid') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn success">Mark Settled</button></form><form method="post" action="{{ url_for('admin_academic_withdrawal_status',withdrawal_id=r.id,status='rejected') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger">Reject</button></form>{% endif %}</div>{% else %}<p>No withdrawal requests.</p>{% endfor %}</div>''',rows=rows)
+
+
+@app.route('/admin/academic/withdrawals/<withdrawal_id>/<status>',methods=['POST'])
+@admin_required
+def admin_academic_withdrawal_status(withdrawal_id,status):
+    if status not in ('paid','rejected'): abort(400)
+    r=first_row(ACADEMIC_WITHDRAW_TABLE,{'id':withdrawal_id});
+    if not r: abort(404)
+    db_update(ACADEMIC_WITHDRAW_TABLE,{'id':withdrawal_id},{'status':status,'settled_by':_academic_uid(),'settled_at':utc_now(),'updated_at':utc_now()})
+    return redirect(url_for('admin_academic_withdrawals'))
 
 
 if __name__=="__main__":
