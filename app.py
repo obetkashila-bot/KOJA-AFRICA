@@ -14649,6 +14649,12 @@ def _nexus_home_page():
 """)
 
 
+@app.route("/nexus")
+def koja_nexus_home():
+    """Public NEXUS home. Keep this endpoint name stable for the global navigation and drawer."""
+    return _nexus_home_page()
+
+
 @app.route("/nexus/search")
 def nexus_search():
     q=clean(request.args.get("q")); country=clean(request.args.get("country")).upper(); category=clean(request.args.get("category"))
