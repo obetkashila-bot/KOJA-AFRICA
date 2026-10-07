@@ -7998,8 +7998,9 @@ def connect():
         c=first_row('koja_conversations',{'id':m.get('conversation_id')})
         if not c: continue
         others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
-        c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
-    return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
+        c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=('Message deleted' if last and last[0].get('deleted_at') else (last[0].get('body') or last[0].get('message_type',''))) if last else 'No messages yet'; c['_unread']=_cx_unread(c['id'],uid,m); c['_muted']=bool(m.get('muted')); conversations.append(c)
+    conversations.sort(key=lambda x:str(x.get('updated_at') or x.get('created_at') or ''),reverse=True)
+    return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn secondary" href="{{ url_for('cx_search') }}">Search</a><a class="btn secondary" href="{{ url_for('cx_status_feed') }}">Updates</a><a class="btn secondary" href="{{ url_for('cx_blocked_list') }}">Blocked</a><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong>{% if c._unread %} <span class="btn" style="padding:2px 9px;font-size:12px">{{ c._unread }}{{ '+' if c._unread>=100 }}</span>{% endif %}{% if c._muted %} <span class="small">muted</span>{% endif %}<div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
@@ -8007,7 +8008,7 @@ def connect_people():
     uid=current_user()['id']
     if request.method=='POST':
         target=clean(request.form.get('user_id')); existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
-        if target and target!=uid and find_user_by_id(target) and not existing:
+        if target and target!=uid and find_user_by_id(target) and not existing and not _cx_blocked(uid,target):
             db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()}); notify_user(target,'New KOJA connection request',f'{_profile_name(uid)} wants to connect on KOJA.','friend_request',uid,'/connect/people'); flash('Connection request sent.','success')
         else: flash('User not found or request already exists.','warning')
         return redirect(url_for('connect_people'))
@@ -8015,9 +8016,9 @@ def connect_people():
     if q:
         for col in ('email','full_name','name'):
             for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
-                if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
+                if str(x.get('id'))!=str(uid) and not _cx_blocked(uid,x.get('id')) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
     incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
+    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form><form method="post" action="{{ url_for('cx_decline',contact_id=r.id) }}"><button class="btn secondary">Decline</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
 
 @app.route('/connect/accept/<contact_id>',methods=['POST'])
 @login_required
@@ -8031,6 +8032,7 @@ def connect_accept(contact_id):
 def connect_new(user_id):
     uid=current_user()['id']
     if user_id==uid or not find_user_by_id(user_id): abort(404)
+    if _cx_blocked(uid,user_id): flash('You cannot message this user.','warning'); return redirect(url_for('connect'))
     c=_direct_conversation(uid,user_id)
     if not c: flash('Could not start chat. Run the KOJA Connect SQL first.','danger'); return redirect(url_for('connect'))
     return redirect(url_for('connect_chat',conversation_id=c['id']))
@@ -8041,7 +8043,7 @@ def connect_chat(conversation_id):
     uid=current_user()['id'];
     if not _conversation_member(conversation_id,uid): abort(403)
     members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small"><span id="cxp"></span> <a href="{{ url_for('cx_info',cid=conversation_id) }}">Chat info</a></p><script>(function(){const cid={{ conversation_id|tojson }};function beat(){fetch('/api/connect/presence',{method:'POST'}).catch(()=>{});fetch('/api/connect/presence/'+cid).then(r=>r.json()).then(d=>{const el=document.getElementById('cxp');if(el&&d.online!==null&&d.online!==undefined)el.textContent=d.online?'● online':'offline'}).catch(()=>{})}beat();setInterval(beat,30000)})();</script></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+(m.edited_at&&!m.deleted?' · edited':'')+(m.seen?' · seen':'')+(mine&&!m.deleted?(m.message_type==='text'?' · <a href="#" onclick="return koEdit(\''+m.id+'\')">edit</a>':'')+' · <a href="#" onclick="return koDel(\''+m.id+'\')">delete</a>':'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}else{const d=await r.json().catch(()=>({}));alert(d.error||'Message not sent');}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};window.koDel=async function(id){if(!confirm('Delete this message for everyone?'))return false;await fetch('/connect/message/'+id+'/delete',{method:'POST'});load();return false};window.koEdit=async function(id){const t=prompt('Edit message');if(!t||!t.trim())return false;const r=await fetch('/connect/message/'+id+'/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t})});if(!r.ok){const d=await r.json().catch(()=>({}));alert(d.error||'Could not edit')}load();return false};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -8051,14 +8053,30 @@ def connect_messages(conversation_id):
     if request.method=='POST':
         d=request.get_json(silent=True) or {}; body=clean(d.get('message'))
         if not body:return jsonify(error='Empty message'),400
+        blocked=_cx_guard_send(conversation_id,uid)
+        if blocked:return blocked
+        body=body[:4000]
         row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'text','body':body,'created_at':utc_now()})
         if err:return jsonify(error=err),500
+        _cx_after_send(conversation_id,uid,body)
         return jsonify(message=row)
-    rows=db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.asc',limit=300)
+    rows=list(reversed(db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.desc',limit=300)))
+    names={}; mem=_cx_members(conversation_id); my=next((x for x in mem if str(x.get('user_id'))==str(uid)),{})
+    others=[x for x in mem if str(x.get('user_id'))!=str(uid)]; other_read=_cx_dt(others[0].get('last_read_at')) if len(others)==1 else None
+    my_read=_cx_dt(my.get('last_read_at')); newest_other=None
     for m in rows:
-        m['sender_name']=_profile_name(m.get('sender_id'))
-        if m.get('file_url'):
+        sid=str(m.get('sender_id'))
+        if sid not in names: names[sid]=_profile_name(sid)
+        m['sender_name']=names[sid]
+        created=_cx_dt(m.get('created_at'))
+        if sid!=str(uid) and created and (newest_other is None or created>newest_other): newest_other=created
+        m['seen']=bool(sid==str(uid) and other_read and created and created<=other_read)
+        if m.get('deleted_at'):
+            m['deleted']=True; m['message_type']='text'; m['body']='This message was deleted'; m['file_url']=None
+        elif m.get('file_url'):
             m['file_url']=url_for('connect_message_media', message_id=m.get('id'))
+    if newest_other and (not my_read or newest_other>my_read):
+        db_update('koja_conversation_members',{'conversation_id':conversation_id,'user_id':uid},{'last_read_at':utc_now()})
     return jsonify(messages=rows)
 
 @app.route('/api/connect/messages/<conversation_id>/upload',methods=['POST'])
@@ -8066,6 +8084,8 @@ def connect_messages(conversation_id):
 def connect_upload(conversation_id):
     uid=current_user()['id']
     if not _conversation_member(conversation_id,uid):return jsonify(error='Forbidden'),403
+    blocked=_cx_guard_send(conversation_id,uid)
+    if blocked:return blocked
     f=request.files.get('file')
     if not f or not f.filename:return jsonify(error='No file'),400
     data=f.read()
@@ -8081,6 +8101,7 @@ def connect_upload(conversation_id):
     if err:
         delete_storage_path(path)
         return jsonify(error=err),500
+    _cx_after_send(conversation_id,uid,{'audio':'Voice message','image':'Photo','file':'File: '+name}.get(mt,'Attachment'))
     if row and row.get('file_url'):
         row['file_url']=url_for('connect_message_media', message_id=row.get('id'))
     return jsonify(message=row)
@@ -8201,8 +8222,8 @@ def connect_status():
         body=clean(request.form.get('text'))
         if body:db_insert('koja_statuses',{'id':str(uuid.uuid4()),'user_id':uid,'text_content':body,'media_type':'text','visibility':'contacts','expires_at':(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),'created_at':utc_now()});flash('Status posted for 24 hours.','success')
         return redirect(url_for('connect_status'))
-    rows=db_select('koja_statuses',filters={'user_id':uid},order='created_at.desc',limit=30)
-    return render_page('KOJA Status',r'''<div class="card"><h2> My Status</h2><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form><form method="post" enctype="multipart/form-data" action="{{ url_for('connect_status_media') }}"><input type="file" name="file" accept="image/*,video/*"><button> Photo / Video Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong><div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
+    rows=[x for x in db_select('koja_statuses',filters={'user_id':uid},order='created_at.desc',limit=30) if not (_cx_dt(x.get('expires_at')) and _cx_dt(x.get('expires_at'))<=datetime.now(timezone.utc))]
+    return render_page('KOJA Status',r'''<div class="card"><h2> My Status</h2><a class="btn secondary" href="{{ url_for('cx_status_feed') }}">See contacts' status</a><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form><form method="post" enctype="multipart/form-data" action="{{ url_for('connect_status_media') }}"><input type="file" name="file" accept="image/*,video/*"><button> Photo / Video Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong>{% if s.media_url %}<a href="{{ url_for('connect_status_media_file',status_id=s.id) }}" target="_blank" rel="noopener">View {{ s.media_type }}</a>{% endif %}<div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
 
 @app.route('/connect/status/media',methods=['POST'])
 @login_required
@@ -17699,6 +17720,364 @@ def ac_admin_action():
             notify_user(t.get("user_id"), "Payout recorded", "A payout of %s was recorded." % market_money(bal, t.get("currency") or "ZMW"), "/academic/teacher/dashboard")
             flash("Payout recorded.", "success")
     return redirect(url_for("ac_admin"))
+
+
+# ============================================================
+# KOJA CONNECT COMPLETION (additive)
+# Message notifications, unread counts, read receipts, edit/delete,
+# mute, block, decline requests, group management, contact status
+# feed, message search and presence. Uses only the columns/tables
+# already defined in KOJA_CONNECT_SQL (last_read_at, muted, edited_at,
+# deleted_at, koja_blocks, koja_presence) - no migration needed.
+# ============================================================
+_cx_notify_seen = {}
+CX_EDIT_WINDOW_MIN = 15
+
+
+def _cx_dt(v):
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _cx_blocked(a, b):
+    """True if either user has blocked the other."""
+    if not a or not b:
+        return False
+    try:
+        return bool(first_row("koja_blocks", {"blocker_id": a, "blocked_id": b}) or first_row("koja_blocks", {"blocker_id": b, "blocked_id": a}))
+    except Exception:
+        return False
+
+
+def _cx_members(cid):
+    return db_select("koja_conversation_members", filters={"conversation_id": cid}, limit=500) or []
+
+
+def _cx_guard_send(cid, uid):
+    """Return a (json, status) error tuple if the sender may not post, else None."""
+    if _rate_limited("cxmsg:%s" % uid, 40, 60):
+        return jsonify(error="You are sending messages too quickly. Please slow down."), 429
+    conv = first_row("koja_conversations", {"id": cid}) or {}
+    if (conv.get("conversation_type") or "direct") == "direct":
+        other = next((m.get("user_id") for m in _cx_members(cid) if str(m.get("user_id")) != str(uid)), None)
+        if other and _cx_blocked(uid, other):
+            return jsonify(error="You cannot message this user."), 403
+    return None
+
+
+def _cx_after_send(cid, uid, preview):
+    """Bump the conversation and push-notify other members (no email/SMS spam)."""
+    try:
+        db_update("koja_conversations", {"id": cid}, {"updated_at": utc_now()})
+        sender = _profile_name(uid)
+        now = time.time()
+        for m in _cx_members(cid):
+            rid = str(m.get("user_id"))
+            if rid == str(uid) or m.get("muted") or not _notification_allowed(rid, "message"):
+                continue
+            if now - _cx_notify_seen.get((rid, cid), 0) < 45:
+                continue
+            _cx_notify_seen[(rid, cid)] = now
+            if len(_cx_notify_seen) > 5000:
+                _cx_notify_seen.clear()
+            title, body, link = "New message from " + sender, (preview or "Sent an attachment")[:140], "/connect/chat/" + str(cid)
+            db_insert("koja_notifications", {"user_id": rid, "notification_type": "message", "title": title, "body": body,
+                                             "related_id": str(cid), "is_read": False, "created_at": utc_now()})
+            for fn in (_send_native_fcm, _send_web_push):
+                try:
+                    fn(rid, title, body, link, "message", str(cid))
+                except Exception:
+                    logger.exception("KOJA Connect push failed")
+    except Exception:
+        logger.exception("KOJA Connect post-send failed")
+
+
+def _cx_unread(cid, uid, member_row):
+    q = {"conversation_id": cid, "sender_id": "neq." + str(uid), "deleted_at": None}
+    if member_row and member_row.get("last_read_at"):
+        q["created_at"] = "gt." + str(member_row["last_read_at"])
+    try:
+        return len(db_select("koja_messages", filters=q, select="id", limit=100) or [])
+    except Exception:
+        return 0
+
+
+def _cx_page(title, tpl, **ctx):
+    return render_page(title, tpl, **ctx)
+
+
+# ---- edit / delete messages -------------------------------------------------------
+@app.route("/connect/message/<mid>/delete", methods=["POST"])
+@login_required
+def cx_msg_delete(mid):
+    uid = str(current_user()["id"])
+    m = first_row("koja_messages", {"id": mid})
+    if not m or not _conversation_member(m.get("conversation_id"), uid):
+        return jsonify(error="Not found"), 404
+    admin = (first_row("koja_conversation_members", {"conversation_id": m["conversation_id"], "user_id": uid}) or {}).get("role") == "admin" \
+        and (first_row("koja_conversations", {"id": m["conversation_id"]}) or {}).get("conversation_type") == "group"
+    if str(m.get("sender_id")) != uid and not admin:
+        return jsonify(error="You can only delete your own messages."), 403
+    if m.get("deleted_at"):
+        return jsonify(ok=True)
+    db_update("koja_messages", {"id": mid}, {"deleted_at": utc_now(), "body": "", "file_url": None})
+    path = _storage_path_from_value(m.get("file_url"))
+    if path:
+        try:
+            delete_storage_path(path)
+        except Exception:
+            logger.exception("KOJA Connect media delete failed")
+    return jsonify(ok=True)
+
+
+@app.route("/connect/message/<mid>/edit", methods=["POST"])
+@login_required
+def cx_msg_edit(mid):
+    uid = str(current_user()["id"])
+    m = first_row("koja_messages", {"id": mid, "sender_id": uid})
+    body = clean((request.get_json(silent=True) or {}).get("message"))
+    if not m or m.get("deleted_at") or m.get("message_type") != "text" or not body:
+        return jsonify(error="Cannot edit this message."), 400
+    created = _cx_dt(m.get("created_at"))
+    if created and datetime.now(timezone.utc) - created > timedelta(minutes=CX_EDIT_WINDOW_MIN):
+        return jsonify(error="Messages can only be edited for %d minutes." % CX_EDIT_WINDOW_MIN), 400
+    db_update("koja_messages", {"id": mid}, {"body": body[:4000], "edited_at": utc_now()})
+    return jsonify(ok=True)
+
+
+# ---- mute / block / decline -------------------------------------------------------
+@app.route("/connect/mute/<cid>", methods=["POST"])
+@login_required
+def cx_mute(cid):
+    uid = str(current_user()["id"])
+    m = first_row("koja_conversation_members", {"conversation_id": cid, "user_id": uid})
+    if not m:
+        abort(403)
+    db_update("koja_conversation_members", {"conversation_id": cid, "user_id": uid}, {"muted": not bool(m.get("muted"))})
+    flash("Chat unmuted." if m.get("muted") else "Chat muted. You will not get message alerts.", "success")
+    return redirect(url_for("cx_info", cid=cid))
+
+
+@app.route("/connect/block/<user_id>", methods=["POST"])
+@login_required
+def cx_block(user_id):
+    uid = str(current_user()["id"])
+    if user_id == uid or not find_user_by_id(user_id):
+        abort(404)
+    if not first_row("koja_blocks", {"blocker_id": uid, "blocked_id": user_id}):
+        db_insert("koja_blocks", {"blocker_id": uid, "blocked_id": user_id, "created_at": utc_now()})
+    for c in db_select("koja_contacts", filters={"requester_id": uid, "addressee_id": user_id}, limit=5) + db_select("koja_contacts", filters={"requester_id": user_id, "addressee_id": uid}, limit=5):
+        db_delete("koja_contacts", {"id": c["id"]})
+    flash("User blocked. They can no longer message or call you.", "success")
+    return redirect(url_for("cx_blocked_list"))
+
+
+@app.route("/connect/unblock/<user_id>", methods=["POST"])
+@login_required
+def cx_unblock(user_id):
+    db_delete("koja_blocks", {"blocker_id": str(current_user()["id"]), "blocked_id": user_id})
+    flash("User unblocked.", "success")
+    return redirect(url_for("cx_blocked_list"))
+
+
+@app.route("/connect/blocked")
+@login_required
+def cx_blocked_list():
+    rows = db_select("koja_blocks", filters={"blocker_id": str(current_user()["id"])}, limit=200) or []
+    for r in rows:
+        r["_name"] = _profile_name(r.get("blocked_id"))
+    return _cx_page("Blocked users", r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>Blocked users</h2>
+{% for r in rows %}<div class="card"><strong>{{ r._name }}</strong><form method="post" action="{{ url_for('cx_unblock', user_id=r.blocked_id) }}"><button class="btn secondary">Unblock</button></form></div>
+{% else %}<p>You have not blocked anyone.</p>{% endfor %}</div>''', rows=rows)
+
+
+@app.route("/connect/decline/<contact_id>", methods=["POST"])
+@login_required
+def cx_decline(contact_id):
+    uid = str(current_user()["id"])
+    r = first_row("koja_contacts", {"id": contact_id})
+    if not r or uid not in (str(r.get("addressee_id")), str(r.get("requester_id"))):
+        abort(404)
+    db_delete("koja_contacts", {"id": contact_id})
+    flash("Request removed.", "success")
+    return redirect(url_for("connect_people"))
+
+
+# ---- chat info + group management --------------------------------------------------
+@app.route("/connect/info/<cid>")
+@login_required
+def cx_info(cid):
+    uid = str(current_user()["id"])
+    mine = first_row("koja_conversation_members", {"conversation_id": cid, "user_id": uid})
+    c = first_row("koja_conversations", {"id": cid})
+    if not mine or not c:
+        abort(403)
+    members = _cx_members(cid)
+    for m in members:
+        m["_name"] = _profile_name(m.get("user_id"))
+    is_group = (c.get("conversation_type") or "direct") == "group"
+    other = next((m for m in members if str(m.get("user_id")) != uid), None)
+    q = clean(request.args.get("q"))
+    candidates = []
+    if is_group and mine.get("role") == "admin" and q:
+        have = {str(m.get("user_id")) for m in members}
+        for col in ("email", "full_name", "name"):
+            for x in db_select("profiles", filters={col: "ilike.*%s*" % q}, limit=20):
+                if str(x.get("id")) not in have and not any(str(p.get("id")) == str(x.get("id")) for p in candidates):
+                    candidates.append(x)
+    return _cx_page("Chat info", r'''
+<div class="card"><a href="{{ url_for('connect_chat', conversation_id=c.id) }}">← Back to chat</a><h2>{{ c.name if is_group else (other._name if other else 'Chat') }}</h2>
+<form method="post" action="{{ url_for('cx_mute', cid=c.id) }}"><button class="btn secondary">{{ 'Unmute notifications' if mine.muted else 'Mute notifications' }}</button></form></div>
+{% if is_group %}<div class="card"><h3>Members ({{ members|length }})</h3>
+{% for m in members %}<p><strong>{{ m._name }}</strong> {{ '(admin)' if m.role == 'admin' }}
+{% if mine.role == 'admin' and m.user_id|string != uid %}<form method="post" action="{{ url_for('cx_group_remove', cid=c.id, user_id=m.user_id) }}" style="display:inline"><button class="btn danger">Remove</button></form>{% endif %}</p>{% endfor %}</div>
+{% if mine.role == 'admin' %}<div class="card"><h3>Rename group</h3><form method="post" action="{{ url_for('cx_group_rename', cid=c.id) }}"><input name="name" value="{{ c.name }}" maxlength="80" required><button class="btn">Save</button></form>
+<h3>Add people</h3><form method="get"><input name="q" value="{{ q }}" placeholder="Search name or email"><button class="btn secondary">Search</button></form>
+{% for p in candidates %}<form method="post" action="{{ url_for('cx_group_add', cid=c.id) }}"><input type="hidden" name="user_id" value="{{ p.id }}">{{ p.get('full_name') or p.get('name') or p.get('email') }} <button class="btn">Add</button></form>{% endfor %}</div>{% endif %}
+<div class="card"><form method="post" action="{{ url_for('cx_group_leave', cid=c.id) }}" onsubmit="return confirm('Leave this group?')"><button class="btn danger">Leave group</button></form></div>
+{% elif other %}<div class="card"><h3>Privacy</h3><form method="post" action="{{ url_for('cx_block', user_id=other.user_id) }}" onsubmit="return confirm('Block this user?')"><button class="btn danger">Block {{ other._name }}</button></form></div>{% endif %}''',
+                    c=c, mine=mine, members=members, other=other, is_group=is_group, uid=uid, q=q, candidates=candidates)
+
+
+def _cx_group_admin(cid):
+    uid = str(current_user()["id"])
+    m = first_row("koja_conversation_members", {"conversation_id": cid, "user_id": uid})
+    c = first_row("koja_conversations", {"id": cid})
+    if not m or not c or c.get("conversation_type") != "group" or m.get("role") != "admin":
+        abort(403)
+    return uid, c
+
+
+@app.route("/connect/group/<cid>/rename", methods=["POST"])
+@login_required
+def cx_group_rename(cid):
+    _cx_group_admin(cid)
+    name = clean(request.form.get("name"))[:80]
+    if name:
+        db_update("koja_conversations", {"id": cid}, {"name": name, "updated_at": utc_now()})
+        flash("Group renamed.", "success")
+    return redirect(url_for("cx_info", cid=cid))
+
+
+@app.route("/connect/group/<cid>/add", methods=["POST"])
+@login_required
+def cx_group_add(cid):
+    uid, c = _cx_group_admin(cid)
+    target = clean(request.form.get("user_id"))
+    if not find_user_by_id(target) or _cx_blocked(uid, target):
+        flash("That person cannot be added.", "warning")
+    elif _conversation_member(cid, target):
+        flash("Already a member.", "info")
+    elif len(_cx_members(cid)) >= 256:
+        flash("Groups are limited to 256 members.", "warning")
+    else:
+        db_insert("koja_conversation_members", {"conversation_id": cid, "user_id": target, "role": "member", "joined_at": utc_now()})
+        notify_user(target, "Added to a group", "%s added you to %s." % (_profile_name(uid), c.get("name") or "a group"), "message", cid, "/connect/chat/" + cid)
+        flash("Member added.", "success")
+    return redirect(url_for("cx_info", cid=cid))
+
+
+@app.route("/connect/group/<cid>/remove/<user_id>", methods=["POST"])
+@login_required
+def cx_group_remove(cid, user_id):
+    uid, _ = _cx_group_admin(cid)
+    if user_id != uid:
+        db_delete("koja_conversation_members", {"conversation_id": cid, "user_id": user_id})
+        flash("Member removed.", "success")
+    return redirect(url_for("cx_info", cid=cid))
+
+
+@app.route("/connect/group/<cid>/leave", methods=["POST"])
+@login_required
+def cx_group_leave(cid):
+    uid = str(current_user()["id"])
+    c = first_row("koja_conversations", {"id": cid})
+    if not c or c.get("conversation_type") != "group" or not _conversation_member(cid, uid):
+        abort(403)
+    db_delete("koja_conversation_members", {"conversation_id": cid, "user_id": uid})
+    rest = sorted(_cx_members(cid), key=lambda m: str(m.get("joined_at") or ""))
+    if rest and not any(m.get("role") == "admin" for m in rest):
+        db_update("koja_conversation_members", {"conversation_id": cid, "user_id": rest[0]["user_id"]}, {"role": "admin"})
+    flash("You left the group.", "success")
+    return redirect(url_for("connect"))
+
+
+# ---- contacts' status feed + search + presence -------------------------------------
+@app.route("/connect/status/feed")
+@login_required
+def cx_status_feed():
+    uid = str(current_user()["id"])
+    ids = set()
+    for r in db_select("koja_contacts", filters={"requester_id": uid, "status": "accepted"}, limit=500):
+        ids.add(str(r.get("addressee_id")))
+    for r in db_select("koja_contacts", filters={"addressee_id": uid, "status": "accepted"}, limit=500):
+        ids.add(str(r.get("requester_id")))
+    ids = [i for i in ids if not _cx_blocked(uid, i)]
+    now, items = datetime.now(timezone.utc), []
+    if ids:
+        for s in db_select("koja_statuses", filters={"user_id": "in.(%s)" % ",".join(ids)}, order="created_at.desc", limit=200):
+            exp = _cx_dt(s.get("expires_at"))
+            if (not exp or exp > now) and (s.get("visibility") or "contacts") in ("contacts", "public"):
+                s["_name"] = _profile_name(s.get("user_id"))
+                items.append(s)
+    return _cx_page("Contacts' status", r'''<div class="card"><a href="{{ url_for('connect_status') }}">← My status</a><h2>Status updates</h2></div>
+{% for s in items %}<div class="card"><strong>{{ s._name }}</strong>
+{% if s.text_content %}<p>{{ s.text_content }}</p>{% endif %}
+{% if s.media_url and s.media_type == 'image' %}<img src="{{ url_for('connect_status_media_file', status_id=s.id) }}" style="max-width:100%;border-radius:12px" alt="Status image">{% endif %}
+{% if s.media_url and s.media_type == 'video' %}<video src="{{ url_for('connect_status_media_file', status_id=s.id) }}" controls style="max-width:100%;border-radius:12px"></video>{% endif %}
+<div class="small">{{ s.created_at }}</div></div>{% else %}<div class="card"><p>No status updates from your contacts right now.</p></div>{% endfor %}''', items=items)
+
+
+@app.route("/connect/search")
+@login_required
+def cx_search():
+    uid = str(current_user()["id"])
+    q = clean(request.args.get("q"))[:80]
+    results = []
+    if len(q) >= 2:
+        cids = [str(m.get("conversation_id")) for m in db_select("koja_conversation_members", filters={"user_id": uid}, limit=500)]
+        if cids:
+            for m in db_select("koja_messages", filters={"conversation_id": "in.(%s)" % ",".join(cids), "body": "ilike.*%s*" % q, "deleted_at": None},
+                               order="created_at.desc", limit=40):
+                m["_who"] = _profile_name(m.get("sender_id"))
+                results.append(m)
+    return _cx_page("Search messages", r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>Search messages</h2>
+<form method="get"><input name="q" value="{{ q }}" placeholder="Search your chats" minlength="2" required><button class="btn">Search</button></form></div>
+{% for m in results %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat', conversation_id=m.conversation_id) }}"><strong>{{ m._who }}</strong><div>{{ m.body }}</div><div class="small">{{ m.created_at }}</div></a>
+{% else %}{% if q %}<div class="card"><p>No messages found.</p></div>{% endif %}{% endfor %}''', q=q, results=results)
+
+
+@app.route("/api/connect/presence", methods=["POST"])
+@login_required
+def cx_presence_beat():
+    uid = str(current_user()["id"])
+    row = {"is_online": True, "last_seen_at": utc_now(), "updated_at": utc_now()}
+    if first_row("koja_presence", {"user_id": uid}):
+        db_update("koja_presence", {"user_id": uid}, row)
+    else:
+        db_insert("koja_presence", dict(row, user_id=uid))
+    return jsonify(ok=True)
+
+
+@app.route("/api/connect/presence/<cid>")
+@login_required
+def cx_presence_get(cid):
+    uid = str(current_user()["id"])
+    if not _conversation_member(cid, uid):
+        return jsonify(error="Forbidden"), 403
+    c = first_row("koja_conversations", {"id": cid}) or {}
+    if c.get("conversation_type") == "group":
+        return jsonify(online=None)
+    other = next((m.get("user_id") for m in _cx_members(cid) if str(m.get("user_id")) != uid), None)
+    if not other or _cx_blocked(uid, other):
+        return jsonify(online=None)
+    p = first_row("koja_presence", {"user_id": other}) or {}
+    seen = _cx_dt(p.get("last_seen_at"))
+    online = bool(seen and datetime.now(timezone.utc) - seen < timedelta(seconds=75))
+    return jsonify(online=online, last_seen=p.get("last_seen_at") if not online else None)
 
 
 if __name__=="__main__":
