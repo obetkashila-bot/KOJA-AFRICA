@@ -17092,7 +17092,9 @@ def _academic_teacher(uid=None):
 def _academic_teacher_or_404():
     t = _academic_teacher()
     if not t:
-        abort(403)
+        # Do not expose a generic Flask 403 page to a normal learner.
+        # Send them to the teacher onboarding flow instead.
+        return None
     return t
 
 
@@ -17128,7 +17130,6 @@ def _academic_live_token(room, identity, name, can_publish=False):
 
 
 @app.route('/academic')
-@login_required
 def academic_hub():
     uid = _academic_uid()
     assignments_rows = db_select('assignments', {'owner_id': uid}, order='created_at.desc', limit=20) or []
@@ -17144,7 +17145,6 @@ def academic_hub():
 
 
 @app.route('/academic/teachers')
-@login_required
 def academic_teachers():
     subject = clean(request.args.get('subject'))
     topic = clean(request.args.get('topic'))
@@ -17192,7 +17192,6 @@ def academic_teacher_register():
 
 
 @app.route('/academic/teacher/<teacher_id>')
-@login_required
 def academic_teacher_profile(teacher_id):
     t = first_row(ACADEMIC_TEACHER_TABLE, {'id': teacher_id})
     if not t or t.get('status') != 'verified': abort(404)
@@ -17205,7 +17204,6 @@ def academic_teacher_profile(teacher_id):
 
 
 @app.route('/academic/classes')
-@login_required
 def academic_classes():
     rows = db_select(ACADEMIC_CLASS_TABLE, {'status': 'published'}, order='starts_at.asc', limit=100) or []
     visible=[]
@@ -17415,7 +17413,11 @@ def academic_tutoring_token(session_id):
 @app.route('/academic/teacher/dashboard')
 @login_required
 def academic_teacher_dashboard():
-    t=_academic_teacher_or_404(); uid=_academic_uid()
+    t=_academic_teacher_or_404()
+    if t is None:
+        flash('Create your teacher profile first.', 'warning')
+        return redirect(url_for('academic_teacher_register'))
+    uid=_academic_uid()
     classes=db_select(ACADEMIC_CLASS_TABLE,{'teacher_user_id':uid},order='created_at.desc',limit=100) or []
     bookings=db_select(ACADEMIC_BOOKING_TABLE,{'teacher_user_id':uid},order='created_at.desc',limit=100) or []
     earnings=db_select(ACADEMIC_LEDGER_TABLE,{'teacher_user_id':uid},order='created_at.desc',limit=100) or []
