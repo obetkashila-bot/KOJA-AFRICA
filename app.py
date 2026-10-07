@@ -6339,7 +6339,7 @@ def music_track(track_id):
 @music_artist_required
 def music_studio():
     u=current_user()
-    artists=_music_artist_profiles_for_user(u); active_artist_ids=[str(a.get('id')) for a in artists if str(a.get('status') or '').lower()=='published']; artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
+    artists=_music_artist_profiles_for_user(u); active_artist_ids=[str(a.get('id')) for a in artists if bool(a.get('active')) or str(a.get('status') or '').strip().lower() in ('published','approved','active')]; artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
     for aid in artist_ids: tracks.extend(_music_rows('koja_music_tracks', {'artist_id':aid}, order='created_at.desc', limit=300))
     artist_active=bool(active_artist_ids)
     return render_page('KOJA MUSIC Studio', r'''
@@ -6592,7 +6592,7 @@ def music_play_api(track_id):
 @app.route('/music/dashboard')
 @music_artist_required
 def music_dashboard_v2():
-    u=current_user(); artists=_music_rows('koja_music_artists',{'created_by':u.get('id')},limit=100)
+    u=current_user(); artists=_music_rows('koja_music_artists',{'user_id':str(u.get('id'))},limit=100)
     ids={str(a.get('id')) for a in artists}; tracks=[]
     for aid in ids: tracks.extend(_music_rows('koja_music_tracks',{'artist_id':aid},limit=500))
     plays=[]; likes=[]
