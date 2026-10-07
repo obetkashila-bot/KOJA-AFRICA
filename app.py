@@ -13048,7 +13048,7 @@ def koja_admin_go_live():
 # ============================================================
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
-KOJA_NEXUS_AFRICA_NOW_VERSION = "3.2-public-sources-news-jobs-scholarships"
+KOJA_NEXUS_AFRICA_NOW_VERSION = "3.1-schema-safe-global-news-jobs"
 KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "60")))
 KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS = max(30, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS", "30")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
@@ -13074,31 +13074,11 @@ _KOJA_AFRICA_NOW_FEEDS = [
     ("BBC Middle East", "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml", "world_news"),
     ("BBC US & Canada", "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml", "world_news"),
     ("BBC Latin America", "https://feeds.bbci.co.uk/news/world/latin_america/rss.xml", "world_news"),
-    # Official public African/global update sources. WHO/AFRO publishes RSS for
-    # press releases and emergencies/outbreaks; these are safe to aggregate as
-    # headline/summary/link metadata while keeping the original source as the
-    # canonical destination.
-    ("WHO Africa Press Releases", "https://www.afro.who.int/rss/featured-news.xml", "health"),
-    ("WHO Africa Emergencies", "https://www.afro.who.int/rss/emergencies.xml", "health"),
-    ("WHO Africa RD Messages", "https://www.afro.who.int/rss/speeches-messages.xml", "health"),
-    ("UN Documents RSS", "https://docs.un.org/rss/ai.xml", "world_news"),
     ("BBC Australia", "https://feeds.bbci.co.uk/news/world/australia/rss.xml", "world_news"),
     # Official vacancies
     ("African Development Bank Vacancies", "https://www.afdb.org/en/vacancies/directeur/news-and-events/about-us/careers/current-vacancies/rss", "jobs"),
     ("UN Careers", "https://careers.un.org/jobfeed?isPage=true&language=en", "jobs"),
 ]
-# Optional public feeds can be added in Render without changing app.py.
-# Format: NAME|URL|FEED_KIND,NAME|URL|FEED_KIND
-# Example: UN Talent RSS can be supplied here after obtaining its public feed access.
-def _africa_now_env_feeds():
-    raw = os.getenv("KOJA_NEXUS_PUBLIC_FEEDS", "").strip()
-    out = []
-    for part in raw.split(","):
-        bits = [x.strip() for x in part.split("|", 2)]
-        if len(bits) == 3 and bits[0] and bits[1].startswith(("http://", "https://")):
-            out.append((bits[0][:160], bits[1], bits[2][:80] or "world_news"))
-    return out
-
 _KOJA_AFRICA_NOW_JOB_PAGES = [
     ("FreshTalent Africa", "https://jobs.freshtalent.africa/jobs", "Algeria;Angola;Benin;Botswana;Burkina Faso;Burundi;Cabo Verde;Cameroon;Central African Republic;Chad;Comoros;DR Congo;Democratic Republic of the Congo;Republic of Congo;Republic of the Congo;Côte d’Ivoire;Djibouti;Egypt;Equatorial Guinea;Eritrea;Eswatini;Ethiopia;Gabon;Gambia;Ghana;Guinea;Guinea-Bissau;Kenya;Lesotho;Liberia;Libya;Madagascar;Malawi;Mali;Mauritania;Mauritius;Morocco;Mozambique;Namibia;Niger;Nigeria;Rwanda;São Tomé and Príncipe;Senegal;Seychelles;Sierra Leone;Somalia;South Africa;South Sudan;Sudan;Tanzania;Togo;Tunisia;Uganda;Zambia;Zimbabwe;Africa"),
     ("AfriCareers", "https://jobs.africareers.net/jobs", "Uganda;Kenya;Rwanda;Tanzania;South Africa;Nigeria;Ghana;Africa"),
@@ -13508,56 +13488,6 @@ def _africa_now_parse_job_page(label, page_url, default_countries):
     return items
 
 
-_KOJA_AFRICA_NOW_OPPORTUNITY_PAGES = [
-    ("UNESCO Fellowships", "https://www.unesco.org/en/fellowships", "Africa;Worldwide"),
-    ("UNESCO Internships & Volunteers", "https://www.unesco.org/en/careers/other-opportunities?hub=132389", "Africa;Worldwide"),
-]
-
-def _africa_now_parse_opportunity_page(label, page_url, default_countries):
-    """Collect public scholarship/fellowship/internship landing-page links.
-    It stores only link metadata and a short source label; users open the original
-    provider page for eligibility and application details.
-    """
-    headers = {"User-Agent": "KOJA-AFRICA/3.2 (+NEXUS opportunities)", "Accept": "text/html,application/xhtml+xml"}
-    r = requests.get(page_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
-    r.raise_for_status()
-    links = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r.text, flags=re.I|re.S)
-    items=[]; seen=set()
-    keywords=("fellowship","scholarship","internship","grant","opportunit","volunteer","traineeship")
-    for href, raw in links:
-        title=_africa_now_text(raw)
-        low=title.lower()
-        if len(title)<8 or len(title)>240 or not any(k in low for k in keywords):
-            continue
-        url=urljoin(page_url,href).split('#',1)[0]
-        if not url.startswith(("http://","https://")) or url in seen:
-            continue
-        seen.add(url)
-        country=_africa_now_country(title,"")
-        if country=="Africa":
-            for c in [x.strip() for x in default_countries.split(";") if x.strip()]:
-                if c.lower() in title.lower(): country=c; break
-        category="Scholarships & Fellowships" if any(k in low for k in ("scholarship","fellowship")) else "Internships & Training"
-        items.append({
-            "source_key": hashlib.sha256(url.encode()).hexdigest(), "title": title[:500], "url": url,
-            "source_name": label[:160], "summary": f"Public opportunity listed by {label}. Open the official source for eligibility, deadline and application instructions.",
-            "image_url": None, "video_url": None, "published_at": None, "country": country,
-            "category": category, "score": 13.5, "media_type": "opportunity", "is_live": False, "feed_kind": "opportunities"
-        })
-        if len(items)>=35: break
-    return items
-
-def _africa_now_fetch_opportunities():
-    collected=[]; status={}
-    for label,url,countries in _KOJA_AFRICA_NOW_OPPORTUNITY_PAGES:
-        try:
-            rows=_africa_now_parse_opportunity_page(label,url,countries); collected.extend(rows)
-            status[label]={"ok":True,"items":len(rows)}
-        except Exception as exc:
-            status[label]={"ok":False,"error":str(exc)[:180]}
-            logger.warning("Africa Now opportunity source failed (%s): %s", label, exc)
-    return collected,status
-
 def _africa_now_fetch_jobs():
     collected = []
     status = {}
@@ -13638,12 +13568,7 @@ def _africa_now_refresh(force=False):
         # Prefer the Supabase source registry. If it is unavailable or empty, fall back
         # to the built-in core feeds so AFRICA NOW never becomes dependent on the registry.
         registry_feeds = _africa_now_registry_feeds()
-        active_feeds = list(registry_feeds or _KOJA_AFRICA_NOW_FEEDS)
-        # Environment-configured public feeds extend the built-in source set;
-        # they never replace it. This makes Render source expansion additive.
-        for extra_feed in _africa_now_env_feeds():
-            if extra_feed[1] not in {x[1] for x in active_feeds}:
-                active_feeds.append(extra_feed)
+        active_feeds = registry_feeds or _KOJA_AFRICA_NOW_FEEDS
 
         # Fetch sources concurrently so one slow publisher cannot hold up the entire update.
         def fetch_one(feed):
@@ -13669,10 +13594,6 @@ def _africa_now_refresh(force=False):
         job_items, job_status = _africa_now_fetch_jobs()
         collected.extend(job_items)
         source_status.update(job_status)
-
-        opportunity_items, opportunity_status = _africa_now_fetch_opportunities()
-        collected.extend(opportunity_items)
-        source_status.update(opportunity_status)
 
         # De-duplicate by canonical article/job URL and keep the strongest ranking.
         best = {}
@@ -14681,76 +14602,49 @@ def _nexus_unsave(item_type,item_id):
     session["nexus_saved"]=[x for x in _nexus_saved() if f"{x.get('type')}:{x.get('id')}"!=key]; session.modified=True
 
 def _nexus_shell(title, body, **ctx):
-    return render_page(title, r'''
+    shell = r"""
 <style>
-.nxh{max-width:1450px;margin:auto}.nxnav{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}.nxnav a{padding:8px 11px;border:1px solid rgba(90,110,135,.18);border-radius:999px;text-decoration:none;color:inherit;font-size:12px}.nxhero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:24px;padding:30px;margin-bottom:18px}.nx-live-wrap{margin-bottom:18px}.nx-live-screen{background:#050d16;color:#fff;border:1px solid rgba(255,255,255,.12);border-radius:24px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.2)}.nx-live-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;background:#0b1d31;font-size:11px}.nx-live-top strong{font-size:18px;letter-spacing:.12em}.nx-live-top span{color:#7f9ab4;text-transform:uppercase;letter-spacing:.08em}.nx-live-top em{font-style:normal;color:#7fbfd0;font-size:10px}.nx-live-main{position:relative;min-height:430px;background:#02070c}.nx-live-media,.nx-live-media img,.nx-live-media video{width:100%;height:430px;object-fit:cover;display:block}.nx-live-media{position:absolute;inset:0}.nx-live-overlay{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:flex-end;padding:30px;background:linear-gradient(transparent 20%,rgba(0,0,0,.9) 100%)}.nx-live-kicker{font-size:10px;color:#72c6d9;font-weight:800;text-transform:uppercase;letter-spacing:.08em}.nx-live-overlay h1{max-width:1000px;font-size:clamp(25px,4vw,46px);line-height:1.08;margin:7px 0}.nx-live-overlay p{max-width:900px;color:#d2dce6;line-height:1.5;margin:0 0 7px}.nx-live-meta{font-size:10px;color:#91a5b8}.nx-live-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.nx-live-btn{display:inline-block;padding:8px 12px;border-radius:8px;background:#147292;color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.12);font-size:11px;font-weight:800}.nx-live-btn.secondary{background:rgba(255,255,255,.08)}.nx-live-no-media{height:100%;display:grid;place-content:center;text-align:center;background:radial-gradient(circle at center,#12395a,#02070c 65%);gap:5px}.nx-live-no-media strong{font-size:42px;letter-spacing:.12em}.nx-live-no-media span{color:#82a0b9;font-size:11px}.nx-live-loading{min-height:430px;display:grid;place-content:center;text-align:center;gap:8px;color:#9eb0c2}.nx-live-loading strong{font-size:46px;letter-spacing:.12em;color:#fff}.nx-live-ticker{display:flex;gap:12px;align-items:center;padding:10px 14px;background:#091827;font-size:11px;white-space:nowrap;overflow:hidden}.nx-live-ticker b{color:#ff7474}.nx-live-ticker div{overflow:hidden;text-overflow:ellipsis}.nx-search-panel{background:var(--card-bg,#fff);border:1px solid rgba(90,110,135,.2);border-radius:20px;padding:18px;margin-bottom:18px}.nx-search-title strong,.nx-section-title span,.nx-ecosystem>div>span{display:block;color:#0b4ea2;font-size:10px;font-weight:900;letter-spacing:.1em}.nx-search-title span{display:block;color:#718096;font-size:12px;margin:3px 0 12px}.nx-global-search{display:flex;gap:8px}.nx-global-search input{flex:1;min-width:0}.nx-global-search select{min-width:150px}.nxquick{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.nxquick a{font-size:11px;text-decoration:none;border:1px solid rgba(90,110,135,.18);border-radius:999px;padding:7px 10px;color:inherit}.nx-section-block{margin-top:22px}.nx-section-title{display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:10px}.nx-section-title h2{margin:3px 0 0;font-size:25px}.nx-country-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}.nx-country-card{display:block;text-decoration:none;color:inherit;border:1px solid rgba(90,110,135,.18);border-radius:14px;padding:13px;background:var(--card-bg,#fff)}.nx-country-card strong{display:block;font-size:13px}.nx-country-card small{display:block;color:#718096;margin-top:4px;font-size:10px}.nxgrid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.nx-ecosystem{margin-top:22px;border-radius:22px;padding:22px;background:linear-gradient(135deg,#061a33,#0a4f8f);color:#fff}.nx-ecosystem h2{margin:4px 0 7px}.nx-ecosystem p{color:rgba(255,255,255,.75);max-width:750px}.nx-eco-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:14px}.nx-eco-grid a{padding:12px;border:1px solid rgba(255,255,255,.13);border-radius:12px;text-decoration:none;color:#fff;background:rgba(255,255,255,.04)}.nx-eco-grid strong,.nx-eco-grid small{display:block}.nx-eco-grid small{color:#9fb4c8;margin-top:4px;font-size:10px}@media(max-width:1000px){.nx-country-grid{grid-template-columns:repeat(4,1fr)}.nx-eco-grid{grid-template-columns:repeat(3,1fr)}.nxgrid3{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.nx-global-search{flex-direction:column}.nx-country-grid{grid-template-columns:repeat(2,1fr)}.nx-eco-grid,.nxgrid3{grid-template-columns:1fr}.nx-live-main,.nx-live-media,.nx-live-media img,.nx-live-media video,.nx-live-loading{min-height:360px;height:360px}.nx-live-overlay{padding:18px}.nx-live-overlay h1{font-size:25px}.nx-live-top span{display:none}.nx-section-title{align-items:start;flex-direction:column}}.nx-live-mini{margin-top:22px;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 16px;border:1px solid rgba(90,110,135,.18);border-radius:14px;background:var(--card-bg,#fff)}.nx-live-mini strong{display:block;font-size:10px;letter-spacing:.1em;color:#0b4ea2}.nx-live-mini span{display:block;margin-top:4px;font-size:12px;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:850px}@media(max-width:650px){.nx-live-mini{align-items:flex-start;flex-direction:column}.nx-live-mini span{white-space:normal}}.nxhero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.nxhero p{max-width:900px;line-height:1.65;color:rgba(255,255,255,.84)}.nxsearch{display:flex;gap:8px;max-width:900px}.nxsearch input{flex:1;min-width:0}.nxgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.nxgrid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.nxcard{border:1px solid rgba(90,110,135,.20);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.06)}.nxcard h2,.nxcard h3{margin-top:0}.nxmuted{font-size:13px;color:#718096}.nxpill{display:inline-block;font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;margin:3px 3px 3px 0}.nxpending{background:#fff4dc;color:#8a5b00}.nxlist{display:grid;gap:9px}.nxitem{padding:12px;border-bottom:1px solid rgba(90,110,135,.15)}.nxitem:last-child{border-bottom:0}.nxactions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.nxcrumb{font-size:12px;color:#718096;margin:8px 0 14px}.nxstat strong{display:block;font-size:27px}.nxstat span{font-size:12px;color:#718096}@media(max-width:1000px){.nxgrid{grid-template-columns:repeat(2,1fr)}.nxgrid4{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.nxgrid,.nxgrid4{grid-template-columns:1fr}.nxsearch{flex-direction:column}}
+.nxh{max-width:1450px;margin:auto}.nxbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.nxbrand{font-weight:900;letter-spacing:.08em;font-size:18px}.nxmenu{padding:9px 14px;border-radius:10px;border:1px solid rgba(90,110,135,.2);background:var(--card-bg,#fff);cursor:pointer}.nxdrawer{position:fixed;inset:0;z-index:9999;display:none;background:rgba(2,12,25,.48)}.nxdrawer.open{display:block}.nxpanel{position:absolute;right:0;top:0;height:100%;width:min(360px,88vw);background:var(--card-bg,#fff);padding:24px;overflow:auto;box-shadow:-10px 0 35px rgba(0,0,0,.2)}.nxpanel h2{margin-top:0}.nxlinks{display:grid;gap:7px}.nxlinks a{padding:11px 12px;border-radius:10px;text-decoration:none;color:inherit;border:1px solid rgba(90,110,135,.13)}
+.nxhero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:24px;padding:30px;margin-bottom:18px}.nxhero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.nxhero p{max-width:900px;line-height:1.65;color:rgba(255,255,255,.84)}.nxsearch{display:flex;gap:8px;max-width:900px}.nxsearch input{flex:1;min-width:0}.nxgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.nxgrid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.nxcard{border:1px solid rgba(90,110,135,.20);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.06)}.nxcard h2,.nxcard h3{margin-top:0}.nxmuted{font-size:13px;color:#718096}.nxpill{display:inline-block;font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;margin:3px 3px 3px 0}.nxpending{background:#fff4dc;color:#8a5b00}.nxlist{display:grid;gap:9px}.nxitem{padding:12px;border-bottom:1px solid rgba(90,110,135,.15)}.nxitem:last-child{border-bottom:0}.nxactions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.nxcrumb{font-size:12px;color:#718096;margin:8px 0 14px}.nxstat strong{display:block;font-size:27px}.nxstat span{font-size:12px;color:#718096}
+.nxlive{border-radius:20px;overflow:hidden;margin-bottom:18px;border:1px solid rgba(90,110,135,.18);background:#07192d;color:#fff;box-shadow:0 12px 32px rgba(0,0,0,.12)}.nxlive-media{height:clamp(190px,31vw,390px);position:relative;background:linear-gradient(135deg,#07192d,#0b4ea2);overflow:hidden}.nxlive-media img,.nxlive-media video{width:100%;height:100%;object-fit:cover;display:none}.nxlive-content{position:absolute;left:0;right:0;bottom:0;padding:22px;background:linear-gradient(transparent,rgba(2,9,20,.94))}.nxlive-kicker{font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;opacity:.85}.nxlive-title{font-size:clamp(22px,3.2vw,38px);line-height:1.08;font-weight:900;margin:5px 0}.nxlive-meta{font-size:12px;opacity:.8}.nxlive-controls{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#061326}.nxlive-dots{display:flex;gap:5px;margin-left:auto}.nxlive-dot{width:7px;height:7px;border-radius:50%;background:#64748b;cursor:pointer}.nxlive-dot.active{background:#fff}.nxlive-note{font-size:11px;color:#9fb1c7}
+.nxexplore{border:1px solid rgba(90,110,135,.18);border-radius:22px;padding:24px;background:var(--card-bg,#fff);box-shadow:0 8px 26px rgba(0,0,0,.06)}.nxexplore-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:16px}.nxexplore-head h1{margin:0 0 7px;font-size:clamp(26px,4vw,40px)}.nxexplore-head p{margin:0;max-width:820px;color:#718096;line-height:1.55}.nxexplore-search{max-width:none;margin-bottom:18px}.nxexplore-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.nxexplore-card{display:block;text-decoration:none;color:inherit;border:1px solid rgba(90,110,135,.15);border-radius:15px;padding:15px;background:rgba(245,248,252,.65);transition:transform .15s ease,box-shadow .15s ease}.nxexplore-card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.07)}.nxexplore-card strong{display:block;font-size:15px;margin-bottom:5px}.nxexplore-card span{display:block;font-size:12px;line-height:1.45;color:#718096}@media(max-width:1100px){.nxexplore-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:650px){.nxexplore{padding:17px}.nxexplore-head{align-items:flex-start;flex-direction:column}.nxexplore-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:430px){.nxexplore-grid{grid-template-columns:1fr}}
+@media(max-width:1000px){.nxgrid{grid-template-columns:repeat(2,1fr)}.nxgrid4{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.nxgrid,.nxgrid4{grid-template-columns:1fr}.nxsearch{flex-direction:column}.nxlive-media{height:250px}}
 </style>
 <div class="nxh">
-<nav class="nxnav"><a href="{{ url_for('koja_nexus_home') }}">NEXUS</a><a href="{{ url_for('nexus_africa') }}">Africa</a><a href="{{ url_for('nexus_search') }}">Search</a><a href="{{ url_for('nexus_business') }}">Business</a><a href="{{ url_for('nexus_services') }}">Services</a><a href="{{ url_for('nexus_news') }}">Africa Now</a><a href="{{ url_for('nexus_market') }}">Market</a><a href="{{ url_for('nexus_opportunities') }}">Opportunities</a><a href="{{ url_for('nexus_education') }}">Education</a><a href="{{ url_for('nexus_organisations') }}">Organisations</a><a href="{{ url_for('nexus_intelligence') }}">Intelligence</a><a href="{{ url_for('nexus_saved') }}">Saved</a><a href="{{ url_for('nexus_connect') }}">Connect</a></nav>
-''' + body + r'''
+<div class="nxbar"><div class="nxbrand">AFRICA <span style="opacity:.45">/</span> NEXUS</div><button class="nxmenu" type="button" onclick="document.getElementById('nxdrawer').classList.add('open')">Menu</button></div>
+<div id="nxdrawer" class="nxdrawer" onclick="if(event.target===this)this.classList.remove('open')"><aside class="nxpanel"><div style="display:flex;justify-content:space-between;align-items:center"><h2>NEXUS Menu</h2><button class="nxmenu" type="button" onclick="document.getElementById('nxdrawer').classList.remove('open')">Close</button></div><div class="nxlinks"><a href="{{ url_for('koja_nexus_home') }}">NEXUS</a><a href="{{ url_for('nexus_africa') }}">Africa</a><a href="{{ url_for('nexus_search') }}">Search</a><a href="{{ url_for('nexus_business') }}">Business</a><a href="{{ url_for('nexus_services') }}">Services</a><a href="{{ url_for('nexus_news') }}">Africa Now</a><a href="{{ url_for('nexus_market') }}">Market</a><a href="{{ url_for('nexus_opportunities') }}">Opportunities</a><a href="{{ url_for('nexus_education') }}">Education</a><a href="{{ url_for('nexus_organisations') }}">Organisations</a><a href="{{ url_for('nexus_intelligence') }}">Intelligence</a><a href="{{ url_for('nexus_saved') }}">Saved</a><a href="{{ url_for('nexus_connect') }}">Connect</a></div></aside></div>
+""" + body + r"""
 </div>
-''', **ctx)
+<script>
+(function(){const root=document.querySelector('[data-nexus-live]');if(!root)return;let items=[],idx=0,timer=null;const title=root.querySelector('[data-live-title]'),meta=root.querySelector('[data-live-meta]'),kicker=root.querySelector('[data-live-kicker]'),img=root.querySelector('[data-live-img]'),video=root.querySelector('[data-live-video]'),dots=root.querySelector('[data-live-dots]');function render(){if(!items.length){return}const x=items[idx%items.length]||{};kicker.textContent=x.category||x.type||'Africa update';title.textContent=x.title||'Latest Africa update';meta.textContent=[x.source,x.country,x.published_at||x.published].filter(Boolean).join(' · ');img.style.display='none';video.style.display='none';if(/^https?:\/\//i.test(x.image_url||x.image)){img.src=x.image_url||x.image;img.style.display='block'}if(/^https?:\/\//i.test(x.video_url||x.video)){video.src=x.video_url||x.video;video.style.display='block'}dots.innerHTML=items.slice(0,10).map((_,i)=>'<span class="nxlive-dot '+(i===idx?'active':'')+'" data-i="'+i+'"></span>').join('');dots.querySelectorAll('.nxlive-dot').forEach(d=>d.onclick=()=>{idx=Number(d.dataset.i);render();reset()});root.querySelector('[data-live-open]').onclick=()=>{if(x.url||x.source_url)window.open(x.url||x.source_url,'_blank','noopener')};root.querySelector('[data-live-share]').onclick=async()=>{const u=x.url||x.source_url||location.href;try{await navigator.share({title:x.title||'KOJA NEXUS',url:u})}catch(e){try{await navigator.clipboard.writeText(u)}catch(_){} }};}function reset(){clearInterval(timer);timer=setInterval(()=>{idx=(idx+1)%Math.max(items.length,1);render()},7000)}async function load(){try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store'});const j=await r.json();items=j.items||[];if(!items.length)items=[{title:'KOJA NEXUS — Africa updates',category:'NEXUS',source:'KOJA AFRICA'}];idx=0;render();reset()}catch(e){items=[{title:'KOJA NEXUS',category:'Africa',source:'Automatic updates'}];render();reset()}}load();setInterval(load,60000)})();
+</script>
+"""
+    return render_page(title, shell, **ctx)
 
 def _nexus_home_page():
-    services=_world_rows(); news=_nexus_news_rows(limit=12); opps=_nexus_opportunity_rows(limit=12); businesses=_nexus_business_rows()[:8]
-    verified=sum(1 for x in services if _world_verified(x))
-    return _nexus_shell("KOJA NEXUS",r'''
-<section class="nxhero">
-  <div class="nxcrumb">KOJA / NEXUS</div>
-  <h1>Discover Africa. Find what matters.</h1>
-  <p>Explore African countries, public services, businesses, organisations, markets, news and opportunities — then continue into the specialised KOJA service for the next step.</p>
-  <form class="nxsearch" action="{{ url_for('nexus_search') }}">
-    <input name="q" placeholder="Search Africa, a country, business, service, opportunity or organisation…" autocomplete="off">
-    <button class="btn">Search NEXUS</button>
-  </form>
-  <div class="nxquick">
-    <a href="{{ url_for('nexus_africa') }}">54 Countries</a><a href="{{ url_for('nexus_news') }}">Africa Now</a><a href="{{ url_for('nexus_business') }}">Business</a><a href="{{ url_for('nexus_services') }}">Public Services</a><a href="{{ url_for('nexus_opportunities') }}">Opportunities</a><a href="{{ url_for('nexus_market') }}">Markets</a>
+    return _nexus_shell("KOJA NEXUS",r"""
+<div class="nxlive" data-nexus-live><div class="nxlive-media"><img data-live-img alt=""><video data-live-video controls playsinline></video><div class="nxlive-content"><div class="nxlive-kicker" data-live-kicker>AFRICA NOW</div><div class="nxlive-title" data-live-title>Loading Africa updates…</div><div class="nxlive-meta" data-live-meta>News · Sports · Jobs · Opportunities</div></div></div><div class="nxlive-controls"><span class="nxlive-note">Automatic NEXUS updates</span><button class="btn" data-live-open type="button">Open</button><button class="btn secondary" data-live-share type="button">Share</button><div class="nxlive-dots" data-live-dots></div></div></div>
+
+<section class="nxexplore">
+  <div class="nxexplore-head">
+    <div><div class="nxcrumb">KOJA / NEXUS</div><h1>Explore NEXUS</h1><p>Explore Africa through one discovery layer. Search countries, public services, businesses, news, markets, opportunities, education and organisations.</p></div>
+    <a class="btn" href="{{ url_for('nexus_search') }}">Global Search</a>
+  </div>
+  <form class="nxsearch nxexplore-search" action="{{ url_for('nexus_search') }}"><input name="q" placeholder="Search anything across Africa…"><button class="btn" type="submit">Search</button></form>
+  <div class="nxexplore-grid">
+    <a class="nxexplore-card" href="{{ url_for('nexus_africa') }}"><strong>Africa</strong><span>54 countries and country discovery</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_search') }}"><strong>Search</strong><span>One search across the NEXUS index</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_business') }}"><strong>Business</strong><span>Businesses, B2B and organisations</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_services') }}"><strong>Services</strong><span>Government and public services</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_news') }}"><strong>Africa Now</strong><span>News, top stories and current updates</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_market') }}"><strong>Market</strong><span>African market and commerce discovery</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_opportunities') }}"><strong>Opportunities</strong><span>Jobs, grants, scholarships and tenders</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_education') }}"><strong>Education</strong><span>Universities, research and academic discovery</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_organisations') }}"><strong>Organisations</strong><span>Companies, institutions and organisations</span></a>
+    <a class="nxexplore-card" href="{{ url_for('nexus_intelligence') }}"><strong>Intelligence</strong><span>Country, business, market and opportunity intelligence</span></a>
   </div>
 </section>
-
-<section class="nx-section-block">
-  <div class="nx-section-title"><div><span>AFRICA NOW</span><h2>Latest updates</h2></div><a class="btn secondary" href="{{ url_for('nexus_news') }}">View all</a></div>
-  <div class="nxgrid3">
-  {% for x in news[:6] %}<article class="nxcard"><span class="nxpill">{{ x.category or 'Africa' }}</span><h3>{{ x.title }}</h3><div class="nxmuted">{{ x.country or 'Africa' }} · {{ x.source_name or 'Source' }}</div><p>{{ x.summary or '' }}</p>{% if x.url %}<a class="btn secondary" href="{{ x.url }}" target="_blank" rel="noopener">Open</a>{% endif %}</article>{% else %}<div class="nxcard"><h3>No current updates</h3><p class="nxmuted">NEXUS is continuing to collect indexed sources.</p></div>{% endfor %}
-  </div>
-</section>
-
-<section class="nx-section-block">
-  <div class="nx-section-title"><div><span>EXPLORE AFRICA</span><h2>All 54 countries</h2></div><a class="btn secondary" href="{{ url_for('nexus_africa') }}">Explore Africa</a></div>
-  <div class="nx-country-grid">{% for code,name in countries %}<a class="nx-country-card" href="{{ url_for('nexus_country',country=code.lower()) }}"><strong>{{ name }}</strong><small>{{ code }} · Explore country</small></a>{% endfor %}</div>
-</section>
-
-<section class="nx-section-block">
-  <div class="nx-section-title"><div><span>OPPORTUNITIES</span><h2>Jobs, scholarships & funding</h2></div><a class="btn secondary" href="{{ url_for('nexus_opportunities') }}">Explore opportunities</a></div>
-  <div class="nxgrid3">{% for x in opps[:6] %}<article class="nxcard"><span class="nxpill">{{ x.job_type or x.opportunity_type or 'Opportunity' }}</span><h3>{{ x.title }}</h3><div class="nxmuted">{{ x.country or 'Africa' }} · {{ x.source_name or 'Source' }}</div><p>{{ x.summary or '' }}</p>{% if x.url %}<a class="btn secondary" href="{{ x.url }}" target="_blank" rel="noopener">View / Apply</a>{% endif %}</article>{% else %}<div class="nxcard"><h3>No current opportunities indexed</h3></div>{% endfor %}</div>
-</section>
-
-<section class="nx-section-block">
-  <div class="nx-section-title"><div><span>PUBLIC SERVICES</span><h2>Government & essential services</h2></div><a class="btn secondary" href="{{ url_for('nexus_services') }}">Find services</a></div>
-  <div class="nxgrid4"><div class="nxcard"><h3>Government</h3><p class="nxmuted">Government portals and official public services.</p></div><div class="nxcard"><h3>Immigration</h3><p class="nxmuted">Passports, visas and immigration information.</p></div><div class="nxcard"><h3>Business Registration</h3><p class="nxmuted">Business registration, tax and compliance services.</p></div><div class="nxcard"><h3>Healthcare & Education</h3><p class="nxmuted">Healthcare, universities and education services.</p></div></div>
-</section>
-
-<section class="nx-section-block">
-  <div class="nx-section-title"><div><span>BUSINESS & MARKET</span><h2>Africa's commercial ecosystem</h2></div><a class="btn secondary" href="{{ url_for('nexus_business') }}">Explore business</a></div>
-  <div class="nxgrid4"><div class="nxcard"><h3>Businesses</h3><p class="nxmuted">Discover African companies, SMEs, startups and service providers.</p></div><div class="nxcard"><h3>B2B</h3><p class="nxmuted">Suppliers, buyers, distributors, investors and RFQs.</p><a class="btn secondary" href="{{ url_for('nexus_b2b') }}">Open B2B</a></div><div class="nxcard"><h3>Markets</h3><p class="nxmuted">Companies, commodities, economic data and market intelligence.</p><a class="btn secondary" href="{{ url_for('nexus_market') }}">Open Market</a></div><div class="nxcard"><h3>Trade</h3><p class="nxmuted">Discover trade opportunities and continue into KOJA BUSINESS.</p><a class="btn secondary" href="{{ url_for('nexus_trade') }}">Explore Trade</a></div></div>
-</section>
-
-<section class="nx-section-block">
-  <div class="nx-section-title"><div><span>ORGANISATIONS</span><h2>Discover trusted organisations</h2></div><a class="btn secondary" href="{{ url_for('nexus_organisations') }}">View organisations</a></div>
-  <div class="nxgrid4">{% for x in businesses[:8] %}<article class="nxcard"><span class="nxpill">{{ x.verification_status or 'Listed' }}</span><h3>{{ x.name or x.business_name or 'Organisation' }}</h3><div class="nxmuted">{{ x.country_name or x.country or 'Africa' }}</div><p>{{ x.description or x.about or '' }}</p></article>{% else %}<div class="nxcard"><h3>No indexed organisations yet</h3></div>{% endfor %}</div>
-</section>
-
-<section class="nx-section-block"><div class="nxgrid4"><div class="nxcard nxstat"><strong>{{ countries|length }}</strong><span>African countries</span></div><div class="nxcard nxstat"><strong>{{ services|length }}</strong><span>Indexed public services</span></div><div class="nxcard nxstat"><strong>{{ verified }}</strong><span>Verified services</span></div><div class="nxcard nxstat"><strong>{{ opps|length }}</strong><span>Indexed opportunities</span></div></div></section>
-
-<section class="nx-ecosystem"><div><span>KOJA ECOSYSTEM</span><h2>NEXUS discovers. KOJA services execute.</h2><p>Use NEXUS to discover and compare. Continue into the relevant KOJA service when you are ready to apply, transact, communicate, learn, create, deliver or manage your business.</p></div><div class="nx-eco-grid">{% for n,u in ecosystem %}<a href="{{ u }}"><strong>{{ n }}</strong><small>Continue</small></a>{% endfor %}</div></section>
-
-<div class="nx-live-mini" id="nexusLiveMini"><div><strong>AFRICA NOW</strong><span id="nexusLiveMiniText">Loading latest update…</span></div><a id="nexusLiveMiniOpen" class="btn secondary" href="{{ url_for('nexus_news') }}">View updates</a></div>
-<script>(function(){const t=document.getElementById('nexusLiveMiniText'),o=document.getElementById('nexusLiveMiniOpen');async function load(){try{const r=await fetch('/api/nexus/africa-now?limit=1',{cache:'no-store'}),d=await r.json(),x=(d.items||[])[0];if(x){t.textContent=(x.category?x.category+' · ':'')+(x.title||'Latest Africa update');if(x.url&&/^https?:\/\//i.test(x.url)){o.href=x.url;o.target='_blank';o.rel='noopener';o.textContent='Open source'}}}catch(e){}}load();setInterval(load,60000)})();</script>
-''''',countries=KOJA_AFRICA_54,services=services,verified=verified,opps=opps,news=news,businesses=businesses,ecosystem=[("KOJA NEWS","/news"),("KOJA BUSINESS","/business-directory"),("KOJA EDUCATION","/education"),("KOJA AI","/ai-next"),("KOJA MARKET","/market"),("KOJA MEDIA","/media-next"),("KOJA MUSIC","/music"),("KOJA CONNECT+","/communication-next"),("KOJA DELIVERY","/deliver"),("KOJA CLOUD","https://higher-education-at-easy.onrender.com")])
-
-@app.route("/nexus")
-def koja_nexus_home():
-    return _nexus_home_page()
+""")
 
 @app.route("/nexus/search")
 def nexus_search():
