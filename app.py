@@ -14554,21 +14554,40 @@ def _nexus_business_rows(q="", country=""):
     return out
 
 def _nexus_news_rows(q="", category="", country="", limit=100):
+    # Reuse the authoritative AFRICA NOW cache used by /api/nexus/africa-now
+    # instead of introducing a second NEXUS news source.  "Latest" and
+    # "Top Stories" are presentation filters, not database categories.
     rows=_nexus_safe_rows("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=500)
     out=[]
+    wanted=clean(category).lower()
     for r in rows:
-        if category and str(r.get("category") or "").lower()!=category.lower(): continue
+        if not isinstance(r,dict) or r.get("is_active") is False: continue
         rc=str(r.get("country") or r.get("country_code") or "")
         if country and rc.upper()!=country.upper(): continue
+        actual=str(r.get("category") or "").strip().lower()
+        if wanted and wanted not in ("latest","top stories") and actual!=wanted: continue
         if _nexus_match(r,q): out.append(r)
+    # The collector already ranks by score then publication time. For Latest,
+    # switch to publication time so the page reflects recency rather than rank.
+    if wanted == "latest":
+        out.sort(key=lambda r: str(r.get("published_at") or r.get("fetched_at") or ""), reverse=True)
     return out[:limit]
 
 def _nexus_opportunity_rows(q="", country="", limit=100):
+    # AFRICA NOW currently classifies live opportunity records as
+    # "Jobs & Opportunities". Keep this tied to that same authoritative feed.
     rows=_nexus_news_rows(q,"Jobs & Opportunities",country,limit=500)
+    now=datetime.now(timezone.utc)
+    out=[]
     for r in rows:
+        deadline=_africa_now_parse_date(str(r.get("job_deadline") or "")) if r.get("job_deadline") else None
+        if deadline and deadline < now: continue
+        r=dict(r)
         r.setdefault("opportunity_type", r.get("job_type") or "Opportunity")
         r.setdefault("source_type", "Africa Now")
-    return rows[:limit]
+        r["job_deadline"] = deadline.isoformat() if deadline else r.get("job_deadline")
+        out.append(r)
+    return out[:limit]
 
 def _nexus_market_rows(q="", limit=100):
     candidates=[]
