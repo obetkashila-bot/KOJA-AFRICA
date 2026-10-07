@@ -14570,6 +14570,48 @@ def _nexus_opportunity_rows(q="", country="", limit=100):
         r.setdefault("source_type", "Africa Now")
     return rows[:limit]
 
+
+# NEXUS global market intelligence extensions
+KOJA_MARKET_COMMODITIES = [("GC=F","Gold","USD/oz"),("SI=F","Silver","USD/oz"),("BZ=F","Brent Crude","USD/barrel"),("CL=F","WTI Crude","USD/barrel"),("HG=F","Copper","USD/lb"),("NG=F","Natural Gas","USD/MMBtu"),("KC=F","Coffee","USD/lb"),("CC=F","Cocoa","USD/tonne"),("ZW=F","Wheat","USD/bushel")]
+KOJA_NEXUS_COUNTRY_CURRENCY={"DZ":"DZD","AO":"AOA","BJ":"XOF","BW":"BWP","BF":"XOF","BI":"BIF","CV":"CVE","CM":"XAF","CF":"XAF","TD":"XAF","KM":"KMF","CD":"CDF","CG":"XAF","CI":"XOF","DJ":"DJF","EG":"EGP","GQ":"XAF","ER":"ERN","SZ":"SZL","ET":"ETB","GA":"XAF","GM":"GMD","GH":"GHS","GN":"GNF","GW":"XOF","KE":"KES","LS":"LSL","LR":"LRD","LY":"LYD","MG":"MGA","MW":"MWK","ML":"XOF","MR":"MRU","MU":"MUR","MA":"MAD","MZ":"MZN","NA":"NAD","NE":"XOF","NG":"NGN","RW":"RWF","ST":"STN","SN":"XOF","SC":"SCR","SL":"SLE","SO":"SOS","ZA":"ZAR","SS":"SSP","SD":"SDG","TZ":"TZS","TG":"XOF","TN":"TND","UG":"UGX","ZM":"ZMW","ZW":"ZWL"}
+KOJA_NEXUS_COUNTRY_INDEX={"ZA":"^J203.JO","NG":"^NGSEALL","EG":"^CASE30","KE":"^NSEI","GH":"^GSECI","MA":"^MASI","TZ":"^DSEI","UG":"^USEALL","ZM":"^ZAX","ZW":"^ZSE","MU":"^SEMDEX","BW":"^BSE","NA":"^NSX","TN":"^TUNINDEX","CI":"^BRVM"}
+def _nexus_fx_usd(currency):
+    currency=clean(currency).upper()
+    if not currency or currency=="USD": return 1.0,"USD","Reference"
+    pair="USD/"+currency; rate=None; provider=None
+    try:
+        if ALPHAVANTAGE_API_KEY: rate=_alpha_fx_rate(pair); provider="Alpha Vantage" if rate is not None else None
+        if rate is None and TWELVEDATA_API_KEY: rate=_twelve_fx_rate(pair); provider="Twelve Data" if rate is not None else None
+    except Exception: pass
+    if rate is None:
+        rows=_public_fx_rates([(pair,"US Dollar",currency)])
+        if rows: rate=rows[0].get("rate"); provider=rows[0].get("provider")
+    return rate,currency,provider
+@app.route('/api/nexus/market/overview')
+def nexus_market_overview_api():
+    stocks=[]
+    for symbol in ["^GSPC","^DJI","^IXIC","^FTSE","^GDAXI","^N225","^HSI","^STOXX50E"]:
+        q=_market_quote(symbol)
+        if q: stocks.append(q)
+    commodities=[]
+    for symbol,name,unit in KOJA_MARKET_COMMODITIES:
+        q=_market_quote(symbol)
+        if q: q.update(name=name,unit=unit); commodities.append(q)
+    countries=[]
+    cmap=dict(KOJA_AFRICA_54)
+    for code,name in KOJA_AFRICA_54:
+        cur=KOJA_NEXUS_COUNTRY_CURRENCY.get(code); rate,_,provider=_nexus_fx_usd(cur) if cur else (None,None,None)
+        sym=KOJA_NEXUS_COUNTRY_INDEX.get(code); idx=_market_quote(sym) if sym else None
+        countries.append({"code":code,"name":name,"currency":cur,"usd_rate":rate,"fx_provider":provider,"index":idx})
+    return jsonify({"updated_at":time.time(),"stocks":stocks,"commodities":commodities,"countries":countries,"freshness":"Provider quotes; availability and delay depend on market-data source and entitlement."})
+@app.route('/api/nexus/market/country/<code>')
+def nexus_market_country_api(code):
+    code=clean(code).upper(); cmap=dict(KOJA_AFRICA_54)
+    if code not in cmap: abort(404)
+    cur=KOJA_NEXUS_COUNTRY_CURRENCY.get(code); rate,_,provider=_nexus_fx_usd(cur) if cur else (None,None,None)
+    sym=KOJA_NEXUS_COUNTRY_INDEX.get(code); idx=_market_quote(sym) if sym else None
+    return jsonify({"country":{"code":code,"name":cmap[code],"currency":cur,"usd_rate":rate,"fx_provider":provider,"index":idx},"updated_at":time.time()})
+
 def _nexus_market_rows(q="", limit=100):
     candidates=[]
     for table in ("koja_market_products","koja_marketplace_products"):
@@ -14733,8 +14775,15 @@ def nexus_news():
 @app.route("/nexus/market")
 def nexus_market():
     rows=_nexus_market_rows(clean(request.args.get("q")),100)
-    return _nexus_shell("NEXUS Market",r'''
-<div class="nxhero"><div class="nxcrumb">NEXUS / Market</div><h1>African Market Discovery</h1><p>Market and commerce information assembled from existing KOJA market data. For live financial data, NEXUS links to the existing market intelligence layer.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Products, companies, markets..."><button class="btn">Search Market</button></form></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">Market</span><h2>{{ x.name or x.title or x.product_name or 'Market item' }}</h2><div class="nxmuted">{{ x.category or x.industry or 'Market' }}</div><p>{{ x.description or x.summary or '' }}</p></article>{% else %}<div class="nxcard"><h3>Market snapshot</h3><p class="nxmuted">Existing KOJA market data is available through the specialised KOJA MARKET module.</p><a class="btn" href="/market">Open KOJA MARKET</a></div>{% endfor %}</div>''',rows=rows,q=clean(request.args.get("q")))
+    return _nexus_shell("NEXUS Market",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Market</div><h1>Global Market Intelligence</h1><p>Stocks, currencies, commodities and country-level African market signals. Data is labelled with provider and freshness information.</p><form class="nxsearch"><input name="q" value="{{ q }}" placeholder="Products, companies, markets..."><button class="btn">Search Market</button></form></div>
+<style>.nxm{display:grid;gap:14px}.nxmp{background:#fff;color:#111;border:2px solid #111;border-radius:20px;padding:18px}.nxmh{display:flex;justify-content:space-between;gap:12px;align-items:end;flex-wrap:wrap}.nxmh h2{margin:0}.nxmg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}.nxmb{background:#fff;border:1px solid #111;border-radius:15px;padding:13px}.nxmb strong{display:block;font-size:13px}.nxmv{font-size:21px;font-weight:900;margin-top:6px}.nxmc{font-size:11px;margin-top:4px}.nxmu{font-size:10px;color:#555;margin-top:6px;line-height:1.4}.nxup{color:#087a43}.nxdown{color:#b42318}.nxchart{height:260px;border:1px solid #111;border-radius:15px;margin-top:12px;background:#fafafa;overflow:hidden}.nxchart svg{width:100%;height:100%}.nxcountry{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:10px;margin-top:12px}.nxcountry select{width:100%;padding:10px;border:1px solid #111;border-radius:10px;background:#fff;color:#111}@media(max-width:950px){.nxmg{grid-template-columns:repeat(2,1fr)}.nxcountry{grid-template-columns:1fr}}@media(max-width:520px){.nxmg{grid-template-columns:1fr}}</style>
+<section class="nxm"><div class="nxmp"><div class="nxmh"><div><h2>WORLD MARKET NOW</h2><div class="nxmuted">Major global stock indexes.</div></div><span id="nxmu" class="nxmu">Loading…</span></div><div id="nxstocks" class="nxmg"><div class="nxmb">Loading market data…</div></div></div>
+<div class="nxmp"><div class="nxmh"><div><h2>MARKET GRAPH</h2><div class="nxmuted">Recent price history for a selected benchmark.</div></div><select id="nxsym" style="padding:9px;border:1px solid #111;border-radius:10px;background:#fff;color:#111"><option value="^GSPC">S&amp;P 500</option><option value="^DJI">Dow Jones</option><option value="^IXIC">Nasdaq</option><option value="^FTSE">FTSE 100</option><option value="^GDAXI">DAX</option><option value="^N225">Nikkei 225</option><option value="^HSI">Hang Seng</option></select></div><div id="nxchart" class="nxchart">Loading graph…</div></div>
+<div class="nxmp"><div class="nxmh"><div><h2>TOP MARKET PRODUCTS</h2><div class="nxmuted">Tracked commodities and energy/metals products ranked by quoted unit price.</div></div></div><div id="nxcommodities" class="nxmg"></div></div>
+<div class="nxmp"><div class="nxmh"><div><h2>COUNTRY MARKET LEVEL</h2><div class="nxmuted">African country currency versus USD and local benchmark where mapped.</div></div></div><div class="nxcountry"><select id="nxcountry">{% for code,name in countries %}<option value="{{ code }}">{{ name }} ({{ code }})</option>{% endfor %}</select><div id="nxf" class="nxmb">Loading…</div><div id="nxi" class="nxmb">Loading…</div></div></div></section>
+<div class="nxcard"><h2>African Market Listings</h2><div class="nxmuted">KOJA marketplace products and listings are shown separately from financial-market data.</div></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">Market</span><h2>{{ x.name or x.title or x.product_name or 'Market item' }}</h2><div class="nxmuted">{{ x.category or x.industry or 'Market' }}</div><p>{{ x.description or x.summary or '' }}</p></article>{% else %}<div class="nxcard"><h3>No local market listings found.</h3></div>{% endfor %}</div>
+<script>(function(){const S=document.getElementById('nxstocks'),C=document.getElementById('nxcommodities'),U=document.getElementById('nxmu'),SY=document.getElementById('nxsym'),CH=document.getElementById('nxchart'),CO=document.getElementById('nxcountry'),FX=document.getElementById('nxf'),IX=document.getElementById('nxi');function e(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function card(q,label){let n=Number(q.change_percent),cl=n>=0?'nxup':'nxdown';return '<div class="nxmb"><strong>'+e(label||q.symbol)+'</strong><div class="nxmv">'+e(Number(q.price).toLocaleString(undefined,{maximumFractionDigits:4}))+'</div><div class="nxmc '+cl+'">'+(Number.isFinite(n)?(n>=0?'+':'')+n.toFixed(2)+'%':'—')+'</div><div class="nxmu">'+e(q.provider||'Provider')+' · '+e(q.freshness||'')+'</div></div>';}function draw(a){if(!a.length){CH.innerHTML='<div style="padding:20px">No graph data available.</div>';return;}let v=a.map(x=>Number(x.close)).filter(Number.isFinite),w=1000,h=250,p=35,min=Math.min(...v),max=Math.max(...v),sp=max-min||1,pts=a.map((x,i)=>[p+i/Math.max(1,a.length-1)*(w-2*p),h-25-(Number(x.close)-min)/sp*(h-50)]),d=pts.map((x,i)=>(i?'L':'M')+x[0].toFixed(1)+' '+x[1].toFixed(1)).join(' ');CH.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><path d="'+d+'" fill="none" stroke="#111" stroke-width="3" vector-effect="non-scaling-stroke"/><circle cx="'+pts[pts.length-1][0]+'" cy="'+pts[pts.length-1][1]+'" r="5" fill="#111"/><text x="'+p+'" y="15" font-size="11">'+e(SY.options[SY.selectedIndex].text)+' · '+Number(v[v.length-1]).toLocaleString(undefined,{maximumFractionDigits:2})+'</text></svg>';}async function chart(){try{let d=await (await fetch('/api/markets/chart?symbol='+encodeURIComponent(SY.value)+'&interval=1day&outputsize=60',{cache:'no-store'})).json();draw(d.values||[]);}catch(x){CH.textContent='Graph temporarily unavailable.';}}async function all(){try{let d=await (await fetch('/api/nexus/market/overview',{cache:'no-store'})).json();U.textContent='Updated '+new Date(d.updated_at*1000).toLocaleTimeString();S.innerHTML=(d.stocks||[]).map(q=>card(q)).join('')||'<div class="nxmb">No benchmark quotes available.</div>';let a=(d.commodities||[]).sort((x,y)=>Number(y.price)-Number(x.price));C.innerHTML=a.map(q=>card(q,q.name)+'<div class="nxmu">Unit: '+e(q.unit)+'</div>').join('')||'<div class="nxmb">No commodity quotes available.</div>';}catch(x){S.innerHTML='<div class="nxmb">Market feed temporarily unavailable.</div>';}}async function country(){try{let d=await (await fetch('/api/nexus/market/country/'+CO.value,{cache:'no-store'})).json(),x=d.country||{};FX.innerHTML='<strong>'+e(x.currency||'Currency')+'</strong><div class="nxmv">'+(x.usd_rate==null?'—':Number(x.usd_rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="nxmu">1 USD = '+e(x.usd_rate==null?'unavailable':Number(x.usd_rate).toLocaleString(undefined,{maximumFractionDigits:6}))+' '+e(x.currency||'')+' · '+e(x.fx_provider||'Provider unavailable')+'</div>';let q=x.index;IX.innerHTML=q?'<strong>'+e(q.symbol)+'</strong><div class="nxmv">'+e(Number(q.price).toLocaleString(undefined,{maximumFractionDigits:2}))+'</div><div class="nxmc">'+e(q.change_percent||'')+'</div><div class="nxmu">'+e(q.provider||'')+'</div>':'<strong>No benchmark mapped</strong><div class="nxmu">Currency data may still be available.</div>';}catch(x){FX.textContent='Country data unavailable';IX.textContent='Country data unavailable';}}SY.onchange=chart;CO.onchange=country;all();chart();country();setInterval(all,60000);setInterval(chart,300000);setInterval(country,60000);})();</script>
+''' ,rows=rows,q=clean(request.args.get("q")),countries=KOJA_AFRICA_54)
 
 @app.route("/nexus/opportunities")
 def nexus_opportunities():
