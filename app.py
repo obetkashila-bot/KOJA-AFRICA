@@ -801,6 +801,12 @@ def safe_float(value):
         return None
 
 def latest_driver_locations():
+    try:
+        fast = db_select("koja_driver_latest", order="updated_at.desc", limit=2000)
+    except Exception:
+        fast = []
+    if fast:
+        return {str(r.get("driver_id")): dict(r, created_at=r.get("updated_at")) for r in fast if r.get("driver_id")}
     rows = db_select(
         "driver_locations",
         order="created_at.desc",
@@ -3770,6 +3776,8 @@ def _finalize_market_order(order, tx):
     }
     rpc_result,rpc_err=db_rpc('koja_finalize_market_order_atomic',atomic_payload)
     atomic_row=(rpc_result[0] if isinstance(rpc_result,list) and rpc_result else (rpc_result if isinstance(rpc_result,dict) else None))
+    if (rpc_err or not atomic_row or not atomic_row.get('ok')) and _cm_finalize_fallback(order,tx,qty):
+        rpc_err=None; atomic_row={'ok':True}
     if rpc_err or not atomic_row or not atomic_row.get('ok'):
         # Idempotent retry: if another webhook already completed the order, treat it as success.
         current=first_row('koja_market_orders',{'id':order.get('id')})
@@ -3796,6 +3804,7 @@ def _finalize_market_order(order, tx):
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical' and str(order.get('fulfillment_method') or 'delivery')=='delivery':
         tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code='KDP-'+secrets.token_hex(4).upper(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/deliveries')
+    _cm_notify_digital_ready(order,p)
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
 
@@ -5002,6 +5011,18 @@ def driver_delivery_action(delivery_id, action):
     if action not in statuses:
         abort(400)
     status = statuses[action]
+    cur_status = str(delivery.get("status") or "").lower()
+    if action == "reject" and not delivery.get("driver_id"):
+        flash("Skipped. This job stays available for other drivers.", "info")
+        return redirect(url_for("driver_dashboard"))
+    if action == "reject" and cur_status not in ("requested", "accepted"):
+        flash("This delivery can no longer be rejected.", "warning"); return redirect(url_for("driver_dashboard"))
+    if action in ("picked_up", "in_transit", "delivered"):
+        if str(delivery.get("driver_id") or "") != provider_id:
+            flash("This delivery is not assigned to you.", "danger"); return redirect(url_for("driver_dashboard"))
+        allowed = {"picked_up": ("accepted",), "in_transit": ("picked_up",), "delivered": ("in_transit", "picked_up")}
+        if cur_status not in allowed[action]:
+            flash("That step is not available yet (current status: %s)." % cur_status, "warning"); return redirect(url_for("driver_dashboard"))
     payload = {"status": status, "updated_at": utc_now()}
     if action == "accept":
         payload["driver_id"] = provider_id
@@ -5016,6 +5037,11 @@ def driver_delivery_action(delivery_id, action):
         flash("Could not update delivery status: " + str(error)[:700], "danger")
     else:
         log_activity("delivery_status", f"Delivery {delivery.get('tracking_code')} changed to {status}.")
+        _cm_event(delivery, status, note="by driver")
+        _msgs = {"accepted": "A driver accepted your delivery.", "picked_up": "Your package was picked up.", "in_transit": "Your package is on the way.",
+                 "delivered": "The driver marked your package delivered. Please confirm receipt so the delivery can be completed."}
+        if status in _msgs:
+            notify_user(delivery.get("customer_id"), "Delivery " + status.replace("_", " "), _msgs[status] + " Tracking: %s" % delivery.get("tracking_code"), "delivery", delivery.get("id"), "/track/%s" % delivery.get("tracking_code"))
         flash(f"Delivery status changed to {status}.", "success")
     return redirect(url_for("driver_dashboard"))
 
@@ -5097,15 +5123,20 @@ def driver_location_update():
         "heading": safe_float(body.get("heading")),
         "is_online": True, "created_at": utc_now()
     }
-    row, error = db_insert("driver_locations", payload)
+    if _rate_limited("gps:%s" % provider_id, 60, 60):
+        return jsonify({"ok":False,"message":"Too many GPS updates; slow down."}),429
+    error = None
+    if _cm_store_location(provider_id, lat, lon, body):
+        row, error = db_insert("driver_locations", payload)
     if error:
         logger.error("driver_locations insert failed: %s", error)
         return jsonify({"ok":False,"message":"GPS location could not be saved.","error":str(error)[:700]}),500
     delivery_id = clean(body.get("delivery_id"))
     if delivery_id:
         delivery = first_row("deliveries", {"id": delivery_id})
-        if delivery and str(delivery.get("driver_id") or "") in ("", provider_id):
-            db_update("deliveries", {"id":delivery_id}, {"driver_id":provider_id,"updated_at":utc_now()})
+        # Drivers can no longer self-assign by posting GPS: assignment only happens through accept.
+        if delivery and str(delivery.get("driver_id") or "") == provider_id:
+            _cm_arrival_check(delivery, provider_id, lat, lon)
     return jsonify({"ok":True,"latitude":lat,"longitude":lon,"created_at":utc_now()})
 
 @app.route("/api/driver/offline", methods=["POST"])
@@ -5126,6 +5157,8 @@ def driver_offline():
         "created_at":utc_now()
     }
     row,error=db_insert("driver_locations",payload)
+    try: db_update("koja_driver_latest",{"driver_id":provider_id},{"is_online":False,"updated_at":utc_now()})
+    except Exception: pass
     if error:
         return jsonify({"ok":False,"message":"Could not mark driver offline.","error":str(error)[:700]}),500
     return jsonify({"ok":True,"message":"Driver is now offline."})
@@ -5710,7 +5743,8 @@ def delivery_location(tracking_code):
         "ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),
         "accuracy":loc.get("accuracy"),"speed":loc.get("speed"),
         "heading":loc.get("heading"),"updated_at":updated,
-        "age_seconds":age_seconds,"status":delivery.get("status")
+        "age_seconds":age_seconds,"status":delivery.get("status"),
+        "eta":_cm_eta(delivery,loc)
     })
 
 # ============================================================
@@ -10616,7 +10650,7 @@ def complete_delivery(tracking_code):
     if str(delivery.get('customer_id') or '')!=str(uid) and not (current_user() or {}).get('is_admin'):
         return jsonify({'ok':False,'message':'Only the delivery owner can confirm receipt.'}),403
     status=str(delivery.get('status') or '').lower()
-    if status in {'completed','delivered'}: return jsonify({'ok':True,'already_completed':True,'message':'Delivery already completed.'})
+    if status in {'completed'}: return jsonify({'ok':True,'already_completed':True,'message':'Delivery already completed.'})
     if not as_bool(delivery.get('pickup_verified')):
         return jsonify({'ok':False,'message':'The driver pickup number has not been verified yet.'}),400
     db_update('deliveries',{'id':delivery.get('id')},{'status':'completed','delivery_completed_at':utc_now(),'driver_payout_status':'ready_to_send','updated_at':utc_now()})
@@ -11240,6 +11274,12 @@ def _live_seller_ok(room):
 @app.route('/market/live')
 def market_live():
     rooms = db_select('koja_market_live_rooms', {'status': 'live'}, order='started_at.desc', limit=100) or []
+    _stale = datetime.now(timezone.utc) - timedelta(hours=8)
+    for _r in list(rooms):
+        _st = _cx_dt(_r.get('started_at'))
+        if _st and _st < _stale:
+            db_update('koja_market_live_rooms', {'id': _r['id']}, {'status': 'ended', 'ended_at': utc_now(), 'updated_at': utc_now()}); rooms.remove(_r)
+    upcoming = [dict(u, _seller_name=(market_seller(u.get('seller_id')) or {}).get('store_name') or 'KOJA Seller') for u in (db_select('koja_market_live_rooms', {'status': 'scheduled'}, order='scheduled_at.asc', limit=30) or [])]
     visible = []
     for room in rooms:
         seller = market_seller(room.get('seller_id')) or {}
@@ -11251,7 +11291,9 @@ def market_live():
     return render_page('KOJA LIVE Shopping', r'''
 <div class="hero"><h1>KOJA LIVE Shopping</h1><p>Watch sellers live, discover products and shop while the seller is demonstrating them.</p>
 {% if user %}<div class="actions" style="margin-top:14px"><a class="btn success" href="{{ url_for('market_live_start') }}" style="font-size:17px;font-weight:800;padding:12px 22px">GO LIVE</a><a class="btn secondary" href="{{ url_for('market_my') }}">Seller Center</a></div>{% endif %}</div>
-<div class="card"><p class="small">Live video is secured with short-lived LiveKit access tokens. The LiveKit server secret is never sent to the browser.</p></div>
+{% if upcoming %}<div class="card"><h3>Upcoming lives</h3>{% for u in upcoming %}<p><strong>{{ u.title }}</strong> · {{ u._seller_name }} · <span class="cm-local" data-t="{{ u.scheduled_at }}">{{ u.scheduled_at }}</span>
+{% if user and u.seller_id|string == user.id|string %}<form method="post" action="{{ url_for('cm_live_room_go', room_id=u.id) }}" style="display:inline"><button class="btn success">Go live now</button></form>{% endif %}</p>{% endfor %}</div>
+<script>document.querySelectorAll('.cm-local').forEach(function(e){var d=new Date(e.dataset.t);if(!isNaN(d))e.textContent=d.toLocaleString()})</script>{% endif %}<div class="card"><p class="small">Live video is secured with short-lived LiveKit access tokens. The LiveKit server secret is never sent to the browser.</p></div>
 <div class="grid">
 {% for room in rooms %}<div class="card"><h2>{{ room.title }}</h2><p><strong>{{ room._seller_name }}</strong></p>
 {% if room._product %}<p>Featured: <strong>{{ room._product.title }}</strong> · {{ money(room._product.price, room._product.currency) }}</p>{% endif %}
@@ -11259,7 +11301,7 @@ def market_live():
 {% else %}<div class="card"><h3>No sellers are live right now.</h3><p>Come back when a KOJA seller starts a live shopping session.</p></div>{% endfor %}
 </div>
 {% if user %}<div class="actions"><a class="btn success" href="{{ url_for('market_live_start') }}">GO LIVE NOW</a><a class="btn secondary" href="{{ url_for('market_my') }}">Seller Center</a></div>{% endif %}
-''', rooms=visible, user=current_user(), money=market_money)
+''', rooms=visible, upcoming=upcoming, user=current_user(), money=market_money)
 
 @app.route('/market/live/start', methods=['GET', 'POST'])
 @login_required
@@ -11279,7 +11321,7 @@ def market_live_start():
         return redirect(url_for('market_live_room', room_id=room_id))
     return render_page('Start LIVE Shopping', r'''
 <div class="hero"><h1>Start LIVE Shopping</h1><p>Go live from your phone and demonstrate products to KOJA buyers.</p></div>
-<div class="card"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Live title</label><input name="title" maxlength="160" value="Live Shopping" required><button class="btn" type="submit">Start LIVE</button></form></div>
+<div class="card"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Live title</label><input name="title" maxlength="160" value="Live Shopping" required><button class="btn" type="submit">Start LIVE</button></form></div><div class="card"><h3>Schedule a live</h3><form method="post" action="{{ url_for('cm_live_schedule') }}"><label>Title</label><input name="title" maxlength="160" required><label>Date &amp; time</label><input type="datetime-local" name="scheduled_at" required><input type="hidden" name="tz" id="cmtz"><button class="btn secondary" type="submit">Schedule</button></form><script>document.getElementById('cmtz').value=new Date().getTimezoneOffset()</script></div>
 ''')
 
 @app.route('/market/live/end/<room_id>', methods=['POST'])
@@ -11288,7 +11330,7 @@ def market_live_end(room_id):
     room = _live_room(room_id)
     if not _live_seller_ok(room): abort(403)
     db_update('koja_market_live_rooms', {'id': room_id}, {'status': 'ended', 'ended_at': utc_now(), 'updated_at': utc_now()})
-    return redirect(url_for('market_live'))
+    return redirect(url_for('cm_live_summary', room_id=room_id))
 
 @app.route('/market/live/pin/<room_id>', methods=['POST'])
 @login_required
@@ -11347,6 +11389,24 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
 </div>
 {% if is_seller %}<div class="card live-pin-panel"><h2>Pin a product</h2><form method="post" action="{{ url_for('market_live_pin', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="product_id" required><option value="">Select product</option>{% for p in products %}<option value="{{ p.id }}" {% if room.pinned_product_id|string == p.id|string %}selected{% endif %}>{{ p.title }} — {{ money(p.price,p.currency) }}</option>{% endfor %}</select><button class="btn" type="submit">Pin Product</button></form></div>{% endif %}
 </div>
+<div class="card" id="cmLive"><div class="actions"><strong id="cmViewers">0 watching</strong>{% if is_seller %}<a class="btn secondary" href="{{ url_for('cm_live_summary', room_id=room.id) }}">Sales summary</a>{% endif %}</div>
+<h3>Shop this live</h3><div id="cmTray"><p class="small">The seller has not added products yet.</p></div><p id="cmToast" class="small"></p>
+<h3>Live chat</h3><div id="cmChat" style="max-height:220px;overflow:auto"></div>
+<form id="cmChatForm" style="display:flex;gap:6px"><input id="cmChatText" maxlength="300" placeholder="Say something…" autocomplete="off"><button class="btn">Send</button></form>
+{% if is_seller %}<h3>Manage products</h3><form method="post" action="{{ url_for('cm_live_tray', room_id=room.id) }}"><select name="product_id">{% for p in products %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}</select>
+<button class="btn" name="action" value="add">Add to tray</button><button class="btn secondary" name="action" value="remove">Remove</button><button class="btn secondary" name="action" value="unpin">Unpin</button></form>{% endif %}</div>
+<script>(function(){const rid={{ room.id|tojson }};let after='';const tray=document.getElementById('cmTray'),chat=document.getElementById('cmChat'),vw=document.getElementById('cmViewers'),toast=document.getElementById('cmToast');
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function say(t){toast.textContent=t;setTimeout(function(){toast.textContent=''},3000)}
+window.cmAdd=async function(id){try{const fd=new FormData();fd.append('quantity','1');await fetch('/market/cart/add/'+id,{method:'POST',body:fd});say('Added to your cart.')}catch(e){say('Could not add to cart.')}};
+async function tick(){try{const r=await fetch('/api/market/live/'+rid+'/state'+(after?'?after='+encodeURIComponent(after):''),{cache:'no-store'});if(!r.ok)return;const d=await r.json();
+vw.textContent=d.viewers+' watching';
+if(d.status==='ended'){tray.innerHTML='<p>This live has ended. Thanks for watching!</p>';return}
+if(d.tray&&d.tray.length){tray.innerHTML=d.tray.map(function(p){const pin=d.pinned&&d.pinned.id===p.id;return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+(pin?'<span class="small">★ Featured now</span><br>':'')+'<strong>'+esc(p.title)+'</strong> · '+esc(p.currency)+' '+Number(p.price).toFixed(2)+(p.type==='physical'&&p.stock<=5?' <span class="small">(only '+esc(p.stock)+' left)</span>':'')+'<div class="actions"><button class="btn" type="button" onclick="cmAdd(\''+esc(p.id)+'\')">Add to cart</button><a class="btn secondary" href="/market/product/'+esc(p.id)+'">Buy now</a></div></div>'}).join('')}
+else if(d.pinned){tray.innerHTML='<strong>'+esc(d.pinned.title)+'</strong> · '+esc(d.pinned.currency)+' '+Number(d.pinned.price).toFixed(2)+'<div class="actions"><button class="btn" type="button" onclick="cmAdd(\''+esc(d.pinned.id)+'\')">Add to cart</button><a class="btn secondary" href="/market/product/'+esc(d.pinned.id)+'">Buy now</a></div>'}
+(d.messages||[]).forEach(function(m){const el=document.createElement('div');el.innerHTML='<strong>'+esc(m.name)+(m.host?' (host)':'')+':</strong> '+esc(m.body);chat.appendChild(el);after=m.at||after});if((d.messages||[]).length)chat.scrollTop=chat.scrollHeight}catch(e){}}
+document.getElementById('cmChatForm').onsubmit=async function(e){e.preventDefault();const i=document.getElementById('cmChatText'),v=i.value.trim();if(!v)return;i.value='';try{const r=await fetch('/api/market/live/'+rid+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(!r.ok){const d=await r.json().catch(function(){return {}});say(d.error||'Message not sent')}else tick()}catch(x){say('Message not sent')}};
+tick();setInterval(tick,3000)})();</script>
 <script>
 (function(){
  const status=document.getElementById('liveStatus'), mount=document.getElementById('liveVideo'), msg=document.getElementById('liveMessage'), retry=document.getElementById('retryLive');
@@ -18151,6 +18211,476 @@ def cx_presence_get(cid):
     seen = _cx_dt(p.get("last_seen_at"))
     online = bool(seen and datetime.now(timezone.utc) - seen < timedelta(seconds=75))
     return jsonify(online=online, last_seen=p.get("last_seen_at") if not online else None)
+
+
+# ============================================================
+# KOJA COMMERCE COMPLETION (additive)
+# Live Shopping (tray, chat, viewers, schedule, summary), digital downloads,
+# order lifecycle (seller fulfilment, buyer receipt, cancel, disputes/refunds),
+# delivery safety + audit trail, scalable GPS, arrival detection, ETA.
+# Needs koja_commerce_migration.sql (idempotent).
+# ============================================================
+CM_DOWNLOAD_LIMIT = int(os.getenv("KOJA_DIGITAL_DOWNLOAD_LIMIT", "10") or 10)
+CM_ARRIVE_METRES = 150
+CM_AVG_KMH = 25.0
+_cm_gps_state = {}      # driver -> (ts, lat, lon) throttle for history rows
+_cm_gps_counter = [0]
+
+
+def _cm_uid():
+    return str((current_user() or {}).get("id") or "")
+
+
+def _cm_rows(table, filters=None, order=None, limit=200):
+    try:
+        return db_select(table, filters=filters or {}, order=order, limit=limit) or []
+    except Exception as exc:
+        logger.warning("KOJA COMMERCE table %s unavailable: %s", table, exc)
+        return []
+
+
+def _cm_page(title, tpl, **ctx):
+    ctx.setdefault("csrf", Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
+    ctx.setdefault("money", market_money)
+    return render_page(title, tpl, **ctx)
+
+
+def _cm_ts(v):
+    return _cx_dt(v)
+
+
+def _cm_event(delivery, event, lat=None, lon=None, note=""):
+    try:
+        db_insert("koja_delivery_events", {"id": str(uuid.uuid4()), "delivery_id": delivery.get("id"), "tracking_code": delivery.get("tracking_code"),
+                                           "event": event, "latitude": lat, "longitude": lon, "note": note[:300], "created_at": utc_now()})
+    except Exception:
+        logger.exception("delivery event failed")
+
+
+# =================== PAYMENT FINALISATION FALLBACK (when the SQL RPC is absent) ===================
+def _cm_finalize_fallback(order, tx, qty):
+    """Idempotent pending->paid transition + guarded stock decrement without the RPC."""
+    try:
+        r = requests.patch(sb_rest_url("koja_market_orders"), headers=sb_headers({"Prefer": "return=representation"}),
+                           params={"id": "eq." + str(order.get("id")), "status": "eq.pending"},
+                           json={"status": "paid", "payment_method": "flutterwave", "payment_transaction_id": str(tx.get("id") or ""), "updated_at": utc_now()}, timeout=20)
+        data = json_or_empty(r)
+        if not (r.ok and isinstance(data, list) and data):
+            return False  # already processed elsewhere (or table error): let the caller's idempotent check decide
+        p = market_product(order.get("product_id")) or {}
+        if str(p.get("product_type") or "physical") == "physical":
+            for _ in range(4):
+                p = market_product(order.get("product_id")) or {}
+                stock = int(p.get("stock") or 0)
+                if stock < qty:
+                    db_update("koja_market_orders", {"id": order.get("id")}, {"notes": ((order.get("notes") or "") + " [STOCK SHORTFALL - review]")[:900]})
+                    for a in _cm_rows("profiles", {"is_admin": True}, limit=5):
+                        notify_user(a.get("id"), "Market stock shortfall", "Order %s was paid but stock was insufficient." % order.get("order_number"), "system", order.get("id"), "/admin/market")
+                    break
+                rr = requests.patch(sb_rest_url("koja_market_products"), headers=sb_headers({"Prefer": "return=representation"}),
+                                    params={"id": "eq." + str(order.get("product_id")), "stock": "eq." + str(stock)}, json={"stock": stock - qty, "updated_at": utc_now()}, timeout=20)
+                if rr.ok and json_or_empty(rr):
+                    break
+        return True
+    except Exception:
+        logger.exception("market fallback finalisation failed")
+        return False
+
+
+def _cm_notify_digital_ready(order, product):
+    if product and str(product.get("product_type")) == "digital":
+        notify_user(order.get("buyer_id"), "Your download is ready", "%s is paid. Open My Downloads to get your file." % product.get("title"), "market_order", order.get("id"), "/market/downloads")
+
+
+# =================== LIVE SHOPPING ===================
+def _cm_room(room_id):
+    return first_row("koja_market_live_rooms", {"id": room_id})
+
+
+def _cm_is_host(room):
+    return bool(room) and str(room.get("seller_id")) == _cm_uid()
+
+
+def _cm_tray(room_id):
+    items = _cm_rows("koja_market_live_products", {"room_id": room_id}, order="position.asc", limit=60)
+    out = []
+    for it in items:
+        p = market_product(it.get("product_id"))
+        if p and as_bool(p.get("is_published")):
+            out.append({"id": str(p["id"]), "title": p.get("title"), "price": p.get("price"), "currency": p.get("currency") or "ZMW",
+                        "stock": p.get("stock"), "type": p.get("product_type") or "physical"})
+    return out
+
+
+@app.route("/market/live/schedule", methods=["POST"])
+@login_required
+def cm_live_schedule():
+    uid = _cm_uid()
+    if str((market_seller(uid) or {}).get("approval_status") or "").lower() != "approved":
+        flash("Only approved sellers can schedule LIVE Shopping.", "warning"); return redirect(url_for("market_my"))
+    try:
+        when = datetime.fromisoformat(clean(request.form.get("scheduled_at"))).replace(tzinfo=timezone.utc) + timedelta(minutes=int(safe_float(request.form.get("tz")) or 0))
+    except ValueError:
+        when = None
+    if not when or when < datetime.now(timezone.utc):
+        flash("Choose a future date and time.", "danger"); return redirect(url_for("market_live_start"))
+    rid = "koja-market-" + uuid.uuid4().hex
+    _, err = db_insert("koja_market_live_rooms", {"id": rid, "seller_id": uid, "title": (clean(request.form.get("title")) or "Live Shopping")[:160], "status": "scheduled",
+                                                 "scheduled_at": when.isoformat(), "created_at": utc_now(), "updated_at": utc_now()})
+    flash("LIVE scheduled." if not err else "Could not schedule (run koja_commerce_migration.sql).", "success" if not err else "danger")
+    return redirect(url_for("market_live"))
+
+
+@app.route("/market/live/<room_id>/golive", methods=["POST"])
+@login_required
+def cm_live_room_go(room_id):
+    room = _cm_room(room_id)
+    if not _cm_is_host(room) or room.get("status") != "scheduled":
+        abort(403)
+    db_update("koja_market_live_rooms", {"id": room_id}, {"status": "live", "started_at": utc_now(), "updated_at": utc_now()})
+    return redirect(url_for("market_live_room", room_id=room_id))
+
+
+@app.route("/market/live/<room_id>/tray", methods=["POST"])
+@login_required
+def cm_live_tray(room_id):
+    room = _cm_room(room_id)
+    if not _cm_is_host(room) or room.get("status") not in ("live", "scheduled"):
+        abort(403)
+    action, pid = clean(request.form.get("action")), clean(request.form.get("product_id"))
+    if action == "unpin":
+        db_update("koja_market_live_rooms", {"id": room_id}, {"pinned_product_id": None, "updated_at": utc_now()})
+    else:
+        p = market_product(pid)
+        if not p or str(p.get("seller_id")) != _cm_uid():
+            flash("Select one of your own products.", "warning")
+        elif action == "add":
+            if not first_row("koja_market_live_products", {"room_id": room_id, "product_id": pid}):
+                n = len(_cm_rows("koja_market_live_products", {"room_id": room_id}, limit=100))
+                if n >= 30: flash("A live tray holds up to 30 products.", "warning")
+                else: db_insert("koja_market_live_products", {"room_id": room_id, "product_id": pid, "position": n, "created_at": utc_now()})
+        elif action == "remove":
+            db_delete("koja_market_live_products", {"room_id": room_id, "product_id": pid})
+            if str(room.get("pinned_product_id")) == pid:
+                db_update("koja_market_live_rooms", {"id": room_id}, {"pinned_product_id": None})
+    return redirect(url_for("market_live_room", room_id=room_id))
+
+
+@app.route("/api/market/live/<room_id>/state")
+@login_required
+def cm_live_state(room_id):
+    room = _cm_room(room_id)
+    if not room:
+        return jsonify(ok=False), 404
+    uid = _cm_uid()
+    now = datetime.now(timezone.utc)
+    if not _cm_is_host(room):
+        v = first_row("koja_market_live_viewers", {"room_id": room_id, "user_id": uid})
+        if v: db_update("koja_market_live_viewers", {"room_id": room_id, "user_id": uid}, {"last_seen_at": utc_now()})
+        else: db_insert("koja_market_live_viewers", {"room_id": room_id, "user_id": uid, "last_seen_at": utc_now()})
+    cutoff = (now - timedelta(seconds=40)).isoformat()
+    viewers = len(_cm_rows("koja_market_live_viewers", {"room_id": room_id, "last_seen_at": "gt." + cutoff}, limit=2000))
+    if viewers > int(room.get("peak_viewers") or 0):
+        db_update("koja_market_live_rooms", {"id": room_id}, {"peak_viewers": viewers})
+    after = clean(request.args.get("after"))
+    q = {"room_id": room_id}
+    if after: q["created_at"] = "gt." + after
+    msgs = list(reversed(_cm_rows("koja_market_live_messages", q, order="created_at.desc", limit=50)))
+    pinned = market_product(room.get("pinned_product_id")) if room.get("pinned_product_id") else None
+    return jsonify(ok=True, status=room.get("status"), viewers=viewers, peak=max(viewers, int(room.get("peak_viewers") or 0)),
+                   pinned=({"id": str(pinned["id"]), "title": pinned.get("title"), "price": pinned.get("price"), "currency": pinned.get("currency") or "ZMW"} if pinned else None),
+                   tray=_cm_tray(room_id), messages=[{"name": m.get("name"), "body": m.get("body"), "at": m.get("created_at"), "host": str(m.get("user_id")) == str(room.get("seller_id"))} for m in msgs])
+
+
+@app.route("/api/market/live/<room_id>/chat", methods=["POST"])
+@login_required
+def cm_live_chat(room_id):
+    room = _cm_room(room_id)
+    if not room or room.get("status") != "live":
+        return jsonify(ok=False, error="This live is not active."), 400
+    uid = _cm_uid()
+    if _rate_limited("livechat:%s" % uid, 15, 30):
+        return jsonify(ok=False, error="Slow down a little."), 429
+    body = clean((request.get_json(silent=True) or {}).get("message"))[:300]
+    if not body:
+        return jsonify(ok=False, error="Empty message"), 400
+    db_insert("koja_market_live_messages", {"id": str(uuid.uuid4()), "room_id": room_id, "user_id": uid, "name": _profile_name(uid), "body": body, "created_at": utc_now()})
+    return jsonify(ok=True)
+
+
+@app.route("/market/live/<room_id>/summary")
+@login_required
+def cm_live_summary(room_id):
+    room = _cm_room(room_id)
+    if not _cm_is_host(room):
+        abort(403)
+    start, end = _cm_ts(room.get("started_at")), _cm_ts(room.get("ended_at")) or datetime.now(timezone.utc)
+    tray_ids = {str(r.get("product_id")) for r in _cm_rows("koja_market_live_products", {"room_id": room_id}, limit=100)}
+    if room.get("pinned_product_id"): tray_ids.add(str(room["pinned_product_id"]))
+    orders = []
+    if start:
+        for o in _cm_rows("koja_market_orders", {"seller_id": _cm_uid(), "created_at": "gt." + start.isoformat()}, order="created_at.desc", limit=500):
+            c = _cm_ts(o.get("created_at"))
+            if c and c <= end + timedelta(minutes=5) and str(o.get("product_id")) in tray_ids and str(o.get("status")).lower() in ("paid", "completed", "shipped", "processing"):
+                orders.append(o)
+    chats = len(_cm_rows("koja_market_live_messages", {"room_id": room_id}, limit=2000))
+    gross = round(sum(float(o.get("total_amount") or 0) for o in orders), 2)
+    return _cm_page("Live summary", r'''<div class="card"><a href="{{ url_for('market_live') }}">← LIVE Shopping</a><h2>{{ room.title }} — summary</h2>
+<p>Peak viewers: <strong>{{ room.peak_viewers or 0 }}</strong> · Chat messages: <strong>{{ chats }}</strong></p>
+<p>Orders on featured products during the live: <strong>{{ orders|length }}</strong> · Sales: <strong>{{ money(gross) }}</strong></p>
+<p class="small">Counts paid orders for products in your live tray, placed while the live was on (plus 5 minutes).</p></div>''', room=room, chats=chats, orders=orders, gross=gross)
+
+
+# =================== DIGITAL DOWNLOADS ===================
+@app.route("/market/downloads")
+@login_required
+def cm_downloads():
+    uid = _cm_uid()
+    rows = []
+    for o in _cm_rows("koja_market_orders", {"buyer_id": uid}, order="created_at.desc", limit=200):
+        if str(o.get("status")).lower() in ("paid", "completed"):
+            p = market_product(o.get("product_id")) or {}
+            if str(p.get("product_type")) == "digital" and p.get("digital_file_url"):
+                o["_title"], o["_name"] = p.get("title"), p.get("digital_file_name") or "file"
+                o["_left"] = max(0, CM_DOWNLOAD_LIMIT - len(_cm_rows("koja_market_downloads", {"order_id": o["id"]}, limit=100)))
+                rows.append(o)
+    return _cm_page("My downloads", r'''<div class="hero"><h2>My downloads</h2><p>Digital products you have paid for.</p></div>
+{% for o in rows %}<div class="card"><h3>{{ o._title }}</h3><p class="small">Order {{ o.order_number }} · {{ o._left }} downloads left</p>
+{% if o._left %}<a class="btn" href="{{ url_for('cm_download', order_id=o.id) }}">Download {{ o._name }}</a>{% else %}<p>Download limit reached. Contact support.</p>{% endif %}</div>
+{% else %}<div class="card"><p>No digital purchases yet.</p></div>{% endfor %}''', rows=rows)
+
+
+@app.route("/market/download/<order_id>")
+@login_required
+def cm_download(order_id):
+    uid = _cm_uid()
+    o = first_row("koja_market_orders", {"id": order_id, "buyer_id": uid})
+    if not o or str(o.get("status")).lower() not in ("paid", "completed"):
+        abort(404)
+    p = market_product(o.get("product_id")) or {}
+    path = _storage_path_from_value(p.get("digital_file_url"))
+    if str(p.get("product_type")) != "digital" or not path:
+        abort(404)
+    if len(_cm_rows("koja_market_downloads", {"order_id": order_id}, limit=100)) >= CM_DOWNLOAD_LIMIT:
+        flash("Download limit reached for this purchase.", "warning"); return redirect(url_for("cm_downloads"))
+    try:
+        rr = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=60)
+        if not rr.ok: abort(404)
+        db_insert("koja_market_downloads", {"id": str(uuid.uuid4()), "order_id": order_id, "buyer_id": uid, "product_id": o.get("product_id"), "downloaded_at": utc_now()})
+        resp = send_file(io.BytesIO(rr.content), as_attachment=True, download_name=secure_filename(p.get("digital_file_name") or "koja-download") or "koja-download",
+                         mimetype=rr.headers.get("Content-Type") or "application/octet-stream", max_age=0)
+        resp.headers["Cache-Control"] = "private, no-store"
+        return resp
+    except Exception:
+        logger.exception("market digital download failed"); abort(404)
+
+
+# =================== ORDER LIFECYCLE ===================
+CM_SELLER_STEPS = {"processing": ("paid",), "shipped": ("paid", "processing"), "ready": ("paid", "processing")}
+
+
+@app.route("/market/orders")
+@login_required
+def cm_orders():
+    uid = _cm_uid()
+    buying = _cm_rows("koja_market_orders", {"buyer_id": uid}, order="created_at.desc", limit=100)
+    selling = _cm_rows("koja_market_orders", {"seller_id": uid}, order="created_at.desc", limit=100)
+    for o in buying + selling:
+        o["_title"] = (market_product(o.get("product_id")) or {}).get("title", "Product")
+    return _cm_page("My orders", r'''<div class="hero"><h2>My orders</h2><div class="actions"><a class="btn secondary" href="{{ url_for('cm_downloads') }}">My downloads</a></div></div>
+<div class="card"><h3>Purchases</h3>{% for o in buying %}<p><a href="{{ url_for('cm_order', oid=o.id) }}">{{ o._title }}</a> · {{ o.order_number }} · {{ money(o.total_amount, o.currency) }} · <strong>{{ o.status }}</strong></p>{% else %}<p>No purchases yet.</p>{% endfor %}</div>
+<div class="card"><h3>Sales</h3>{% for o in selling %}<p><a href="{{ url_for('cm_order', oid=o.id) }}">{{ o._title }}</a> · {{ o.order_number }} · {{ money(o.total_amount, o.currency) }} · <strong>{{ o.status }}</strong></p>{% else %}<p>No sales yet.</p>{% endfor %}</div>''', buying=buying, selling=selling)
+
+
+@app.route("/market/order/<oid>/view")
+@login_required
+def cm_order(oid):
+    uid = _cm_uid()
+    o = first_row("koja_market_orders", {"id": oid})
+    if not o or uid not in (str(o.get("buyer_id")), str(o.get("seller_id"))):
+        abort(404)
+    p = market_product(o.get("product_id")) or {}
+    disputes = _cm_rows("koja_market_disputes", {"order_id": oid}, order="created_at.desc", limit=5)
+    delivery = first_row("koja_market_delivery_jobs", {"order_id": oid}) if str(p.get("product_type")) != "digital" else None
+    return _cm_page("Order " + str(o.get("order_number")), r'''<div class="card"><a href="{{ url_for('cm_orders') }}">← My orders</a><h2>{{ p.title }}</h2>
+<p>Order <strong>{{ o.order_number }}</strong> · {{ o.quantity }} × · {{ money(o.total_amount, o.currency) }} · Status: <strong>{{ o.status }}</strong></p>
+{% if delivery %}<p>Delivery: <a href="{{ url_for('track_delivery', tracking_code=delivery.tracking_code) }}">{{ delivery.tracking_code }}</a> ({{ delivery.status }})</p>{% endif %}
+{% if is_buyer %}
+ {% if o.status == 'pending' %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='cancel') }}">{{ csrf }}<button class="btn secondary">Cancel unpaid order</button></form>{% endif %}
+ {% if o.status in ['paid','shipped','processing'] and p.product_type != 'digital' %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='received') }}">{{ csrf }}<button class="btn success">I received this order</button></form>{% endif %}
+ {% if o.status in ['paid','shipped','processing','completed'] and not disputes %}<form method="post" action="{{ url_for('cm_order_dispute', oid=o.id) }}">{{ csrf }}<select name="reason"><option>Item not received</option><option>Not as described</option><option>Damaged item</option><option>Digital file problem</option><option>Other</option></select><textarea name="details" maxlength="1000" placeholder="Tell us what went wrong" required></textarea><button class="btn danger">Report a problem / request refund</button></form>{% endif %}
+{% else %}
+ {% if o.status == 'paid' and p.product_type != 'digital' %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='processing') }}" style="display:inline">{{ csrf }}<button class="btn secondary">Start processing</button></form>{% endif %}
+ {% if o.status in ['paid','processing'] and p.product_type != 'digital' %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='shipped') }}" style="display:inline">{{ csrf }}<button class="btn">Mark shipped / handed over</button></form>{% endif %}
+{% endif %}
+{% for d in disputes %}<div class="card"><strong>Dispute: {{ d.reason }}</strong> — {{ d.status }}{% if d.resolution %}<p>{{ d.resolution }}</p>{% endif %}</div>{% endfor %}</div>''',
+                    o=o, p=p, disputes=disputes, delivery=delivery, is_buyer=(uid == str(o.get("buyer_id"))))
+
+
+def _cm_restock(o):
+    p = market_product(o.get("product_id")) or {}
+    if str(p.get("product_type") or "physical") == "physical":
+        for _ in range(4):
+            p = market_product(o.get("product_id")) or {}
+            stock = int(p.get("stock") or 0)
+            rr = requests.patch(sb_rest_url("koja_market_products"), headers=sb_headers({"Prefer": "return=representation"}),
+                                params={"id": "eq." + str(o.get("product_id")), "stock": "eq." + str(stock)}, json={"stock": stock + int(o.get("quantity") or 1)}, timeout=20)
+            if rr.ok and json_or_empty(rr): break
+
+
+@app.route("/market/order/<oid>/<action>", methods=["POST"])
+@login_required
+def cm_order_action(oid, action):
+    uid = _cm_uid()
+    o = first_row("koja_market_orders", {"id": oid})
+    if not o or uid not in (str(o.get("buyer_id")), str(o.get("seller_id"))):
+        abort(404)
+    status = str(o.get("status") or "").lower()
+    buyer, seller = uid == str(o.get("buyer_id")), uid == str(o.get("seller_id"))
+    new = None
+    if buyer and action == "cancel" and status == "pending": new = "cancelled"
+    elif buyer and action == "received" and status in ("paid", "shipped", "processing"): new = "completed"
+    elif seller and action in CM_SELLER_STEPS and status in CM_SELLER_STEPS[action]:
+        new = "shipped" if action in ("shipped", "ready") else "processing"
+    if not new:
+        flash("That action is not available for this order.", "warning"); return redirect(url_for("cm_order", oid=oid))
+    upd = {"status": new, "updated_at": utc_now()}
+    if new == "completed": upd["received_at"] = utc_now()
+    if new == "shipped": upd["shipped_at"] = utc_now()
+    _, err = db_update("koja_market_orders", {"id": oid}, upd)
+    if err:
+        upd.pop("received_at", None); upd.pop("shipped_at", None); db_update("koja_market_orders", {"id": oid}, upd)
+    other = o.get("seller_id") if buyer else o.get("buyer_id")
+    notify_user(other, "Order " + new, "Order %s is now %s." % (o.get("order_number"), new), "market_order", oid, "/market/order/%s/view" % oid)
+    if new == "completed":
+        for l in _cm_rows("koja_market_ledger", {"order_id": oid}, limit=5):
+            if str(l.get("status")) == "pending": db_update("koja_market_ledger", {"id": l["id"]}, {"status": "available"})
+    flash("Order %s." % new, "success")
+    return redirect(url_for("cm_order", oid=oid))
+
+
+@app.route("/market/order/<oid>/dispute", methods=["POST"])
+@login_required
+def cm_order_dispute(oid):
+    uid = _cm_uid()
+    o = first_row("koja_market_orders", {"id": oid, "buyer_id": uid})
+    if not o or str(o.get("status")).lower() not in ("paid", "shipped", "processing", "completed"):
+        abort(404)
+    if first_row("koja_market_disputes", {"order_id": oid}):
+        flash("A dispute is already open for this order.", "info"); return redirect(url_for("cm_order", oid=oid))
+    _, err = db_insert("koja_market_disputes", {"id": str(uuid.uuid4()), "order_id": oid, "buyer_id": uid, "seller_id": o.get("seller_id"), "reason": clean(request.form.get("reason"))[:120],
+                                               "details": clean(request.form.get("details"))[:1000], "status": "open", "created_at": utc_now()})
+    if not err:
+        for l in _cm_rows("koja_market_ledger", {"order_id": oid}, limit=5):
+            if str(l.get("status")) in ("pending", "available"): db_update("koja_market_ledger", {"id": l["id"]}, {"status": "held"})
+        notify_user(o.get("seller_id"), "Order dispute opened", "Order %s has a buyer dispute. KOJA will review it." % o.get("order_number"), "market_order", oid, "/market/order/%s/view" % oid)
+    flash("Your report was sent to KOJA for review." if not err else "Could not submit (run koja_commerce_migration.sql).", "success" if not err else "danger")
+    return redirect(url_for("cm_order", oid=oid))
+
+
+@app.route("/admin/market/disputes", methods=["GET", "POST"])
+@admin_required
+def cm_admin_disputes():
+    if request.method == "POST":
+        d = first_row("koja_market_disputes", {"id": clean(request.form.get("id"))})
+        decision, note = clean(request.form.get("decision")), clean(request.form.get("note"))[:500]
+        o = first_row("koja_market_orders", {"id": d.get("order_id")}) if d else None
+        if not d or not o or d.get("status") != "open" or decision not in ("refund", "reject"):
+            flash("Nothing to resolve.", "warning"); return redirect(url_for("cm_admin_disputes"))
+        result = "Rejected. " + note
+        if decision == "refund":
+            ok_remote = False
+            tid = clean(o.get("payment_transaction_id"))
+            if tid and FLW_SECRET_KEY:
+                try:
+                    rr = requests.post("%s/transactions/%s/refund" % (FLW_BASE_URL, tid), headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json"},
+                                       json={"amount": float(o.get("total_amount") or 0)}, timeout=30)
+                    ok_remote = rr.ok and str(json_or_empty(rr).get("status")).lower() == "success"
+                except Exception:
+                    logger.exception("flutterwave refund failed")
+            db_update("koja_market_orders", {"id": o["id"]}, {"status": "refunded" if ok_remote else "refund_pending", "updated_at": utc_now()})
+            for l in _cm_rows("koja_market_ledger", {"order_id": o["id"]}, limit=5): db_update("koja_market_ledger", {"id": l["id"]}, {"status": "reversed"})
+            _cm_restock(o)
+            result = ("Refunded via Flutterwave. " if ok_remote else "Approved - refund must be completed manually in Flutterwave. ") + note
+        else:
+            for l in _cm_rows("koja_market_ledger", {"order_id": o["id"]}, limit=5):
+                if str(l.get("status")) == "held": db_update("koja_market_ledger", {"id": l["id"]}, {"status": "available"})
+        db_update("koja_market_disputes", {"id": d["id"]}, {"status": "resolved_" + decision, "resolution": result, "resolved_by": _cm_uid(), "resolved_at": utc_now()})
+        for u in (o.get("buyer_id"), o.get("seller_id")):
+            notify_user(u, "Dispute resolved", "Order %s: %s" % (o.get("order_number"), result[:140]), "market_order", o["id"], "/market/order/%s/view" % o["id"])
+        flash("Dispute resolved.", "success")
+        return redirect(url_for("cm_admin_disputes"))
+    rows = _cm_rows("koja_market_disputes", {"status": "open"}, order="created_at.asc", limit=100)
+    for d in rows:
+        o = first_row("koja_market_orders", {"id": d.get("order_id")}) or {}
+        d["_order"], d["_amount"] = o.get("order_number"), market_money(o.get("total_amount"), o.get("currency") or "ZMW")
+    return _cm_page("Market disputes", r'''<div class="hero"><h2>Market disputes</h2></div>
+{% for d in rows %}<div class="card"><strong>{{ d._order }}</strong> · {{ d._amount }} · {{ d.reason }}<p>{{ d.details }}</p>
+<form method="post">{{ csrf }}<input type="hidden" name="id" value="{{ d.id }}"><input name="note" placeholder="Note to both parties"><button class="btn" name="decision" value="refund">Refund buyer</button><button class="btn secondary" name="decision" value="reject">Reject</button></form></div>
+{% else %}<div class="card"><p>No open disputes.</p></div>{% endfor %}''', rows=rows)
+
+
+# =================== GPS: scalable location store, arrival + ETA, retention ===================
+def _cm_store_location(provider_id, lat, lon, body):
+    """Upsert the single 'latest' row (fast reads) and write throttled history."""
+    now = time.time()
+    row = {"driver_id": provider_id, "latitude": lat, "longitude": lon, "accuracy": safe_float(body.get("accuracy")), "speed": safe_float(body.get("speed")),
+           "heading": safe_float(body.get("heading")), "is_online": True, "updated_at": utc_now()}
+    try:
+        if first_row("koja_driver_latest", {"driver_id": provider_id}): db_update("koja_driver_latest", {"driver_id": provider_id}, row)
+        else: db_insert("koja_driver_latest", row)
+    except Exception:
+        logger.exception("latest-location upsert failed")
+    last = _cm_gps_state.get(provider_id)
+    if (not last) or now - last[0] >= 15 or haversine_km(lat, lon, last[1], last[2]) * 1000 >= 40:
+        _cm_gps_state[provider_id] = (now, lat, lon)
+        _cm_gps_counter[0] += 1
+        if _cm_gps_counter[0] % 200 == 0:
+            db_delete("driver_locations", {"created_at": "lt." + (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()})
+        return True
+    return False
+
+
+def _cm_arrival_check(delivery, provider_id, lat, lon):
+    """Notify once when the driver reaches the pickup point."""
+    status = str(delivery.get("status") or "").lower()
+    plat, plon = safe_float(delivery.get("pickup_latitude")), safe_float(delivery.get("pickup_longitude"))
+    if status == "accepted" and plat is not None and plon is not None:
+        if haversine_km(lat, lon, plat, plon) * 1000 <= CM_ARRIVE_METRES and not first_row("koja_delivery_events", {"delivery_id": delivery.get("id"), "event": "arrived_pickup"}):
+            _cm_event(delivery, "arrived_pickup", lat, lon)
+            notify_user(delivery.get("sender_id") or delivery.get("customer_id"), "Driver has arrived", "Your driver is at the pickup point for %s. Share the pickup number." % delivery.get("tracking_code"), "delivery", delivery.get("id"), "/track/%s" % delivery.get("tracking_code"))
+
+
+def _cm_eta(delivery, loc):
+    lat, lon = safe_float(loc.get("latitude")), safe_float(loc.get("longitude"))
+    status = str(delivery.get("status") or "").lower()
+    target = None
+    if status in ("requested", "accepted"): target = (safe_float(delivery.get("pickup_latitude")), safe_float(delivery.get("pickup_longitude")), "pickup")
+    elif status in ("picked_up", "in_transit"): target = (safe_float(delivery.get("destination_latitude")), safe_float(delivery.get("destination_longitude")), "destination")
+    if not target or None in target[:2] or lat is None or lon is None:
+        return None
+    km = haversine_km(lat, lon, target[0], target[1])
+    speed = max(CM_AVG_KMH, float(loc.get("speed") or 0) * 3.6) if loc.get("speed") else CM_AVG_KMH
+    return {"to": target[2], "distance_km": round(km, 2), "minutes": max(1, int(round(km / speed * 60 * 1.3)))}
+
+
+@app.route("/api/delivery/<tracking_code>/events")
+@login_required
+def cm_delivery_events(tracking_code):
+    d = first_row("deliveries", {"tracking_code": tracking_code})
+    uid = _cm_uid()
+    prov = get_driver_provider(uid) or {}
+    if not d or not ((current_user() or {}).get("is_admin") or uid in (str(d.get("customer_id")), str(d.get("sender_id"))) or (prov and str(prov.get("id")) == str(d.get("driver_id")))):
+        return jsonify(ok=False), 404
+    return jsonify(ok=True, events=_cm_rows("koja_delivery_events", {"tracking_code": tracking_code}, order="created_at.asc", limit=200))
+
+
+@app.route("/api/admin/gps/prune", methods=["POST"])
+@admin_required
+def cm_gps_prune():
+    days = int(safe_float(request.form.get("days") or (request.get_json(silent=True) or {}).get("days")) or 3)
+    ok, err = db_delete("driver_locations", {"created_at": "lt." + (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()})
+    return jsonify(ok=bool(ok), error=str(err)[:300] if err else None)
 
 
 if __name__=="__main__":
