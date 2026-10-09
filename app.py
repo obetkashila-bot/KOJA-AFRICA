@@ -22,6 +22,11 @@ from functools import wraps
 from urllib.parse import quote, unquote, quote_plus
 
 import requests
+from requests.adapters import HTTPAdapter
+_HTTP = requests.Session()
+_HTTP_ADAPTER = HTTPAdapter(pool_connections=50, pool_maxsize=200, max_retries=0)
+_HTTP.mount('https://', _HTTP_ADAPTER)
+_HTTP.mount('http://', _HTTP_ADAPTER)
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
@@ -93,6 +98,8 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
 def _rate_limited(key, limit, window=60):
+    # Rate limits removed by request.
+    return False
     now = datetime.now(timezone.utc).timestamp()
     bucket = _rate_hits.get(key, [])
     bucket = [t for t in bucket if now - t < window]
@@ -257,7 +264,7 @@ def db_select(table, filters=None, select="*", order=None, limit=None):
         params["limit"] = str(limit)
 
     try:
-        r = requests.get(
+        r = _HTTP.get(
             sb_rest_url(table),
             headers=sb_headers(),
             params=params,
@@ -280,7 +287,7 @@ def db_insert(table, payload, returning="representation"):
         return None, "Supabase is not configured."
 
     try:
-        r = requests.post(
+        r = _HTTP.post(
             sb_rest_url(table),
             headers=sb_headers({"Prefer": f"return={returning}"}),
             json=payload,
@@ -317,7 +324,7 @@ def db_update(table, filters, payload):
         params[key] = f"eq.{value}"
 
     try:
-        r = requests.patch(
+        r = _HTTP.patch(
             sb_rest_url(table),
             headers=sb_headers({"Prefer": "return=representation"}),
             params=params,
@@ -340,7 +347,7 @@ def db_rpc(function_name, payload=None):
     if not supabase_configured():
         return None, "Supabase is not configured."
     try:
-        r = requests.post(
+        r = _HTTP.post(
             f"{SUPABASE_URL}/rest/v1/rpc/{quote(function_name, safe='')}",
             headers=sb_headers({"Prefer": "return=representation"}),
             json=payload or {},
@@ -366,7 +373,7 @@ def db_delete(table, filters):
             params[key] = f"eq.{value}"
 
     try:
-        r = requests.delete(
+        r = _HTTP.delete(
             sb_rest_url(table),
             headers=sb_headers(),
             params=params,
@@ -383,7 +390,7 @@ def table_exists(table):
     if not supabase_configured():
         return False
     try:
-        r = requests.get(
+        r = _HTTP.get(
             sb_rest_url(table),
             headers=sb_headers(),
             params={"select": "*", "limit": "1"},
@@ -484,7 +491,7 @@ def supabase_auth_login(email, password):
         return None
 
     try:
-        r = requests.post(
+        r = _HTTP.post(
             f"{SUPABASE_URL}/auth/v1/token",
             params={"grant_type": "password"},
             headers={
@@ -545,7 +552,7 @@ def upload_storage(file_storage, folder="uploads", public=False, max_mb=None, al
     mime = file_storage.mimetype or "application/octet-stream"
 
     try:
-        r = requests.post(
+        r = _HTTP.post(
             sb_storage_url(path),
             headers=sb_headers({
                 "Content-Type": mime,
@@ -651,7 +658,7 @@ def delete_storage(path):
     if not path or not supabase_configured():
         return False
     try:
-        r = requests.delete(
+        r = _HTTP.delete(
             sb_storage_url(path),
             headers=sb_headers(),
             timeout=20,
@@ -677,7 +684,7 @@ def _terms_acceptance_status(user_id):
     if not user_id or not supabase_configured():
         return None
     try:
-        r = requests.get(
+        r = _HTTP.get(
             sb_rest_url("koja_terms_acceptances"),
             headers=sb_headers(),
             params={"select":"id,accepted,terms_version,accepted_at,created_at","user_id":f"eq.{user_id}","accepted":"eq.true","order":"created_at.desc","limit":"1"},
@@ -1534,7 +1541,7 @@ def research_google(query, limit=8):
                  'url':'https://www.google.com/search?q='+quote(q),
                  'snippet':'Open Google Search to review live web results for this research query.','year':None,'_google_link':True}]
     try:
-        r=requests.get('https://www.googleapis.com/customsearch/v1',
+        r=_HTTP.get('https://www.googleapis.com/customsearch/v1',
                        params={'key':api_key,'cx':cse_id,'q':q,'num':min(max(limit,1),10)},
                        timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/7.0'})
         if not r.ok:
@@ -1556,7 +1563,7 @@ def research_web(query, limit=8):
     if not q: return []
     out=[]
     try:
-        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=4,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        r=_HTTP.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=4,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if r.ok:
             d=r.json()
             if d.get('AbstractText'):
@@ -1571,7 +1578,7 @@ def research_wikipedia(query, limit=6):
     q=clean(query)
     if not q: return []
     try:
-        r=requests.get('https://en.wikipedia.org/w/api.php',params={'action':'query','list':'search','srsearch':q,'srlimit':limit,'format':'json','utf8':1},timeout=4,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        r=_HTTP.get('https://en.wikipedia.org/w/api.php',params={'action':'query','list':'search','srsearch':q,'srlimit':limit,'format':'json','utf8':1},timeout=4,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('query',{}).get('search',[]):
@@ -1589,7 +1596,7 @@ def research_openalex(query, year=None, limit=10):
         params={'search':q,'per-page':limit,'mailto':os.getenv('RESEARCH_EMAIL','').strip()}
         if year: params['filter']=f'publication_year:{year}'
         params={k:v for k,v in params.items() if v}
-        r=requests.get('https://api.openalex.org/works',params=params,timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
+        r=_HTTP.get('https://api.openalex.org/works',params=params,timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('results',[]):
@@ -1619,7 +1626,7 @@ def research_crossref(query, year=None, author=None, limit=10):
         if author: params['query.author']=clean(author)
         mail=os.getenv('RESEARCH_EMAIL','').strip()
         if mail: params['mailto']=mail
-        r=requests.get('https://api.crossref.org/works',params=params,timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
+        r=_HTTP.get('https://api.crossref.org/works',params=params,timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('message',{}).get('items',[]):
@@ -1968,7 +1975,7 @@ def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
     for model in models:
         payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens}
         try:
-            r=requests.post("https://api.openai.com/v1/responses",json=payload,timeout=(5,min(int(timeout),30)),headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
+            r=_HTTP.post("https://api.openai.com/v1/responses",json=payload,timeout=(5,min(int(timeout),30)),headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
             if r.ok:
                 data=r.json(); answer=clean(data.get("output_text") or "")
                 if not answer:
@@ -2012,7 +2019,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferre
                 "temperature":0.7,"max_completion_tokens":max_output_tokens,"stream":False,
             }
             try:
-                r=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=(5,min(int(timeout),12)),headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"})
+                r=_HTTP.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=(5,min(int(timeout),12)),headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"})
                 if r.ok:
                     data=r.json(); choices=data.get("choices") or []
                     answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
@@ -2050,7 +2057,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferre
     for model in models:
         endpoint=f"{base}/models/{model}:generateContent"
         try:
-            r=requests.post(endpoint,json=payload,timeout=(5,min(int(timeout),12)),headers=headers)
+            r=_HTTP.post(endpoint,json=payload,timeout=(5,min(int(timeout),12)),headers=headers)
             if r.ok:
                 data=r.json(); parts=[]
                 for candidate in data.get("candidates") or []:
@@ -2083,7 +2090,7 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, prefe
                 "stream":True,
             }
             try:
-                with requests.post(
+                with _HTTP.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     json=payload, stream=True, timeout=(5,min(int(timeout),90)),
                     headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json","Accept":"text/event-stream"},
@@ -2125,7 +2132,7 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, prefe
         for model in openai_models:
             payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens,"stream":True}
             try:
-                with requests.post("https://api.openai.com/v1/responses",json=payload,stream=True,timeout=(5,min(int(timeout),90)),headers={"Authorization":"Bearer "+openai_key,"Content-Type":"application/json","Accept":"text/event-stream"}) as r:
+                with _HTTP.post("https://api.openai.com/v1/responses",json=payload,stream=True,timeout=(5,min(int(timeout),90)),headers={"Authorization":"Bearer "+openai_key,"Content-Type":"application/json","Accept":"text/event-stream"}) as r:
                     if not r.ok:
                         logger.warning("OpenAI streaming failed status=%s model=%s",r.status_code,model)
                         if r.status_code in (401,403,429): break
@@ -2221,7 +2228,7 @@ def _gemini_grounded_research(query, results):
     for mi,model in enumerate(models):
         try:
             endpoint=f"{base}/models/{model}:generateContent"
-            resp=requests.post(endpoint,json=payload,timeout=35,headers=headers)
+            resp=_HTTP.post(endpoint,json=payload,timeout=35,headers=headers)
             if not resp.ok:
                 if resp.status_code in (401,403): return "", [], "authentication_failed"
                 if resp.status_code==404:
@@ -2267,7 +2274,7 @@ def _groq_grounded_research(query, results):
     prompt=f"Research question: {query}\nDetected intent: {intent}; domain: {domain}.\n\nLOCAL EVIDENCE (supplementary):\n{local or '(none)'}"
     payload={"model":model,"messages":[{"role":"system","content":system},{"role":"user","content":prompt}],"temperature":0.2,"max_completion_tokens":1000}
     try:
-        resp=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=35,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"})
+        resp=_HTTP.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=35,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"})
         if not resp.ok:
             if resp.status_code in (401,403): return "", "groq_authentication_failed"
             if resp.status_code==429: return "", "groq_rate_limited"
@@ -2547,7 +2554,7 @@ def _document_ai_text(doc):
     if not storage_path or not supabase_configured():
         return "", clean(doc.get("file_name") or "document")
     try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        r=_HTTP.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
         if not r.ok: return "", clean(doc.get("file_name") or "document")
         text,name,_=_ai_file_extract(doc.get("file_name") or "document",r.content)
         if text and did and table_exists("koja_document_ai_index"):
@@ -2784,7 +2791,7 @@ def document_file(document_id):
     storage_path=_document_storage_path(doc)
     if not storage_path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        r=_HTTP.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         filename=secure_filename(doc.get("file_name") or "koja-document") or "koja-document"
         response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get("Content-Type") or "application/octet-stream",as_attachment=False,max_age=0)
@@ -2805,7 +2812,7 @@ def document_download(document_id):
     storage_path=_document_storage_path(doc)
     if not storage_path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        r=_HTTP.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         filename=secure_filename(doc.get("file_name") or "koja-document") or "koja-document"
         response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get("Content-Type") or "application/octet-stream",as_attachment=True,max_age=0)
@@ -3082,7 +3089,7 @@ def assignment_file(assignment_id, kind):
     if not path:
         return "File not found.",404
     try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
+        r=_HTTP.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
         if not r.ok:
             return "File could not be retrieved.",404
         return send_file(io.BytesIO(r.content),download_name=item.get(name_field) or "assignment-file",
@@ -3348,7 +3355,7 @@ def public_feed_media(post_id):
     if path.startswith('http://') or path.startswith('https://'):
         return '', 404
     try:
-        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=20)
+        r = _HTTP.get(sb_storage_url(path), headers=sb_headers(), timeout=20)
         if not r.ok:
             return '', 404
         mime = r.headers.get('Content-Type') or 'application/octet-stream'
@@ -3508,7 +3515,7 @@ def delete_storage_path(storage_path):
     if not storage_path or not supabase_configured():
         return False
     try:
-        r=requests.delete(sb_storage_url(storage_path),headers=sb_headers(),timeout=20)
+        r=_HTTP.delete(sb_storage_url(storage_path),headers=sb_headers(),timeout=20)
         return bool(r.ok)
     except Exception:
         logger.exception('Storage cleanup failed for %s', storage_path)
@@ -3521,7 +3528,7 @@ def marketplace_post_media(post_id):
     storage_path=marketplace_post_storage_path(post.get('media_url'))
     if not storage_path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        r=_HTTP.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         response=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or post.get('media_type') or 'application/octet-stream',max_age=3600)
         response.headers['Cache-Control']='public, max-age=3600'
@@ -3647,7 +3654,7 @@ def marketplace_buy(product_id):
         return redirect(url_for('marketplace_product_view',product_id=product_id))
     payload={'tx_ref':tx_ref,'amount':int(round(amount)),'currency':(product.get('currency') or 'ZMW').upper(),'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':str(order.get('id') or ''),'redirect_url':url_for('marketplace_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_order_id':str(order.get('id') or ''),'koja_product_id':str(product_id)}}
     try:
-        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30)
+        r=_HTTP.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30)
         data=json_or_empty(r)
         authorization=((data.get('meta') or {}).get('authorization') or {}) if isinstance(data,dict) else {}
         redirect_url=authorization.get('redirect')
@@ -3688,7 +3695,7 @@ def _flutterwave_verify(transaction_id=None, tx_ref=None):
         if transaction_id:
             for attempt in range(3):
                 url=FLW_BASE_URL+'/transactions/'+quote(str(transaction_id), safe='')+'/verify'
-                r=requests.get(url,headers=headers,timeout=30)
+                r=_HTTP.get(url,headers=headers,timeout=30)
                 raw=r.text or ''
                 body=json_or_empty(r)
                 tx=_extract(body)
@@ -3709,7 +3716,7 @@ def _flutterwave_verify(transaction_id=None, tx_ref=None):
                 'page':1,
                 'tx_ref':str(tx_ref),
             }
-            r=requests.get(FLW_BASE_URL+'/transactions',headers=headers,params=params,timeout=30)
+            r=_HTTP.get(FLW_BASE_URL+'/transactions',headers=headers,params=params,timeout=30)
             raw=r.text or ''
             body=json_or_empty(r)
             tx=_extract(body)
@@ -3864,7 +3871,7 @@ def marketplace_cover(product_id):
         if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
     if not storage_path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=20)
+        r=_HTTP.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=20)
         if not r.ok: abort(404)
         response=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'image/jpeg',max_age=3600)
         response.headers['Cache-Control']='public, max-age=3600'
@@ -3887,7 +3894,7 @@ def marketplace_download(product_id):
         if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
     if not storage_path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        r=_HTTP.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         filename=secure_filename(product.get('file_name') or 'koja-digital-product') or 'koja-digital-product'
         response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get('Content-Type') or 'application/octet-stream',as_attachment=True,max_age=0)
@@ -4107,7 +4114,7 @@ def market_image(product_id):
     path=market_image_path(p.get('image_url'))
     if not path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=20)
+        r=_HTTP.get(sb_storage_url(path),headers=sb_headers(),timeout=20)
         if not r.ok: abort(404)
         resp=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'image/jpeg',max_age=3600)
         resp.headers['Cache-Control']='public,max-age=3600'; return resp
@@ -4151,7 +4158,7 @@ def market_order_create(product_id):
         return redirect(url_for('market_product_view',product_id=product_id))
     payload_fw={'tx_ref':tx_ref,'amount':int(round(total)),'currency':(p.get('currency') or 'ZMW').upper(),'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':str(order.get('id') or ''),'redirect_url':url_for('market_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_order_id':str(order.get('id') or ''),'koja_product_id':str(product_id)}}
     try:
-        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload_fw,timeout=30); body=json_or_empty(r)
+        r=_HTTP.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload_fw,timeout=30); body=json_or_empty(r)
         authorization=((body.get('meta') or {}).get('authorization') or {}) if isinstance(body,dict) else {}
         redirect_url=authorization.get('redirect')
         if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url:
@@ -5028,7 +5035,7 @@ def driver_delivery_action(delivery_id, action):
         payload["driver_id"] = provider_id
     if action == "accept":
         try:
-            rr=requests.patch(sb_rest_url("deliveries"),headers=sb_headers({"Prefer":"return=representation"}),params={"id":"eq."+str(delivery_id),"status":"eq.requested"},json=payload,timeout=20); data=json_or_empty(rr); row=(data[0] if isinstance(data,list) and data else None); error=None if row else ("This delivery was already accepted by another driver." if rr.ok else rr.text[:700])
+            rr=_HTTP.patch(sb_rest_url("deliveries"),headers=sb_headers({"Prefer":"return=representation"}),params={"id":"eq."+str(delivery_id),"status":"eq.requested"},json=payload,timeout=20); data=json_or_empty(rr); row=(data[0] if isinstance(data,list) and data else None); error=None if row else ("This delivery was already accepted by another driver." if rr.ok else rr.text[:700])
         except Exception as exc:
             row=None; error=str(exc)
     else:
@@ -5363,7 +5370,7 @@ def assign_delivery_driver(tracking_code):
     # Conditional claim: if another action assigned the delivery first, this update returns no row.
     params={"id":f"eq.{delivery.get('id')}","driver_id":"is.null"}
     try:
-        r=requests.patch(sb_rest_url("deliveries"),headers=sb_headers({"Prefer":"return=representation"}),params=params,json={"driver_id":driver_id,"status":"driver_assigned","updated_at":utc_now()},timeout=20)
+        r=_HTTP.patch(sb_rest_url("deliveries"),headers=sb_headers({"Prefer":"return=representation"}),params=params,json={"driver_id":driver_id,"status":"driver_assigned","updated_at":utc_now()},timeout=20)
         if not r.ok: return jsonify({"ok":False,"message":"KOJA could not assign the driver."}),500
         rows=json_or_empty(r) or []
         if not rows: return jsonify({"ok":False,"message":"Another driver was selected first. Please refresh and choose another."}),409
@@ -5696,7 +5703,7 @@ def delivery_route():
         if not (-90<=lat1<=90 and -180<=lon1<=180 and -90<=lat2<=90 and -180<=lon2<=180):
             return jsonify({"ok":False,"message":"Coordinates are out of range."}),400
         url=f"https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
-        r=requests.get(url,params={"overview":"full","geometries":"geojson","steps":"false"},timeout=12)
+        r=_HTTP.get(url,params={"overview":"full","geometries":"geojson","steps":"false"},timeout=12)
         r.raise_for_status(); data=r.json()
         if not data.get("routes"):
             return jsonify({"ok":False,"message":"No road route found."}),404
@@ -6772,7 +6779,7 @@ def _music_lifecycle_schema_status():
             if not supabase_configured():
                 status[key] = {'table': table, 'available': False, 'reason': 'supabase_not_configured'}
                 continue
-            r = requests.get(
+            r = _HTTP.get(
                 sb_rest_url(table),
                 headers=sb_headers(),
                 params={'select':'*', 'limit':'1'},
@@ -7172,7 +7179,7 @@ def admin_send_assignment_email(assignment_id):
     subject = clean(request.form.get("subject")) or f"KOJA AFRICA — Assignment Answer {item.get('tracking_code') or ''}".strip()
     message = request.form.get("message") or f"Hello {(recipient or {}).get('full_name') or 'User'},\n\nYour KOJA AFRICA assignment answer is attached as a PDF.\n\nTracking code: {item.get('tracking_code') or '—'}\n\nKOJA AFRICA"
     try:
-        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=60)
+        r = _HTTP.get(sb_storage_url(path), headers=sb_headers(), timeout=60)
         if not r.ok:
             flash("The stored answer PDF could not be retrieved.", "danger")
             return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
@@ -7860,7 +7867,7 @@ def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_
         if not token: continue
         payload={'token':token,'title':title,'body':body,'data':{'type':notification_type,'call_id':str(related_id) if related_id else '','related_id':str(related_id) if related_id else '','url':url or '/notifications','mode':'video' if notification_type=='call' and 'video' in title.lower() else ('voice' if notification_type=='call' else '')}}
         try:
-            rr=requests.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
+            rr=_HTTP.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
             if rr.ok: sent+=1
             elif rr.status_code in (400,404,410): db_delete('koja_fcm_devices',{'id':d.get('id')})
         except Exception: logger.exception('KOJA native FCM relay failed')
@@ -7886,31 +7893,39 @@ def _send_optional_sms(phone, message):
     username=os.getenv('AT_USERNAME','').strip(); api_key=os.getenv('AT_API_KEY','').strip(); sender=os.getenv('AT_SENDER_ID','KOJA').strip()
     if username and api_key:
         try:
-            rr=requests.post('https://api.africastalking.com/version1/messaging',headers={'apiKey':api_key,'Accept':'application/json'},data={'username':username,'to':phone,'message':message,'from':sender},timeout=20)
+            rr=_HTTP.post('https://api.africastalking.com/version1/messaging',headers={'apiKey':api_key,'Accept':'application/json'},data={'username':username,'to':phone,'message':message,'from':sender},timeout=20)
             return rr.ok
         except Exception: logger.exception('Africa Talking SMS failed')
     return False
+
+def _bg(fn, *args):
+    """Run slow side effects (push, email, SMS) off the request thread."""
+    try:
+        threading.Thread(target=fn, args=args, daemon=True).start()
+    except Exception:
+        logger.exception('background task failed to start')
+
+def _notify_external_channels(uid, title, body, url, notification_type, related_id):
+    try:
+        _send_native_fcm(uid,title,body,url,notification_type,related_id)
+    except Exception:
+        logger.exception('KOJA native FCM notification failed')
+    try:
+        _send_web_push(uid,title,body,url,notification_type,related_id)
+    except Exception:
+        logger.exception('KOJA web push notification failed')
+    try:
+        u=find_user_by_id(uid) or {}
+        email=clean(u.get('email'))
+        if email and email_configured(): send_plain_email(email,title,body)
+        _send_optional_sms(first_nonempty(u.get('phone'),u.get('mobile_money_phone')), f'{title}: {body}')
+    except Exception: logger.exception('KOJA multi-channel notification failed')
 
 def notify_user(uid,title,body,notification_type='system',related_id=None,url=None):
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
     if not err and row:
-        # Send through the existing native FCM relay as well as optional web push.
-        # Native Android push must not depend on VAPID/web-push configuration.
-        try:
-            _send_native_fcm(uid,title,body,url,notification_type,related_id)
-        except Exception:
-            logger.exception('KOJA native FCM notification failed')
-        try:
-            _send_web_push(uid,title,body,url,notification_type,related_id)
-        except Exception:
-            logger.exception('KOJA web push notification failed')
-        try:
-            u=find_user_by_id(uid) or {}
-            email=clean(u.get('email'))
-            if email and email_configured(): send_plain_email(email,title,body)
-            _send_optional_sms(first_nonempty(u.get('phone'),u.get('mobile_money_phone')), f'{title}: {body}')
-        except Exception: logger.exception('KOJA multi-channel notification failed')
+        _bg(_notify_external_channels, uid, title, body, url, notification_type, related_id)
         return row
     return None
 
@@ -8128,7 +8143,7 @@ def connect_upload(conversation_id):
     allowed={'.webm','.wav','.mp3','.m4a','.ogg','.jpg','.jpeg','.png','.webp','.pdf','.doc','.docx','.txt'}
     if ext not in allowed:return jsonify(error='Unsupported file type'),400
     mime=f.mimetype or 'application/octet-stream'; path=f'connect/files/{uuid.uuid4().hex}{ext}'
-    r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
+    r=_HTTP.post(sb_storage_url(path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
     if not r.ok:return jsonify(error=r.text[:500]),500
     mt='audio' if mime.startswith('audio/') else ('image' if mime.startswith('image/') else 'file')
     row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':mt,'file_url':path,'body':name if mt!='audio' else 'Voice message','created_at':utc_now()})
@@ -8163,7 +8178,7 @@ def connect_message_media(message_id):
     path=_storage_path_from_value(msg.get('file_url'))
     if not path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
+        r=_HTTP.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         filename=secure_filename(msg.get('body') or 'koja-connect-file') or 'koja-connect-file'
         response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get('Content-Type') or 'application/octet-stream',as_attachment=not str(msg.get('message_type') or '').lower()=='image',max_age=0)
@@ -8197,7 +8212,7 @@ def connect_status_media_file(status_id):
     path=_storage_path_from_value(status.get('media_url'))
     if not path or not supabase_configured(): abort(404)
     try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
+        r=_HTTP.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         response=send_file(io.BytesIO(r.content),download_name='koja-status-media',mimetype=r.headers.get('Content-Type') or 'application/octet-stream',as_attachment=False,max_age=0)
         response.headers['Cache-Control']='private, no-store'
@@ -8306,7 +8321,7 @@ def connect_status_media():
     data=f.read(); name=secure_filename(f.filename) or 'status'; ext=os.path.splitext(name)[1].lower()
     if len(data)>15*1024*1024 or ext not in {'.jpg','.jpeg','.png','.webp','.mp4','.webm'}:return redirect(url_for('connect_status'))
     mime=f.mimetype or 'application/octet-stream'; path=f'connect/status/{uuid.uuid4().hex}{ext}'
-    r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
+    r=_HTTP.post(sb_storage_url(path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
     if r.ok:
         row,err=db_insert('koja_statuses',{'id':str(uuid.uuid4()),'user_id':uid,'text_content':'','media_url':path,'media_type':'video' if mime.startswith('video/') else 'image','visibility':'contacts','expires_at':(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),'created_at':utc_now()})
         if err:
@@ -9165,7 +9180,7 @@ def market_cart_checkout():
         for row in created: db_update('koja_market_orders',{'id':row.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
         payload_fw={'tx_ref':tx_ref,'amount':int(round(grand)),'currency':'ZMW','email':clean((current_user() or {}).get('email')).lower(),'fullname':first_nonempty((current_user() or {}).get('name'),(current_user() or {}).get('full_name'),clean((current_user() or {}).get('email'))),'phone_number':payment_phone,'network':network,'order_id':str(created[0].get('id') or ''),'redirect_url':url_for('market_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_checkout':'cart','koja_order_ids':[str(x.get('id')) for x in created]}}
         try:
-            r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload_fw,timeout=30)
+            r=_HTTP.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload_fw,timeout=30)
             body=json_or_empty(r); authorization=((body.get('meta') or {}).get('authorization') or {}) if isinstance(body,dict) else {}; redirect_url=authorization.get('redirect')
             if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url:
                 db_delete('koja_market_cart',{'user_id':uid}); return redirect(redirect_url)
@@ -9616,7 +9631,7 @@ def business_store_buy(slug,product_id):
         if not FLW_SECRET_KEY or network not in ('MTN','AIRTEL','ZAMTEL') or not payment_phone: flash('Select a mobile-money network, phone number, and ensure payment is configured.','warning'); return redirect(request.url)
         payload={'tx_ref':tx_ref,'amount':int(round(total)),'currency':'ZMW','email':clean((current_user() or {}).get('email')).lower(),'fullname':first_nonempty((current_user() or {}).get('name'),(current_user() or {}).get('full_name'),'KOJA Customer'),'phone_number':payment_phone,'network':network,'order_id':str(row.get('id') or ''),'redirect_url':url_for('business_store_payment_callback',_external=True,tx_ref=tx_ref)}
         try:
-            r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30); body=json_or_empty(r); redirect_url=((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body,dict) else None
+            r=_HTTP.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30); body=json_or_empty(r); redirect_url=((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body,dict) else None
             if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url: return redirect(redirect_url)
         except Exception: logger.exception('Business store payment error')
         flash('Payment could not be started.','danger'); return redirect(request.url)
@@ -9632,7 +9647,7 @@ def business_store_download(order_id):
     path=clean(product.get('digital_file_url'))
     if not path: abort(404)
     try:
-        rr=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
+        rr=_HTTP.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
         if not rr.ok: abort(404)
         return send_file(io.BytesIO(rr.content),as_attachment=True,download_name=product.get('digital_file_name') or 'koja-digital-download',mimetype=rr.headers.get('Content-Type') or 'application/octet-stream')
     except Exception:
@@ -9793,7 +9808,7 @@ def _mono_create_checkout(user, order, network, phone):
     if err: return None, 'Could not save payment reference.'
     payload={'tx_ref':tx_ref,'amount':int(round(_money_value(order.get('amount')))),'currency':'ZMW','email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':str(order.get('id') or ''),'redirect_url':url_for('monetization_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_monetization_order_id':str(order.get('id') or ''),'type':order.get('order_type')}}
     try:
-        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30); body=json_or_empty(r)
+        r=_HTTP.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30); body=json_or_empty(r)
         redirect_url=((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body,dict) else None
         if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url: return redirect_url,None
         logger.error('KOJA monetization checkout failed: %s %s',r.status_code,str(body)[:1200])
@@ -10219,7 +10234,7 @@ def oauth_session():
         return jsonify({'ok':False,'error':'Missing authentication token.'}),400
     key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
     try:
-        r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
+        r=_HTTP.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
         if not r.ok:
             return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
         au=r.json() or {}
@@ -10519,7 +10534,7 @@ def _try_driver_mobile_payout(delivery, driver, amount):
     reference='KOJA-DRIVER-'+str(delivery.get('tracking_code') or secrets.token_hex(5)).replace('_','-')
     payload={'account_bank':bank_code,'account_number':phone,'amount':int(round(amount)),'currency':'ZMW','beneficiary_name':name,'reference':reference,'debit_currency':'ZMW','narration':'KOJA delivery payout','meta':{'tracking_code':delivery.get('tracking_code'),'driver_id':delivery.get('driver_id')}}
     try:
-        r=requests.post(FLW_BASE_URL+'/transfers',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30)
+        r=_HTTP.post(FLW_BASE_URL+'/transfers',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30)
         body=json_or_empty(r); data=body.get('data') or {}
         if r.ok and str(body.get('status') or '').lower()=='success':
             return {'ok':True,'status':'processing','transfer_id':data.get('id'),'reference':reference,'message':'Driver payout initiated.'}
@@ -11175,7 +11190,7 @@ def profit_buy_ai_credits():
                'network': network, 'order_id': str(order.get('id')), 'redirect_url': url_for('profit_payment_callback', _external=True, tx_ref=tx_ref),
                'meta': {'koja_profit_order_id': str(order.get('id')), 'type': 'ai_credits', 'units': units}}
     try:
-        r = requests.post(FLW_BASE_URL + '/charges?type=mobile_money_zambia', headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'}, json=payload, timeout=30)
+        r = _HTTP.post(FLW_BASE_URL + '/charges?type=mobile_money_zambia', headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'}, json=payload, timeout=30)
         body = json_or_empty(r)
         redirect_url = ((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body, dict) else None
         if r.ok and str(body.get('status') or '').lower() == 'success' and redirect_url:
@@ -11663,7 +11678,7 @@ def _b2bv4_payment_start(order):
       'meta':{'koja_b2b_order_id':str(order.get('id')),'request_id':str(order.get('request_id'))}
     }
     try:
-        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=40)
+        r=_HTTP.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=40)
         body=json_or_empty(r)
         if r.ok and isinstance(body,dict):
             return body,None
@@ -13505,7 +13520,7 @@ def _africa_now_parse_item(item, label, feed_kind):
 def _africa_now_fetch_html_fallback(label, page_url, feed_kind):
     """Best-effort HTML fallback when an RSS endpoint is unavailable."""
     headers = {"User-Agent": "KOJA-AFRICA/3.1 (+Africa Now)", "Accept": "text/html,application/xhtml+xml"}
-    r = requests.get(page_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
+    r = _HTTP.get(page_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
     r.raise_for_status()
     html = r.text
     links = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, flags=re.I|re.S)
@@ -13542,7 +13557,7 @@ def _africa_now_fetch_feed(label, feed_url, feed_kind):
         "Accept": "application/rss+xml, application/rdf+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
     }
     try:
-        r = requests.get(feed_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
+        r = _HTTP.get(feed_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
         r.raise_for_status()
         root = ET.fromstring(r.content)
         items = []
@@ -13583,7 +13598,7 @@ def _africa_now_job_clean_html(value):
 def _africa_now_parse_job_page(label, page_url, default_countries):
     """Best-effort parser for reputable job listing pages without adding a new dependency."""
     headers = {"User-Agent": "KOJA-AFRICA/2.1 (+Africa Now jobs collector)", "Accept": "text/html,application/xhtml+xml"}
-    r = requests.get(page_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
+    r = _HTTP.get(page_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
     r.raise_for_status()
     html = r.text
     found = []
@@ -13611,7 +13626,7 @@ def _africa_now_parse_job_page(label, page_url, default_countries):
     items = []
     for title, url in found:
         try:
-            detail = requests.get(url, timeout=(4, min(KOJA_NEXUS_AFRICA_NOW_TIMEOUT, 8)), headers=headers)
+            detail = _HTTP.get(url, timeout=(4, min(KOJA_NEXUS_AFRICA_NOW_TIMEOUT, 8)), headers=headers)
             detail.raise_for_status()
             body = _africa_now_job_clean_html(detail.text)
         except Exception:
@@ -14071,7 +14086,7 @@ KOJA_MARKET_PAID_FIRST = os.getenv("KOJA_MARKET_PAID_FIRST", "false").strip().lo
 
 def _market_http_json(url, params):
     try:
-        r = requests.get(url, params=params, timeout=KOJA_MARKET_TIMEOUT, headers={"User-Agent":"KOJA-AFRICA/1.0 market-data"})
+        r = _HTTP.get(url, params=params, timeout=KOJA_MARKET_TIMEOUT, headers={"User-Agent":"KOJA-AFRICA/1.0 market-data"})
         if not r.ok:
             msg = f"HTTP {r.status_code}"
             try:
@@ -15155,7 +15170,7 @@ def admin_koja_nexus():
                 try:
                     resp = requests.head(target, allow_redirects=True, timeout=6, headers={"User-Agent": "KOJA-NEXUS-Checker/1.0"})
                     if resp.status_code in (405, 403) or resp.status_code >= 500:
-                        resp = requests.get(target, allow_redirects=True, timeout=6, stream=True, headers={"User-Agent": "KOJA-NEXUS-Checker/1.0"})
+                        resp = _HTTP.get(target, allow_redirects=True, timeout=6, stream=True, headers={"User-Agent": "KOJA-NEXUS-Checker/1.0"})
                     status = "online" if resp.status_code < 400 else "error"
                     note = f"HTTP {resp.status_code}; checked {now}."
                 except Exception as exc:
@@ -15376,7 +15391,7 @@ def _news_encoder_live(state):
     if state.get("manual_hls_url") or not (uid and code):
         return None
     try:
-        r = requests.get(f"https://customer-{code}.cloudflarestream.com/{uid}/lifecycle", timeout=5)
+        r = _HTTP.get(f"https://customer-{code}.cloudflarestream.com/{uid}/lifecycle", timeout=5)
         if r.ok:
             return bool((r.json() or {}).get("live"))
     except Exception as exc:
@@ -17921,7 +17936,7 @@ def _cx_after_send(cid, uid, preview):
                                              "related_id": str(cid), "is_read": False, "created_at": utc_now()})
             for fn in (_send_native_fcm, _send_web_push):
                 try:
-                    fn(rid, title, body, link, "message", str(cid))
+                    _bg(fn, rid, title, body, link, "message", str(cid))
                 except Exception:
                     logger.exception("KOJA Connect push failed")
     except Exception:
@@ -18261,7 +18276,7 @@ def _cm_event(delivery, event, lat=None, lon=None, note=""):
 def _cm_finalize_fallback(order, tx, qty):
     """Idempotent pending->paid transition + guarded stock decrement without the RPC."""
     try:
-        r = requests.patch(sb_rest_url("koja_market_orders"), headers=sb_headers({"Prefer": "return=representation"}),
+        r = _HTTP.patch(sb_rest_url("koja_market_orders"), headers=sb_headers({"Prefer": "return=representation"}),
                            params={"id": "eq." + str(order.get("id")), "status": "eq.pending"},
                            json={"status": "paid", "payment_method": "flutterwave", "payment_transaction_id": str(tx.get("id") or ""), "updated_at": utc_now()}, timeout=20)
         data = json_or_empty(r)
@@ -18277,7 +18292,7 @@ def _cm_finalize_fallback(order, tx, qty):
                     for a in _cm_rows("profiles", {"is_admin": True}, limit=5):
                         notify_user(a.get("id"), "Market stock shortfall", "Order %s was paid but stock was insufficient." % order.get("order_number"), "system", order.get("id"), "/admin/market")
                     break
-                rr = requests.patch(sb_rest_url("koja_market_products"), headers=sb_headers({"Prefer": "return=representation"}),
+                rr = _HTTP.patch(sb_rest_url("koja_market_products"), headers=sb_headers({"Prefer": "return=representation"}),
                                     params={"id": "eq." + str(order.get("product_id")), "stock": "eq." + str(stock)}, json={"stock": stock - qty, "updated_at": utc_now()}, timeout=20)
                 if rr.ok and json_or_empty(rr):
                     break
@@ -18464,7 +18479,7 @@ def cm_download(order_id):
     if len(_cm_rows("koja_market_downloads", {"order_id": order_id}, limit=100)) >= CM_DOWNLOAD_LIMIT:
         flash("Download limit reached for this purchase.", "warning"); return redirect(url_for("cm_downloads"))
     try:
-        rr = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=60)
+        rr = _HTTP.get(sb_storage_url(path), headers=sb_headers(), timeout=60)
         if not rr.ok: abort(404)
         db_insert("koja_market_downloads", {"id": str(uuid.uuid4()), "order_id": order_id, "buyer_id": uid, "product_id": o.get("product_id"), "downloaded_at": utc_now()})
         resp = send_file(io.BytesIO(rr.content), as_attachment=True, download_name=secure_filename(p.get("digital_file_name") or "koja-download") or "koja-download",
@@ -18523,7 +18538,7 @@ def _cm_restock(o):
         for _ in range(4):
             p = market_product(o.get("product_id")) or {}
             stock = int(p.get("stock") or 0)
-            rr = requests.patch(sb_rest_url("koja_market_products"), headers=sb_headers({"Prefer": "return=representation"}),
+            rr = _HTTP.patch(sb_rest_url("koja_market_products"), headers=sb_headers({"Prefer": "return=representation"}),
                                 params={"id": "eq." + str(o.get("product_id")), "stock": "eq." + str(stock)}, json={"stock": stock + int(o.get("quantity") or 1)}, timeout=20)
             if rr.ok and json_or_empty(rr): break
 
@@ -18593,7 +18608,7 @@ def cm_admin_disputes():
             tid = clean(o.get("payment_transaction_id"))
             if tid and FLW_SECRET_KEY:
                 try:
-                    rr = requests.post("%s/transactions/%s/refund" % (FLW_BASE_URL, tid), headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json"},
+                    rr = _HTTP.post("%s/transactions/%s/refund" % (FLW_BASE_URL, tid), headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json"},
                                        json={"amount": float(o.get("total_amount") or 0)}, timeout=30)
                     ok_remote = rr.ok and str(json_or_empty(rr).get("status")).lower() == "success"
                 except Exception:
