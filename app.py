@@ -4075,7 +4075,20 @@ def market_image_path(url):
 def koja_market():
     user = current_user()
     q=clean(request.args.get('q')); category=clean(request.args.get('category')); ptype=clean(request.args.get('type'))
-    rows=db_select('koja_market_products',order='created_at.desc',limit=300) or []
+    # Filter approved, published products in the query itself; the cap now applies to live products only.
+    rows=db_select('koja_market_products',filters={'is_published':'true','approval_status':'in.(approved,active)'},order='created_at.desc',limit=1000) or []
+    # Load every seller on this page in one query, then reuse the names.
+    seller_ids=sorted({str(x.get('seller_id')) for x in rows if x.get('seller_id')})
+    sellers_by_uid={}
+    if seller_ids:
+        for srow in (db_select('koja_market_sellers',filters={'user_id':'in.('+','.join(seller_ids)+')'},limit=1000) or []):
+            sellers_by_uid[str(srow.get('user_id'))]=srow
+    name_cache={}
+    def _seller_label(uid):
+        key=str(uid)
+        if key not in name_cache:
+            name_cache[key]=(sellers_by_uid.get(key) or {}).get('store_name') or marketplace_seller_name(uid)
+        return name_cache[key]
     products=[]
     for x in rows:
         if not as_bool(x.get('is_published')) or str(x.get('approval_status') or 'pending').lower() not in {'approved','active'}: continue
@@ -4084,7 +4097,7 @@ def koja_market():
             if q.lower() not in hay: continue
         if category and str(x.get('category') or '') != category: continue
         if ptype and str(x.get('product_type') or 'physical') != ptype: continue
-        x=dict(x); x['seller_name']=(market_seller(x.get('seller_id')) or {}).get('store_name') or marketplace_seller_name(x.get('seller_id'))
+        x=dict(x); x['seller_name']=_seller_label(x.get('seller_id'))
         x['price_display']=market_money(x.get('price'),x.get('currency') or 'ZMW')
         products.append(x)
     cart_count=0
@@ -4104,7 +4117,7 @@ def koja_market():
 </div></div>
 <div class="card"><h2>Seller Center</h2><div class="actions"><a class="btn" href="{{ url_for('market_sell') if user else url_for('login',next='/market/sell') }}"> Add Product</a>{% if user %}<a class="btn secondary" href="{{ url_for('market_my') }}"> Seller Dashboard</a><a class="btn" href="{{ url_for('market_live_start') }}">Start LIVE Shop</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}"> My Store</a><a class="btn secondary" href="{{ url_for('seller_verification') }}"> Verification</a><a class="btn secondary" href="{{ url_for('market_seller_subscription') }}"> Subscription</a><a class="btn secondary" href="{{ url_for('market_advertise') }}"> Advertising</a><a class="btn secondary" href="{{ url_for('market_earnings') }}"> Earnings</a><a class="btn secondary" href="{{ url_for('profit_dashboard') }}">Profit Engine</a><a class="btn secondary" href="{{ url_for('seller_wallet') }}"> Wallet</a><a class="btn secondary" href="{{ url_for('market_seller_payouts') }}"> Payouts</a><a class="btn secondary" href="{{ url_for('referrals') }}"> Referrals</a>{% else %}<a class="btn secondary" href="{{ url_for('login',next='/market/seller/register') }}"> Become a Seller</a>{% endif %}</div></div>
 <div class="card"><form method="get" class="actions"><input name="q" value="{{ q }}" placeholder="Search products, shops, services..."><select name="category"><option value="">All categories</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select><select name="type"><option value="">All types</option><option value="physical" {% if ptype=='physical' %}selected{% endif %}>Physical</option><option value="digital" {% if ptype=='digital' %}selected{% endif %}>Digital</option></select><button class="btn" type="submit"> Search</button></form></div>
-<div id="products" class="grid">{% for p in products %}<div class="card"><h3>{{ p.title }}</h3><p class="small">{{ p.category }} · {{ 'Digital' if p.product_type=='digital' else 'Physical' }} · {{ p.seller_name }}</p>{% if p.image_url %}<img src="{{ url_for('market_image',product_id=p.id) }}" alt="{{ p.title }}" style="width:100%;max-height:240px;object-fit:contain;border-radius:10px">{% endif %}<p>{{ p.description[:220] }}{% if p.description|length>220 %}…{% endif %}</p><h3>{{ p.price_display }}</h3>{% if p.product_type=='physical' %}<p class="small">Stock: {{ p.stock }}{% if p.location %} · {{ p.location }}{% endif %}</p>{% endif %}<div class="actions" style="margin-top:12px"><a class="btn secondary" href="{{ url_for('market_product_view',product_id=p.id) }}">View</a>{% if user and user.id|string != p.seller_id|string and (p.product_type!='physical' or p.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=p.id) }}" style="display:inline"><input type="hidden" name="quantity" value="1"><button class="btn" type="submit"> Add to Cart</button></form><a class="btn" href="{{ url_for('market_product_view',product_id=p.id) }}"> Buy Now</a>{% elif not user %}<a class="btn" href="{{ url_for('login',next=url_for('market_product_view',product_id=p.id)) }}"> Login to Buy</a>{% endif %}</div></div>{% else %}<div class="card"><h3>No products found</h3><p>Try another search or become a seller.</p></div>{% endfor %}</div>
+<div id="products" class="grid">{% for p in products %}<div class="card"><h3>{{ p.title }}</h3><p class="small">{{ p.category }} · {{ 'Digital' if p.product_type=='digital' else 'Physical' }} · {{ p.seller_name }}</p>{% if p.image_url %}<img src="{{ url_for('market_image',product_id=p.id) }}" alt="{{ p.title }}" style="width:100%;max-height:240px;object-fit:contain;border-radius:10px">{% endif %}<p>{{ (p.description or '')[:220] }}{% if (p.description or '')|length>220 %}…{% endif %}</p><h3>{{ p.price_display }}</h3>{% if p.product_type=='physical' %}<p class="small">Stock: {{ p.stock }}{% if p.location %} · {{ p.location }}{% endif %}</p>{% endif %}<div class="actions" style="margin-top:12px"><a class="btn secondary" href="{{ url_for('market_product_view',product_id=p.id) }}">View</a>{% if user and user.id|string != p.seller_id|string and (p.product_type!='physical' or p.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=p.id) }}" style="display:inline"><input type="hidden" name="quantity" value="1"><button class="btn" type="submit"> Add to Cart</button></form><a class="btn" href="{{ url_for('market_product_view',product_id=p.id) }}"> Buy Now</a>{% elif not user %}<a class="btn" href="{{ url_for('login',next=url_for('market_product_view',product_id=p.id)) }}"> Login to Buy</a>{% endif %}</div></div>{% else %}<div class="card"><h3>No products found</h3><p>Try another search or become a seller.</p></div>{% endfor %}</div>
 ''',products=products,categories=KOJA_MARKET_CATEGORIES,q=q,category=category,ptype=ptype,user=user,cart_count=cart_count,business=business)
 
 @app.route('/market/image/<product_id>')
@@ -11679,11 +11692,57 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
 </div>
 {% if is_seller %}<div class="card live-pin-panel"><h2>Pin a product</h2><form method="post" action="{{ url_for('market_live_pin', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="product_id" required><option value="">Select product</option>{% for p in products %}<option value="{{ p.id }}" {% if room.pinned_product_id|string == p.id|string %}selected{% endif %}>{{ p.title }} — {{ money(p.price,p.currency) }}</option>{% endfor %}</select><button class="btn" type="submit">Pin Product</button></form></div>{% endif %}
 </div>
+<div class="card live-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+  <a class="btn success" href="{% if product %}{{ url_for('market_product_view', product_id=product.id) }}{% else %}#cmTray{% endif %}">Buy</a>
+  {% if is_seller %}<a class="btn" href="#manage-products">Sell</a>{% else %}<a class="btn" href="{{ url_for('market_sell') if user else url_for('login', next='/market/sell') }}">Sell</a>{% endif %}
+  <a class="btn secondary" href="{{ url_for('deliveries') }}">Check delivery</a>
+  <details class="live-more"><summary class="btn secondary" style="cursor:pointer">More</summary>
+    <div class="card" style="margin-top:8px">
+      <p><a href="{{ url_for('koja_market') }}">KOJA Market</a></p>
+      <p><a href="{{ url_for('market_my') }}">My orders and purchases</a></p>
+      <p><a href="{{ url_for('deliveries') }}">My deliveries</a></p>
+      <p><a href="{{ url_for('market_seller_register') }}">Seller Center</a></p>
+      <p><a href="{{ url_for('market_live') }}">All live shops</a></p>
+      {% if is_seller %}<p><a href="{{ url_for('cm_live_summary', room_id=room.id) }}">Sales summary</a></p>{% endif %}
+    </div>
+  </details>
+</div>
+<div class="card live-social" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+  <button class="btn secondary" type="button" id="cmLikeBtn" aria-pressed="false">❤ Like <span id="cmLikeCount">0</span></button>
+  <button class="btn secondary" type="button" id="cmCommentBtn">💬 Comment</button>
+  <button class="btn secondary" type="button" id="cmShareBtn">↗ Share</button>
+  <span id="cmSocialNote" class="small"></span>
+</div>
+<script>(function(){
+ const rid={{ room.id|tojson }}, csrf={{ csrf_token()|tojson }};
+ const likeBtn=document.getElementById('cmLikeBtn'), likeCount=document.getElementById('cmLikeCount'), note=document.getElementById('cmSocialNote');
+ function paint(liked,count){ likeBtn.setAttribute('aria-pressed', liked?'true':'false'); likeBtn.style.fontWeight=liked?'700':'400'; likeCount.textContent=String(count||0); }
+ async function loadState(){ try{ const d=await (await fetch('/api/market/live/'+encodeURIComponent(rid)+'/state',{cache:'no-store'})).json(); if(d.ok) paint(!!d.liked, d.likes); }catch(e){} }
+ likeBtn.addEventListener('click', async function(){
+   likeBtn.disabled=true; note.textContent='';
+   try{
+     const r=await fetch('/api/market/live/'+encodeURIComponent(rid)+'/like',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:'{}'});
+     const d=await r.json();
+     if(d.ok) paint(!!d.liked, d.likes); else note.textContent=d.error||'Could not like right now.';
+   }catch(e){ note.textContent='Connection problem. Try again.'; }
+   finally{ likeBtn.disabled=false; }
+ });
+ document.getElementById('cmCommentBtn').addEventListener('click', function(){ const i=document.getElementById('cmChatText'); if(i){ i.scrollIntoView({behavior:'smooth',block:'center'}); i.focus(); } });
+ document.getElementById('cmShareBtn').addEventListener('click', async function(){
+   const url=location.href.split('#')[0];
+   try{
+     if(navigator.share){ await navigator.share({title:document.title,url:url}); }
+     else if(navigator.clipboard){ await navigator.clipboard.writeText(url); note.textContent='Link copied.'; }
+     else { note.textContent=url; }
+   }catch(e){}
+ });
+ loadState(); setInterval(loadState, 10000);
+})();</script>
 <div class="card" id="cmLive"><div class="actions"><strong id="cmViewers">0 watching</strong>{% if is_seller %}<a class="btn secondary" href="{{ url_for('cm_live_summary', room_id=room.id) }}">Sales summary</a>{% endif %}</div>
 <h3>Shop this live</h3><div id="cmTray"><p class="small">The seller has not added products yet.</p></div><p id="cmToast" class="small"></p>
 <h3>Live chat</h3><div id="cmChat" style="max-height:220px;overflow:auto"></div>
 <form id="cmChatForm" style="display:flex;gap:6px"><input id="cmChatText" maxlength="300" placeholder="Say something…" autocomplete="off"><button class="btn">Send</button></form>
-{% if is_seller %}<h3>Manage products</h3><form method="post" action="{{ url_for('cm_live_tray', room_id=room.id) }}"><select name="product_id">{% for p in products %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}</select>
+{% if is_seller %}<h3 id="manage-products">Manage products</h3><form method="post" action="{{ url_for('cm_live_tray', room_id=room.id) }}"><select name="product_id">{% for p in products %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}</select>
 <button class="btn" name="action" value="add">Add to tray</button><button class="btn secondary" name="action" value="remove">Remove</button><button class="btn secondary" name="action" value="unpin">Unpin</button></form>{% endif %}</div>
 <script>(function(){const rid={{ room.id|tojson }};let after='';const tray=document.getElementById('cmTray'),chat=document.getElementById('cmChat'),vw=document.getElementById('cmViewers'),toast=document.getElementById('cmToast');
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -18726,9 +18785,37 @@ def cm_live_state(room_id):
     if after: q["created_at"] = "gt." + after
     msgs = list(reversed(_cm_rows("koja_market_live_messages", q, order="created_at.desc", limit=50)))
     pinned = market_product(room.get("pinned_product_id")) if room.get("pinned_product_id") else None
-    return jsonify(ok=True, status=room.get("status"), viewers=viewers, peak=max(viewers, int(room.get("peak_viewers") or 0)),
+    return jsonify(ok=True, likes=_cm_like_count(room_id), liked=_cm_liked(room_id, uid), status=room.get("status"), viewers=viewers, peak=max(viewers, int(room.get("peak_viewers") or 0)),
                    pinned=({"id": str(pinned["id"]), "title": pinned.get("title"), "price": pinned.get("price"), "currency": pinned.get("currency") or "ZMW"} if pinned else None),
                    tray=_cm_tray(room_id), messages=[{"name": m.get("name"), "body": m.get("body"), "at": m.get("created_at"), "host": str(m.get("user_id")) == str(room.get("seller_id"))} for m in msgs])
+
+
+def _cm_like_count(room_id):
+    return len(_cm_rows("koja_market_live_likes", {"room_id": room_id}, limit=10000))
+
+def _cm_liked(room_id, uid):
+    return bool(first_row("koja_market_live_likes", {"room_id": room_id, "user_id": uid}))
+
+@app.route("/api/market/live/<room_id>/like", methods=["POST"])
+@login_required
+def cm_live_like(room_id):
+    room = _cm_room(room_id)
+    if not room:
+        return jsonify(ok=False, error="Live not found."), 404
+    uid = _cm_uid()
+    try:
+        if _cm_liked(room_id, uid):
+            db_delete("koja_market_live_likes", {"room_id": room_id, "user_id": uid})
+            liked = False
+        else:
+            _, err = db_insert("koja_market_live_likes", {"id": str(uuid.uuid4()), "room_id": room_id, "user_id": uid, "created_at": utc_now()})
+            if err:
+                return jsonify(ok=False, error="Likes are not set up yet."), 503
+            liked = True
+    except Exception:
+        logger.exception("Live like failed")
+        return jsonify(ok=False, error="Could not save your like."), 503
+    return jsonify(ok=True, liked=liked, likes=_cm_like_count(room_id))
 
 
 @app.route("/api/market/live/<room_id>/chat", methods=["POST"])
