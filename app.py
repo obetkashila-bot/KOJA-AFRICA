@@ -5221,7 +5221,8 @@ def drivers(tracking_code=None):
 <p id="status" class="small"></p>
 </div>
 <div class="card"><div id="map"></div></div>
-<div class="card"><h3>Available Drivers</h3><div id="driver-list">Enter your location and search.</div></div>
+<div class="card"><h3>Available Drivers</h3><div class="card"><p>Not sure which driver? Post the request so every online approved driver can see it. The first driver to accept it takes it.</p><button class="btn success" type="button" onclick="requestAllDrivers()">Send to All Available Drivers</button></div>
+<div id="driver-list">Enter your location and search.</div></div>
 <script>
 let map=L.map("map").setView([-13.9626,28.3228],6),me=null,markers=[];
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
@@ -5280,6 +5281,26 @@ async function chooseAiDriver(driverId){
  try{const r=await fetch("/api/delivery/{{ tracking_code }}/assign-driver",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({driver_id:driverId})}); const d=await r.json(); alert(d.message||"Driver selection completed."); if(d.ok)location.href="/deliveries";}catch(e){alert("Unable to select this driver.");}
 }
 function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
+async function requestAllDrivers(){
+ const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
+ const pickup=prompt("Pickup / shop location description:","My current location");
+ if(pickup===null)return;
+ const destination=prompt("Delivery destination:");
+ if(!destination)return;
+ const recipient=prompt("Recipient name:","");
+ const phone=prompt("Recipient phone:","");
+ const description=prompt("Package description:","");
+ try{
+  const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+   broadcast:true,pickup_location:pickup,destination:destination,
+   pickup_latitude:lat,pickup_longitude:lon,recipient_name:recipient||"",
+   recipient_phone:phone||"",package_description:description||""
+  })});
+  const d=await r.json();
+  alert(d.message||"Delivery request submitted.");
+  if(d.ok)window.location.href="/deliveries";
+ }catch(e){alert("Could not send the request. Check your connection and try again.");}
+}
 async function requestDriver(driverId){
  const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
  const pickup=prompt("Pickup / shop location description:","My current location");
@@ -5523,12 +5544,15 @@ def create_delivery_request():
     user=current_user()
     body=request.get_json(silent=True) or {}
     driver_id=clean(body.get("driver_id"))
-    if not driver_id:
+    broadcast=(not driver_id) and bool(body.get("broadcast"))
+    if not driver_id and not broadcast:
         return jsonify({"ok":False,"message":"Select a driver first."}),400
 
-    driver=first_row("driver_profiles",{"provider_id":driver_id})
-    if not driver:
-        return jsonify({"ok":False,"message":"Driver profile not found."}),404
+    driver=None
+    if driver_id:
+        driver=first_row("driver_profiles",{"provider_id":driver_id})
+        if not driver:
+            return jsonify({"ok":False,"message":"Driver profile not found."}),404
 
     lat=safe_float(body.get("pickup_latitude")); lon=safe_float(body.get("pickup_longitude"))
     tracking=make_tracking_code()
@@ -5538,7 +5562,7 @@ def create_delivery_request():
         "customer_id":user["id"],
         "user_id":user["id"],
         "sender_id":user["id"],
-        "driver_id":driver_id,
+        "driver_id":driver_id or None,
         "pickup_address":clean(body.get("pickup_address") or body.get("pickup_location")),
         "delivery_address":clean(body.get("delivery_address") or body.get("destination")),
         "pickup_location":clean(body.get("pickup_location")),
@@ -5549,7 +5573,7 @@ def create_delivery_request():
         "recipient_phone":clean(body.get("recipient_phone")),
         "package_description":clean(body.get("package_description")),
         "package_weight":body.get("package_weight"),
-        "delivery_fee":_server_delivery_fee(driver),
+        "delivery_fee":_server_delivery_fee(driver or {}),
         "currency":"ZMW",
         "status":"requested",
         "tracking_code":tracking,
@@ -5575,6 +5599,10 @@ def create_delivery_request():
     if error:
         return jsonify({"ok":False,"message":"Delivery request could not be created.","error":str(error)[:600]}),500
 
+    if broadcast:
+        log_activity("delivery_requested",f"Delivery {tracking} posted to all available drivers.")
+        _notify_available_drivers(tracking, payload.get("pickup_location") or payload.get("pickup_address"), payload.get("destination") or payload.get("delivery_address"), payload.get("delivery_fee"))
+        return jsonify({"ok":True,"tracking_code":tracking,"message":f"Delivery request sent to all available drivers. Tracking code: {tracking}."})
     log_activity("delivery_requested",f"Delivery {tracking} requested from driver {driver_id}.")
     return jsonify({"ok":True,"tracking_code":tracking,"message":f"Delivery request sent to the driver. Tracking code: {tracking}."})
 
