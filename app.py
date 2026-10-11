@@ -5132,6 +5132,12 @@ def driver_location_update():
     }
     if _rate_limited("gps:%s" % provider_id, 60, 60):
         return jsonify({"ok":False,"message":"Too many GPS updates; slow down."}),429
+    # Terminal deliveries stop receiving location posts.
+    _gps_delivery_id = clean(body.get("delivery_id"))
+    if _gps_delivery_id:
+        _gps_delivery = first_row("deliveries", {"id": _gps_delivery_id})
+        if _gps_delivery and _delivery_is_terminal(_gps_delivery):
+            return jsonify({"ok":False,"tracking_ended":True,"message":"This delivery is finished. Location sharing for it has stopped."}),409
     error = None
     if _cm_store_location(provider_id, lat, lon, body):
         row, error = db_insert("driver_locations", payload)
@@ -5242,7 +5248,7 @@ async function findDrivers(){
    const m=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away`);
    markers.push(m);
    const div=document.createElement("div");div.className="card driver-card";
-   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick="map.setView([${driver.latitude},${driver.longitude}],16)">View on Map</button></div>`;
+   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick="map.setView([${driver.latitude},${driver.longitude}],16)">View on Map</button></div>`;
    list.appendChild(div);
   });
   map.setView([lat,lon],13);
@@ -5329,7 +5335,7 @@ def ai_match_delivery_driver(tracking_code):
         if distance is not None and distance>100: continue
         if distance is None and overlap==0 and pickup_tokens: continue
         base=100-(distance or 0)*1.5+overlap*12
-        candidates.append({"driver_id":str(driver_id),"name":first_nonempty(provider.get("full_name"),provider.get("name"),"Driver"),"phone":provider.get("phone"),"vehicle_type":profile.get("vehicle_type"),"latitude":dlat,"longitude":dlon,"distance_km":round(distance,2) if distance is not None else None,"address_match":overlap,"score":round(base,2)})
+        candidates.append({"driver_id":str(driver_id),"name":first_nonempty(provider.get("full_name"),provider.get("name"),"Driver"),"vehicle_type":profile.get("vehicle_type"),"latitude":dlat,"longitude":dlon,"distance_km":round(distance,2) if distance is not None else None,"address_match":overlap,"score":round(base,2)})
     candidates.sort(key=lambda x:x["score"],reverse=True)
     top=candidates[:20]
     if not top:
@@ -5421,15 +5427,17 @@ def nearby_drivers():
         if distance>radius:
             continue
 
-        profile=first_row("driver_profiles",{"provider_id":driver_id})
+        profile=first_row("driver_profiles",{"provider_id":driver_id}) or {}
         provider=first_row("service_providers",{"id":driver_id}) or {}
+        # Only approved drivers are shown. No phone number is ever returned here.
+        if not _driver_is_approved(profile,provider):
+            continue
         results.append({
             "driver_id":str(driver_id),
             "name":first_nonempty(provider.get("full_name"),provider.get("name"),"Driver"),
-            "phone":first_nonempty(provider.get("phone")),
-            "vehicle_type":first_nonempty(profile.get("vehicle_type") if profile else ""),
-            "vehicle_registration":first_nonempty(profile.get("vehicle_registration") if profile else ""),
-            "latitude":dlat,"longitude":dlon,
+            "vehicle_type":first_nonempty(profile.get("vehicle_type")),
+            "vehicle_registration":first_nonempty(profile.get("vehicle_registration")),
+            "latitude":round(dlat,3),"longitude":round(dlon,3),
             "accuracy":loc.get("accuracy"),
             "distance_km":round(distance,2),
             "updated_at":loc.get("created_at")
@@ -5441,6 +5449,67 @@ def nearby_drivers():
 # ============================================================
 # DELIVERY REQUEST / TRACKING
 # ============================================================
+
+# ============================================================
+# DELIVERY SECURITY + GPS CONSISTENCY (P0 repairs)
+# ============================================================
+DELIVERY_TERMINAL_STATUSES = {'delivered','completed','cancelled','rejected'}
+DELIVERY_GPS_STALE_SECONDS = 120
+_RECIPIENT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+def _delivery_is_terminal(delivery):
+    return str((delivery or {}).get('status') or '').lower() in DELIVERY_TERMINAL_STATUSES
+
+def _driver_is_approved(profile, provider):
+    # Same approval rule used elsewhere: approval_status first, then verification_status.
+    for src in (profile or {}, provider or {}):
+        status = str(src.get('approval_status') or src.get('verification_status') or '').lower()
+        if status:
+            return status in {'approved','active','verified'}
+    return False
+
+def _server_delivery_fee(driver_profile):
+    # Client-supplied fees are ignored. Fee comes from the server-side driver profile,
+    # then KOJA_DEFAULT_DELIVERY_FEE; 0 if neither is set.
+    for key in ('delivery_fee','base_delivery_fee'):
+        value = _money_num((driver_profile or {}).get(key))
+        if value > 0:
+            return value
+    return max(0.0, _money_num(os.getenv('KOJA_DEFAULT_DELIVERY_FEE', 0)))
+
+def _normalize_access_code(code):
+    return re.sub(r'[\s-]', '', str(code or '')).upper()
+
+def _hash_access_code(code):
+    return hashlib.sha256(('koja-recipient-v1:' + _normalize_access_code(code)).encode('utf-8')).hexdigest()
+
+def _new_recipient_code():
+    # 10 characters from a 32-symbol alphabet (about 50 bits).
+    return ''.join(secrets.choice(_RECIPIENT_CODE_ALPHABET) for _ in range(10))
+
+def _attach_delivery_security(tracking_code):
+    """Give a delivery a pickup number and a hashed one-time receiver code if it lacks them.
+    Returns (pickup_code, plain_recipient_code). The plain recipient code is returned only once,
+    to the sender who created the delivery, and is never stored in plain text."""
+    delivery = first_row('deliveries', {'tracking_code': tracking_code}) or {}
+    if not delivery:
+        return None, None
+    patch = {}
+    pickup = clean(delivery.get('pickup_code')).upper()
+    if not pickup:
+        pickup = make_delivery_pickup_code()
+        patch['pickup_code'] = pickup
+    recipient = None
+    if not clean(delivery.get('recipient_code_hash')):
+        recipient = _new_recipient_code()
+        patch['recipient_code_hash'] = _hash_access_code(recipient)
+    if patch:
+        patch['updated_at'] = utc_now()
+        _, err = db_update('deliveries', {'id': delivery.get('id')}, patch)
+        if err:
+            logger.error('Delivery security update failed for %s: %s', tracking_code, str(err)[:300])
+            return None, None
+    return pickup, recipient
 
 def make_tracking_code():
     return "KOJA-" + datetime.now().strftime("%Y%m%d") + "-" + secrets.token_hex(3).upper()
@@ -5477,7 +5546,7 @@ def create_delivery_request():
         "recipient_phone":clean(body.get("recipient_phone")),
         "package_description":clean(body.get("package_description")),
         "package_weight":body.get("package_weight"),
-        "delivery_fee":body.get("delivery_fee") or 0,
+        "delivery_fee":_server_delivery_fee(driver),
         "currency":"ZMW",
         "status":"requested",
         "tracking_code":tracking,
@@ -5531,7 +5600,7 @@ def deliveries():
             "recipient_phone":clean(request.form.get("recipient_phone")),
             "package_description":clean(request.form.get("package_description")),
             "package_weight":request.form.get("package_weight") or None,
-            "delivery_fee":request.form.get("delivery_fee") or 0,
+            "delivery_fee":0,  # set server-side when a driver accepts; client input is ignored
             "currency":"ZMW","requested_date":request.form.get("requested_date") or None,
             "requested_time":request.form.get("requested_time") or None,
             "status":"requested","tracking_code":tracking,
@@ -5541,7 +5610,13 @@ def deliveries():
         if error:
             flash("Delivery could not be registered: "+str(error)[:600],"danger")
         else:
-            flash(f"Delivery registered. Tracking code: {tracking}. Now choose a nearby driver.","success")
+            pickup_code,recipient_code=_attach_delivery_security(tracking)
+            if not pickup_code:
+                # Never leave a half-created delivery behind.
+                db_delete("deliveries",{"tracking_code":tracking})
+                flash("Delivery could not be created securely. Nothing was saved. Please try again.","danger")
+                return redirect(url_for("deliveries"))
+            flash(f"Delivery registered. Tracking code: {tracking}. Pickup number (give to the driver at pickup): {pickup_code or 'not generated, run the security migration'}. Receiver one-time code (shown once): {recipient_code or 'not generated'}. Now choose a nearby driver.","success")
             return redirect(url_for("drivers", tracking_code=tracking))
         return redirect(url_for("deliveries"))
 
@@ -5668,7 +5743,7 @@ async function load(){
   const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/location");
   const d=await r.json();
   setText("delivery-status",d.status||"");
-  if(!d.ok){setText("tracking-status",d.message||"No driver GPS available yet.");return}
+  if(!d.ok){setText("tracking-status",d.message||"No driver GPS available yet.");if(d.tracking_ended&&loadTimer)clearInterval(loadTimer);return}
   const p=[Number(d.latitude),Number(d.longitude)];
   if(!Number.isFinite(p[0])||!Number.isFinite(p[1]))return;
   lastDriver=p;
@@ -5679,13 +5754,19 @@ async function load(){
   if(node&&Number.isFinite(heading))node.style.transform="rotate("+heading+"deg)";
   if(Number.isFinite(Number(d.speed)) && Number(d.speed)>=0)setText("speed",(Number(d.speed)*3.6).toFixed(0)+" km/h");else setText("speed","—");
   const age=d.age_seconds!=null?Math.max(0,Math.round(d.age_seconds)):null;
-  setText("tracking-status","LIVE — driver's GPS updated "+(age===null?"now":age+"s ago")+". Accuracy: "+(d.accuracy?Math.round(d.accuracy)+" m":"—"));
+  if(d.stale){
+    setText("tracking-status","⚠ STALE — last driver GPS was "+(age===null?"unknown":age+"s")+" ago. The driver may have lost signal, so the position may be out of date.");
+    if(driverMarker.getElement())driverMarker.getElement().style.opacity="0.45";
+  }else{
+    if(driverMarker.getElement())driverMarker.getElement().style.opacity="1";
+    setText("tracking-status","LIVE — driver's GPS updated "+(age===null?"now":age+"s ago")+". Accuracy: "+(d.accuracy?Math.round(d.accuracy)+" m":"—"));
+  }
   await updateRoute(false);
  }catch(e){setText("tracking-status","Network connection lost. Retrying live GPS...")}
 }
 geocodeDestination();
 load();
-setInterval(load,5000);
+var loadTimer=setInterval(load,5000);
 setInterval(()=>updateRoute(true),15000);
 </script>
 """,delivery=delivery)
@@ -5731,18 +5812,27 @@ def delivery_location(tracking_code):
         if not assigned_driver or provider_id != str(assigned_driver):
             return jsonify({"ok":False,"message":"You are not authorized to view this delivery."}),403
 
-    driver_id=delivery.get("driver_id")
-    locations=[]
-    if driver_id:
-        locations=db_select("driver_locations",filters={"driver_id":driver_id},order="created_at.desc",limit=1)
-    if not locations:
-        return jsonify({"ok":False,"message":"Driver has not shared a GPS location yet.","status":delivery.get("status")})
+    # Tracking ends at terminal states; no coordinates are returned after that.
+    if _delivery_is_terminal(delivery):
+        return jsonify({"ok":False,"tracking_ended":True,"status":delivery.get("status"),"message":"Tracking has ended for this delivery."}),410
 
-    loc=locations[0]
+    # Read the same source the driver writes to (koja_driver_latest), not the throttled history table.
+    driver_id=delivery.get("driver_id")
+    loc=None
+    if driver_id:
+        latest=first_row("koja_driver_latest",{"driver_id":driver_id})
+        if latest:
+            loc=dict(latest, created_at=latest.get("updated_at"))
+    if not loc:
+        return jsonify({"ok":False,"message":"Driver has not shared a GPS location yet.","status":delivery.get("status")})
+    if not as_bool(loc.get("is_online")):
+        return jsonify({"ok":False,"offline":True,"message":"Driver is offline. Last known location is not shown.","status":delivery.get("status")})
+
     updated=loc.get("created_at")
     age_seconds=None
     try:
         dt=datetime.fromisoformat(str(updated).replace("Z","+00:00"))
+        if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
         age_seconds=max(0,(datetime.now(timezone.utc)-dt).total_seconds())
     except Exception:
         pass
@@ -5750,7 +5840,10 @@ def delivery_location(tracking_code):
         "ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),
         "accuracy":loc.get("accuracy"),"speed":loc.get("speed"),
         "heading":loc.get("heading"),"updated_at":updated,
-        "age_seconds":age_seconds,"status":delivery.get("status"),
+        "age_seconds":age_seconds,
+        "stale":age_seconds is None or age_seconds>DELIVERY_GPS_STALE_SECONDS,
+        "stale_after_seconds":DELIVERY_GPS_STALE_SECONDS,
+        "status":delivery.get("status"),
         "eta":_cm_eta(delivery,loc)
     })
 
@@ -7559,10 +7652,140 @@ def delivery_participant(delivery):
     uid=str(user.get("id") or "")
     if uid and str(delivery.get("customer_id") or delivery.get("user_id") or delivery.get("sender_id") or "") == uid:
         return "sender"
-    up=normalize_phone(user.get("phone")); rp=normalize_phone(delivery.get("recipient_phone"))
-    if up and rp and (up == rp or up.endswith(rp) or rp.endswith(up)):
+    # Receiver access is granted only by the one-time code (receiver_access_claim), never by phone number.
+    tc=str(delivery.get("tracking_code") or "")
+    if tc and tc in (session.get("receiver_access") or []):
         return "receiver"
     return "admin" if user.get("is_admin") else None
+
+RECEIVER_CODE_MAX_ATTEMPTS = 5
+PICKUP_MAX_ATTEMPTS = 10
+_RECEIVER_INVALID_MSG = "That receiver code is not valid or has already been used. Ask the sender for a new one."
+
+def _claim_receiver_code_atomic(delivery):
+    """Single-use claim. The UPDATE matches only while the hash is unchanged, unused and unlocked,
+    so when requests race only one can succeed. Returns True only for the winning request."""
+    if not supabase_configured():
+        return False
+    try:
+        r = _HTTP.patch(
+            sb_rest_url("deliveries"),
+            headers=sb_headers({"Prefer": "return=representation"}),
+            params={
+                "id": "eq." + str(delivery.get("id")),
+                "recipient_code_hash": "eq." + str(delivery.get("recipient_code_hash")),
+                "recipient_code_used_at": "is.null",
+                "recipient_code_locked": "eq.false",
+            },
+            json={"recipient_code_used_at": utc_now(), "updated_at": utc_now()},
+            timeout=20,
+        )
+        data = json_or_empty(r)
+        return bool(r.ok and isinstance(data, list) and data)
+    except Exception:
+        logger.exception("Receiver code claim failed")
+        return False
+
+def _issue_new_security_codes(delivery, rotate_pickup):
+    """Reissue the receiver code, and the pickup number when rotate_pickup is True.
+    Old codes stop working immediately. A pickup number that is not rotated is never returned.
+    Returns (pickup_or_None, recipient)."""
+    recipient = _new_recipient_code()
+    patch = {
+        "pickup_attempts": 0, "pickup_locked": False,
+        "recipient_code_hash": _hash_access_code(recipient), "recipient_code_used_at": None,
+        "recipient_code_attempts": 0, "recipient_code_locked": False,
+        "updated_at": utc_now(),
+    }
+    pickup = None
+    if rotate_pickup or not clean(delivery.get("pickup_code")):
+        pickup = make_delivery_pickup_code()
+        patch["pickup_code"] = pickup
+    _, err = db_update("deliveries", {"id": delivery.get("id")}, patch)
+    if err:
+        logger.error("Issuing new security codes failed for %s: %s", delivery.get("tracking_code"), str(err)[:300])
+        return None, None
+    return pickup, recipient
+
+@app.route("/delivery/<tracking_code>/receiver-access", methods=["GET","POST"])
+@login_required
+def receiver_access_claim(tracking_code):
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery:
+        abort(404)
+    error=None
+    if request.method=="POST":
+        if _delivery_is_terminal(delivery):
+            error="This delivery is finished. Tracking is no longer available."
+        elif as_bool(delivery.get("recipient_code_locked")):
+            error="Too many wrong codes. Ask the sender to issue new codes."
+        elif not delivery.get("recipient_code_hash") or delivery.get("recipient_code_used_at"):
+            error=_RECEIVER_INVALID_MSG
+        else:
+            code=_normalize_access_code(request.form.get("recipient_code") or (request.get_json(silent=True) or {}).get("recipient_code"))
+            if not hmac.compare_digest(str(delivery.get("recipient_code_hash")), _hash_access_code(code)):
+                attempts=int(delivery.get("recipient_code_attempts") or 0)+1
+                locked=attempts>=RECEIVER_CODE_MAX_ATTEMPTS
+                db_update("deliveries",{"id":delivery.get("id")},{"recipient_code_attempts":attempts,"recipient_code_locked":locked,"updated_at":utc_now()})
+                error="Too many wrong codes. Ask the sender to issue new codes." if locked else _RECEIVER_INVALID_MSG
+            elif not _claim_receiver_code_atomic(delivery):
+                error=_RECEIVER_INVALID_MSG
+            else:
+                grants=list(session.get("receiver_access") or [])
+                grants.append(tracking_code)
+                session["receiver_access"]=grants[-20:]
+                return redirect(url_for("receiver_live_map",tracking_code=tracking_code))
+    return render_page("Receiver Access", r"""
+<div class="hero"><h1>Receiver Access</h1><p>Tracking: <strong>{{ tracking_code }}</strong></p></div>
+<div class="card"><p>Enter the one-time receiver code the sender gave you. It can be used once.</p>
+{% if error %}<p class="danger">{{ error }}</p>{% endif %}
+<form method="post"><label>Receiver code</label><input name="recipient_code" autocomplete="one-time-code" required maxlength="16"><button class="btn" type="submit">Unlock Live Map</button></form></div>
+""", tracking_code=tracking_code, error=error)
+
+@app.route("/delivery/<tracking_code>/security-codes", methods=["GET","POST"])
+@login_required
+def delivery_security_codes(tracking_code):
+    """Sender-only page to issue (or reissue) the pickup number and receiver code.
+    Codes are shown once in this response and never stored in plain text."""
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery:
+        abort(404)
+    uid=str((current_user() or {}).get("id") or "")
+    if not uid or uid!=str(delivery.get("customer_id") or delivery.get("sender_id") or ""):
+        abort(403)
+    if _delivery_is_terminal(delivery):
+        abort(409)
+    # The pickup number is rotated only when the requester is also the sender of the delivery
+    # (direct requests). For seller/business orders the pickup number already belongs to the seller,
+    # so it is kept, and the customer is never shown it.
+    rotate_pickup = bool(delivery.get("sender_id")) and str(delivery.get("sender_id")) == uid
+    shown_pickup=recipient=None
+    error=None
+    issued=False
+    if request.method=="POST":
+        new_pickup,recipient=_issue_new_security_codes(delivery, rotate_pickup)
+        if not recipient:
+            error="Codes could not be issued. Please try again."
+        else:
+            issued=True
+            shown_pickup=new_pickup if rotate_pickup else None
+    html=render_page("Delivery Codes", r"""
+<div class="hero"><h1>Delivery Codes</h1><p>Tracking: <strong>{{ tracking_code }}</strong></p></div>
+<div class="card">
+{% if error %}<p class="danger">{{ error }}</p>{% endif %}
+{% if issued %}
+{% if pickup %}<p><strong>Pickup number</strong> (give to the driver at the shop only): <code>{{ pickup }}</code></p>
+{% else %}<p class="small">The pickup number for this order stays with the seller, so it is not shown here.</p>{% endif %}
+<p><strong>Receiver one-time code</strong> (give to the receiver; works once): <code>{{ recipient }}</code></p>
+<p class="small">Shown once. Previous receiver code stops working{% if pickup %}, and so does the previous pickup number{% endif %}.</p>
+{% else %}
+<p>Issue codes for this delivery. Use this if you did not receive codes, or if a code was locked after wrong attempts. Any previous codes stop working.</p>
+<form method="post"><button class="btn" type="submit">Issue New Codes</button></form>
+{% endif %}
+</div>""", tracking_code=tracking_code, pickup=shown_pickup, recipient=recipient, issued=issued, error=error)
+    resp=Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"]="no-store"
+    return resp
 
 @app.route("/delivery/<tracking_code>/sender-live-map")
 @login_required
@@ -7583,7 +7806,7 @@ const trackingCode={{ tracking_code|tojson }},myRole="sender";const map=L.map("m
 def receiver_live_map(tracking_code):
     delivery=first_row("deliveries",{"tracking_code":tracking_code})
     if not delivery:return "Delivery not found.",404
-    if delivery_participant(delivery) not in ("receiver","admin"):return "Receiver access required. The logged-in phone must match the delivery recipient phone.",403
+    if delivery_participant(delivery) not in ("receiver","admin"):return redirect(url_for("receiver_access_claim",tracking_code=tracking_code))
     return render_page("Receiver & Sender Live Map", r"""
 <div class="hero"><h2> Receiver Live Map</h2><p>See your own live location, the sender's live location and the driver on one map.</p></div>
 <div class="card"><div class="actions"><button class="btn success" onclick="startGPS()">Start My GPS</button><button class="btn danger" onclick="stopGPS()">Stop My GPS</button><a class="btn secondary" href="{{ url_for('sender_live_map',tracking_code=tracking_code) }}">Sender Screen</a></div><p id="status">Waiting for GPS...</p><div id="map"></div></div>
@@ -7600,6 +7823,7 @@ def participant_location_api(tracking_code):
     role=delivery_participant(delivery)
     if role is None:return jsonify({"ok":False,"message":"You are not authorized for this delivery."}),403
     if not table_exists("delivery_participant_locations"):return jsonify({"ok":False,"message":"Run the updated database SQL to enable sender/receiver live GPS."}),503
+    if _delivery_is_terminal(delivery):return jsonify({"ok":False,"tracking_ended":True,"message":"Tracking has ended for this delivery."}),410
     if request.method=="POST":
         if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Only sender or receiver can share GPS."}),403
         body=request.get_json(silent=True) or {};lat=safe_float(body.get("latitude"));lon=safe_float(body.get("longitude"))
@@ -10619,12 +10843,21 @@ def verify_delivery_pickup(tracking_code):
             'message':'This delivery has not been assigned to you.'
         }),409
 
-    real_code=clean(delivery.get('pickup_code')).upper()
-    if not entered_code or entered_code != real_code:
+    if as_bool(delivery.get('pickup_locked')):
         return jsonify({
-            'valid':False,'status':'invalid',
-            'message':'INVALID PICKUP NUMBER.'
-        }),400
+            'valid':False,'status':'locked',
+            'message':'Pickup number locked after too many wrong attempts. The sender must issue new codes.'
+        }),423
+
+    real_code=clean(delivery.get('pickup_code')).upper()
+    if not entered_code or not real_code or not hmac.compare_digest(entered_code.encode('utf-8'), real_code.encode('utf-8')):
+        attempts=int(delivery.get('pickup_attempts') or 0)+1
+        locked=attempts>=PICKUP_MAX_ATTEMPTS
+        db_update('deliveries',{'id':delivery.get('id')},{'pickup_attempts':attempts,'pickup_locked':locked,'updated_at':utc_now()})
+        return jsonify({
+            'valid':False,'status':'locked' if locked else 'invalid',
+            'message':'Pickup number locked after too many wrong attempts. The sender must issue new codes.' if locked else 'INVALID PICKUP NUMBER.'
+        }),423 if locked else 400
 
     updated,err=db_update('deliveries',{'id':delivery.get('id')},{
         'pickup_verified':True,
@@ -10650,6 +10883,8 @@ def verify_delivery_pickup(tracking_code):
 def verify_delivery_pickup_page(tracking_code):
     delivery=first_row('deliveries',{'tracking_code':tracking_code})
     if not delivery: abort(404)
+    _u=current_user() or {}; _p=get_driver_provider(_u.get('id'))
+    if not _u.get('is_admin') and not (_p and str(_p.get('id'))==str(delivery.get('driver_id') or '')): abort(403)
     return render_page('Verify Delivery Pickup',r'''
 <div class="hero"><h1>KOJA Delivery Pickup</h1><p>Tracking: <strong>{{ delivery.tracking_code }}</strong></p><p>Pickup: {{ delivery.pickup_location }}</p><p>Destination: {{ delivery.destination }}</p></div>
 <div class="card"><label>Enter pickup number from the shop</label><input id="code" autocomplete="one-time-code" placeholder="KDP-XXXXXXXX"><button class="btn" onclick="verifyPickup()">Verify Number</button><p id="result" class="small"></p></div>
@@ -10708,12 +10943,21 @@ def _upgrade_delivery_request_with_code(*args,**kwargs):
     try:
         data=result.get_json(silent=True) if hasattr(result,'get_json') else None
         if isinstance(data,dict) and data.get('ok') and data.get('tracking_code'):
-            code=make_delivery_pickup_code()
-            db_update('deliveries',{'tracking_code':data['tracking_code']},{'pickup_code':code,'pickup_verified':False,'delivery_completed_at':None,'driver_payout_status':'pending','updated_at':utc_now()})
-            delivery=first_row('deliveries',{'tracking_code':data['tracking_code']}) or {}
+            tc=data['tracking_code']
+            pickup,recipient=_attach_delivery_security(tc)
+            if not pickup:
+                # Never leave a half-created delivery behind; the sender retries from a clean state.
+                db_delete('deliveries',{'tracking_code':tc})
+                return jsonify({'ok':False,'message':'Delivery could not be created securely. Nothing was saved. Please try again.'}),500
+            db_update('deliveries',{'tracking_code':tc},{'pickup_verified':False,'delivery_completed_at':None,'driver_payout_status':'pending','updated_at':utc_now()})
+            delivery=first_row('deliveries',{'tracking_code':tc}) or {}
+            # The pickup number is NOT sent to the driver. The driver gets it from the sender at pickup.
             if delivery.get('driver_id'):
-                notify_user(delivery.get('driver_id'),'New KOJA Delivery',f'Delivery {data["tracking_code"]} assigned. Pickup number: {code}.','delivery',delivery.get('id'),'/deliveries')
-            data['pickup_code']=code
+                notify_user(delivery.get('driver_id'),'New KOJA Delivery',f'Delivery {tc} assigned. Collect the package and enter the pickup number the sender gives you.','delivery',delivery.get('id'),'/deliveries')
+            # Sender-only response. The recipient code is shown once and only exists in plain text here.
+            data['pickup_code']=pickup
+            data['recipient_code']=recipient
+            data['recipient_code_note']='Give this one-time code to the receiver. It is shown once.' if recipient else None
             return jsonify(data)
     except Exception: logger.exception('Delivery pickup-code upgrade failed')
     return result
