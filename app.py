@@ -4985,7 +4985,7 @@ def driver_dashboard():
 <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='reject') }}"><button class="btn danger">Reject</button></form>
 {% elif d.get('status') == 'accepted' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='picked_up') }}"><button class="btn">Picked Up</button></form>
 {% elif d.get('status') == 'picked_up' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='in_transit') }}"><button class="btn">In Transit</button></form>
-{% elif d.get('status') == 'in_transit' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='delivered') }}"><button class="btn success">Delivered</button></form>{% endif %}
+{% elif d.get('status') == 'in_transit' %}<p class="small">Waiting for the customer to confirm receipt.</p>{% endif %}
 <a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a>
 </div></div>
 {% else %}<p>No delivery requests yet.</p>{% endfor %}
@@ -5024,6 +5024,13 @@ def driver_delivery_action(delivery_id, action):
         return redirect(url_for("driver_dashboard"))
     if action == "reject" and cur_status not in ("requested", "accepted"):
         flash("This delivery can no longer be rejected.", "warning"); return redirect(url_for("driver_dashboard"))
+    if action == "delivered":
+        flash("Only the customer can confirm delivery. Ask the customer to confirm receipt.", "warning")
+        return redirect(url_for("driver_dashboard"))
+    # Moving to the next stage requires the pickup number, which the sender gives to the driver.
+    if action in ("picked_up", "in_transit") and not as_bool(delivery.get("pickup_verified")):
+        flash("Enter the pickup number first. The sender gives it to you at the shop.", "warning")
+        return redirect(url_for("driver_dashboard"))
     if action in ("picked_up", "in_transit", "delivered"):
         if str(delivery.get("driver_id") or "") != provider_id:
             flash("This delivery is not assigned to you.", "danger"); return redirect(url_for("driver_dashboard"))
@@ -5111,8 +5118,7 @@ function stopTracking(){
 @app.route("/api/driver/location", methods=["POST"])
 @driver_required
 def driver_location_update():
-    if not table_exists("driver_locations"):
-        return jsonify({"ok":False,"message":"driver_locations table is not available."}),503
+    # The live position (koja_driver_latest) is always saved. History is saved only if its table exists.
     user = current_user()
     provider = get_driver_provider(user.get("id"))
     if not provider:
@@ -5139,7 +5145,7 @@ def driver_location_update():
         if _gps_delivery and _delivery_is_terminal(_gps_delivery):
             return jsonify({"ok":False,"tracking_ended":True,"message":"This delivery is finished. Location sharing for it has stopped."}),409
     error = None
-    if _cm_store_location(provider_id, lat, lon, body):
+    if _cm_store_location(provider_id, lat, lon, body) and table_exists("driver_locations"):
         row, error = db_insert("driver_locations", payload)
     if error:
         logger.error("driver_locations insert failed: %s", error)
@@ -5398,9 +5404,6 @@ def nearby_drivers():
 
     if lat is None or lon is None or not (-90<=lat<=90) or not (-180<=lon<=180):
         return jsonify({"ok":False,"message":"Valid latitude and longitude are required."}),400
-
-    if not table_exists("driver_locations"):
-        return jsonify({"ok":False,"message":"The driver_locations table is not installed."}),503
 
     latest=latest_driver_locations()
     results=[]
@@ -10897,8 +10900,8 @@ def complete_delivery(tracking_code):
     delivery=first_row('deliveries',{'tracking_code':tracking_code})
     if not delivery:return jsonify({'ok':False,'message':'Delivery not found.'}),404
     uid=(current_user() or {}).get('id')
-    if str(delivery.get('customer_id') or '')!=str(uid) and not (current_user() or {}).get('is_admin'):
-        return jsonify({'ok':False,'message':'Only the delivery owner can confirm receipt.'}),403
+    if str(delivery.get('customer_id') or '')!=str(uid):
+        return jsonify({'ok':False,'message':'Only the customer can confirm receipt.'}),403
     status=str(delivery.get('status') or '').lower()
     if status in {'completed'}: return jsonify({'ok':True,'already_completed':True,'message':'Delivery already completed.'})
     if not as_bool(delivery.get('pickup_verified')):
