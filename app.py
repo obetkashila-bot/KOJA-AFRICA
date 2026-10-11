@@ -4983,7 +4983,7 @@ def driver_dashboard():
 {% if d.get('status') == 'requested' %}
 <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='accept') }}"><button class="btn success">Accept</button></form>
 <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='reject') }}"><button class="btn danger">Reject</button></form>
-{% elif d.get('status') == 'accepted' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='picked_up') }}"><button class="btn">Picked Up</button></form>
+{% elif d.get('status') == 'accepted' %}<a class="btn" href="{{ url_for('verify_delivery_pickup_page',tracking_code=d.get('tracking_code')) }}">Enter Pickup Number</a>
 {% elif d.get('status') == 'picked_up' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='in_transit') }}"><button class="btn">In Transit</button></form>
 {% elif d.get('status') == 'in_transit' %}<p class="small">Waiting for the customer to confirm receipt.</p>{% endif %}
 <a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a>
