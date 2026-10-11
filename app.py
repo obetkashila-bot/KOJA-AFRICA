@@ -3761,7 +3761,7 @@ def _notify_available_drivers(tracking_code, pickup, destination, fee):
     try:
         profiles=db_select('driver_profiles',limit=500) or []
         for d in profiles:
-            if str(d.get('verification_status') or '').lower() not in {'approved','active','verified'}: continue
+            if not _driver_is_approved(d, {}): continue
             uid=d.get('user_id') or d.get('provider_user_id')
             if uid:
                 notify_user(uid,'New KOJA delivery available',f'{tracking_code}: {pickup} → {destination}. Fee ZMW {float(fee or 0):.2f}. First approved driver to accept claims it.','delivery',None,'/driver/available-deliveries')
@@ -4955,7 +4955,7 @@ def driver_dashboard():
         return redirect(url_for("driver_register"))
 
     provider_id = str(provider.get("id"))
-    if str(profile.get('verification_status') or '').lower() not in {'approved','active','verified'}:
+    if not _driver_is_approved(profile, {}):
         flash('Driver approval is required before accepting deliveries.','warning')
     locations = db_select("driver_locations", filters={"driver_id": provider_id}, order="created_at.desc", limit=1)
     latest = locations[0] if locations else None
@@ -5324,7 +5324,7 @@ def ai_match_delivery_driver(tracking_code):
                 if (now-dt).total_seconds()>600: continue
             except Exception: pass
         profile=first_row("driver_profiles",{"provider_id":driver_id}) or {}
-        if str(profile.get("verification_status") or "").lower() not in {"approved","active","verified"}: continue
+        if not _driver_is_approved(profile, {}): continue
         provider=first_row("service_providers",{"id":driver_id}) or {}
         dlat=safe_float(loc.get("latitude")); dlon=safe_float(loc.get("longitude"))
         distance=haversine_km(lat,lon,dlat,dlon) if lat is not None and lon is not None and dlat is not None and dlon is not None else None
@@ -5370,7 +5370,7 @@ def assign_delivery_driver(tracking_code):
     body=request.get_json(silent=True) or {}
     driver_id=clean(body.get("driver_id"))
     profile=first_row("driver_profiles",{"provider_id":driver_id})
-    if not profile or str(profile.get("verification_status") or "").lower() not in {"approved","active","verified"}:
+    if not profile or not _driver_is_approved(profile, {}):
         return jsonify({"ok":False,"message":"That driver is not approved or is no longer available."}),409
     provider=first_row("service_providers",{"id":driver_id}) or {}
     # Conditional claim: if another action assigned the delivery first, this update returns no row.
@@ -5460,13 +5460,13 @@ _RECIPIENT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 def _delivery_is_terminal(delivery):
     return str((delivery or {}).get('status') or '').lower() in DELIVERY_TERMINAL_STATUSES
 
-def _driver_is_approved(profile, provider):
-    # Same approval rule used elsewhere: approval_status first, then verification_status.
-    for src in (profile or {}, provider or {}):
-        status = str(src.get('approval_status') or src.get('verification_status') or '').lower()
-        if status:
-            return status in {'approved','active','verified'}
-    return False
+def _driver_is_approved(profile, provider=None):
+    # Admin approval writes approval_status; some pages historically read verification_status.
+    # Approved if either column says approved, and refused if either column says rejected/suspended/blocked.
+    statuses = [str(src.get(k) or '').lower() for src in (profile or {}, provider or {}) for k in ('approval_status','verification_status')]
+    if any(x in {'rejected','suspended','blocked'} for x in statuses):
+        return False
+    return any(x in {'approved','active','verified'} for x in statuses)
 
 def _server_delivery_fee(driver_profile):
     # Client-supplied fees are ignored. Fee comes from the server-side driver profile,
@@ -11755,7 +11755,7 @@ def driver_available_deliveries():
     provider=get_driver_provider((current_user() or {}).get('id'))
     if not provider: return redirect(url_for('driver_register'))
     profile=first_row('driver_profiles',{'provider_id':provider.get('id')}) or {}
-    if str(profile.get('verification_status') or '').lower() not in {'approved','active','verified'}:
+    if not _driver_is_approved(profile, {}):
         return render_page('Available KOJA Deliveries',"<div class='hero'><h1>Driver approval required</h1><p>Your driver profile must be approved before you can accept deliveries.</p></div>")
     rows=db_select('deliveries',{'status':'requested','driver_id':None},order='created_at.desc',limit=100) or []
     return render_page('Available KOJA Deliveries',r'''
