@@ -11752,6 +11752,17 @@ def fulfillment_ai_dashboard():
 # ============================================================
 # KOJA UNIFIED FULFILLMENT V3 — MARKET + BUSINESS
 # ============================================================
+@app.route('/api/driver/available-deliveries')
+@login_required
+def api_driver_available_deliveries():
+    provider=get_driver_provider((current_user() or {}).get('id'))
+    if not provider: return jsonify({'ok':False,'message':'Driver profile not found.'}),403
+    profile=first_row('driver_profiles',{'provider_id':provider.get('id')}) or {}
+    if not _driver_is_approved(profile, {}): return jsonify({'ok':False,'message':'Driver approval required.'}),403
+    rows=db_select('deliveries',{'status':'requested','driver_id':None},order='created_at.desc',limit=100) or []
+    jobs=[{'id':str(d.get('id')),'tracking_code':d.get('tracking_code') or '','pickup_location':d.get('pickup_location') or '','destination':d.get('destination') or '','fee_text':market_money(d.get('delivery_fee'),'ZMW'),'accept_url':url_for('driver_delivery_action',delivery_id=d.get('id'),action='accept')} for d in rows if d.get('id')]
+    return jsonify({'ok':True,'jobs':jobs})
+
 @app.route('/driver/available-deliveries')
 @login_required
 def driver_available_deliveries():
@@ -11762,8 +11773,46 @@ def driver_available_deliveries():
         return render_page('Available KOJA Deliveries',"<div class='hero'><h1>Driver approval required</h1><p>Your driver profile must be approved before you can accept deliveries.</p></div>")
     rows=db_select('deliveries',{'status':'requested','driver_id':None},order='created_at.desc',limit=100) or []
     return render_page('Available KOJA Deliveries',r'''
-<div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
-<div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
+<div class="hero"><h1>Available KOJA Deliveries</h1><p>New jobs appear here automatically. A job disappears for every driver as soon as one driver accepts it.</p><p class="small" id="jobs-live">Live: checking for jobs...</p></div>
+<div class="grid" id="jobs-grid" data-csrf="{{ csrf_token() }}" data-url="{{ url_for('api_driver_available_deliveries') }}">{% for d in rows %}<div class="card" data-id="{{ d.id }}"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card" id="jobs-empty"><p>No available deliveries right now.</p></div>{% endfor %}</div>
+<script>
+(function(){
+  var grid=document.getElementById('jobs-grid'), live=document.getElementById('jobs-live');
+  var csrf=grid.getAttribute('data-csrf'), url=grid.getAttribute('data-url');
+  var lastKey=null;
+  function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+  function render(jobs){
+    var key=jobs.map(function(j){return j.id;}).join(',');
+    if(key===lastKey) return;
+    var hadBefore=lastKey!==null;
+    lastKey=key;
+    if(!jobs.length){
+      grid.innerHTML='<div class="card" id="jobs-empty"><p>No available deliveries right now.</p></div>';
+      return;
+    }
+    grid.innerHTML=jobs.map(function(j){
+      return '<div class="card" data-id="'+esc(j.id)+'"><h3>'+esc(j.tracking_code)+'</h3>'+
+        '<p><strong>Pickup:</strong> '+esc(j.pickup_location)+'</p>'+
+        '<p><strong>Destination:</strong> '+esc(j.destination)+'</p>'+
+        '<p><strong>Fee:</strong> '+esc(j.fee_text)+'</p>'+
+        '<form method="post" action="'+esc(j.accept_url)+'"><input type="hidden" name="_csrf_token" value="'+esc(csrf)+'"><button class="btn success">Accept Delivery</button></form></div>';
+    }).join('');
+  }
+  function poll(){
+    if(document.hidden) return;
+    fetch(url,{cache:'no-store',credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+      if(!d.ok){ live.textContent=d.message||'Could not load jobs.'; return; }
+      render(d.jobs||[]);
+      live.textContent='Live: updated '+new Date().toLocaleTimeString();
+    }).catch(function(){
+      live.textContent='Connection lost, retrying...';
+    });
+  }
+  poll();
+  setInterval(poll, 8000);
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) poll(); });
+})();
+</script>
 ''',rows=rows,money=market_money)
 
 
