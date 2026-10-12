@@ -11840,7 +11840,7 @@ tick();setInterval(tick,3000)})();</script>
  function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.width='100%';el.style.height='100%';el.style.objectFit='contain';mount.innerHTML='';mount.appendChild(el);}catch(e){console.error('KOJA Live track attach failed',e);}}
  function clientGlobal(){return window.LivekitClient||window.LiveKitClient||window.livekitClient||null;}
  function loadScript(src){return new Promise((resolve,reject)=>{const existing=document.querySelector('script[data-koja-livekit]');if(existing&&clientGlobal())return resolve();const sc=document.createElement('script');sc.src=src;sc.async=true;sc.dataset.kojaLivekit='1';sc.onload=()=>clientGlobal()?resolve():reject(new Error('LiveKit client loaded but global object is unavailable.'));sc.onerror=()=>reject(new Error('LiveKit client could not be loaded.'));document.head.appendChild(sc);});}
- async function ensureClient(){if(clientGlobal())return clientGlobal();try{return await loadScript('https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}catch(e){return await loadScript('https://unpkg.com/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}}
+ async function ensureClient(){if(clientGlobal())return clientGlobal();try{await loadScript('https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}catch(e){await loadScript('https://unpkg.com/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}const LK=clientGlobal();if(!LK||!LK.Room)throw new Error('LiveKit client did not initialise. Refresh the page.');return LK;}
  async function connect(){
    if(connecting)return; connecting=true; clearVideo(); setStatus('Connecting to LIVE video…');
    try{
@@ -11883,7 +11883,14 @@ tick();setInterval(tick,3000)})();</script>
    liveRoom.localParticipant.videoTrackPublications.forEach(p=>{if(p.track)attach(p.track)});
  }
  const startMedia=document.getElementById('startMediaLive');
- if(startMedia)startMedia.addEventListener('click',async()=>{ if(!liveRoom)return; startMedia.disabled=true; try{ await publishSellerMedia(); } finally{ startMedia.disabled=false; } });
+ if(startMedia)startMedia.addEventListener('click',async()=>{
+   startMedia.disabled=true;
+   try{
+     if(!liveRoom){ await connect(); }
+     else{ await publishSellerMedia(); }
+   }catch(e){ setStatus('Could not start camera: '+(e&&e.message?e.message:'unknown error'),true); }
+   finally{ startMedia.disabled=false; }
+ });
  if(retry)retry.addEventListener('click',connect);
  const fs=document.getElementById('fullscreenLive'), shell=document.getElementById('liveShell');
  if(fs&&shell){fs.addEventListener('click',async()=>{try{if(!document.fullscreenElement){await shell.requestFullscreen();fs.textContent='Exit full screen';}else{await document.exitFullscreen();fs.textContent='Full screen';}}catch(e){console.warn('Fullscreen unavailable',e);}});document.addEventListener('fullscreenchange',()=>{if(document.fullscreenElement!==shell)fs.textContent='Full screen';});}
