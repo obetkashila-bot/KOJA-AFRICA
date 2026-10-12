@@ -11702,8 +11702,8 @@ def market_live_pin(room_id):
     return redirect(url_for('market_live_room', room_id=room_id))
 
 @app.route('/api/market/live-token/<room_id>')
-@login_required
 def market_live_token(room_id):
+    # Public: anyone can watch. Guests get a view-only token (can_publish=False).
     room = _live_room(room_id)
     if not room or str(room.get('status') or '').lower() != 'live':
         return jsonify({'ok': False, 'message': 'Live room is not active.'}), 404
@@ -11719,8 +11719,8 @@ def market_live_token(room_id):
         return jsonify({'ok': False, 'message': 'Live video authentication is temporarily unavailable.'}), 503
 
 @app.route('/market/live/<room_id>')
-@login_required
 def market_live_room(room_id):
+    # Public: anyone can watch. Likes, gifts and chat still ask guests to log in.
     room = _live_room(room_id)
     if not room: abort(404)
     seller = market_seller(room.get('seller_id')) or {}
@@ -11776,10 +11776,13 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
 </div>{% endif %}
 <script>(function(){
  const rid={{ room.id|tojson }}, csrf={{ csrf_token()|tojson }};
+ window.KOJA_LOGGED_IN={{ 'true' if user else 'false' }}; window.KOJA_LOGIN_URL={{ url_for('login', next=request.path)|tojson }};
+ function needLogin(){ location.href=window.KOJA_LOGIN_URL; }
  const likeBtn=document.getElementById('cmLikeBtn'), likeCount=document.getElementById('cmLikeCount'), note=document.getElementById('cmSocialNote');
  function paint(liked,count){ likeBtn.setAttribute('aria-pressed', liked?'true':'false'); likeBtn.style.fontWeight=liked?'700':'400'; likeCount.textContent=String(count||0); }
  async function loadState(){ try{ const d=await (await fetch('/api/market/live/'+encodeURIComponent(rid)+'/state',{cache:'no-store'})).json(); if(d.ok) paint(!!d.liked, d.likes); }catch(e){} }
  likeBtn.addEventListener('click', async function(){
+   if(!window.KOJA_LOGGED_IN){ needLogin(); return; }
    likeBtn.disabled=true; note.textContent='';
    try{
      const r=await fetch('/api/market/live/'+encodeURIComponent(rid)+'/like',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:'{}'});
@@ -11801,6 +11804,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
  if(giftBtn){
    giftBtn.addEventListener('click', function(){ const b=document.getElementById('cmGiftBox'); b.hidden=!b.hidden; });
    document.getElementById('cmGiftSend').addEventListener('click', async function(){
+     if(!window.KOJA_LOGGED_IN){ needLogin(); return; }
      const gn=document.getElementById('cmGiftNote'), btn=this; gn.textContent=''; btn.disabled=true;
      try{
        const r=await fetch('/api/market/live/'+encodeURIComponent(rid)+'/gift',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({amount:document.getElementById('cmGiftAmount').value,network:document.getElementById('cmGiftNetwork').value,phone:document.getElementById('cmGiftPhone').value})});
@@ -11829,7 +11833,7 @@ if(d.status==='ended'){tray.innerHTML='<p>This live has ended. Thanks for watchi
 if(d.tray&&d.tray.length){tray.innerHTML=d.tray.map(function(p){const pin=d.pinned&&d.pinned.id===p.id;return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+(pin?'<span class="small">★ Featured now</span><br>':'')+'<strong>'+esc(p.title)+'</strong> · '+esc(p.currency)+' '+Number(p.price).toFixed(2)+(p.type==='physical'&&p.stock<=5?' <span class="small">(only '+esc(p.stock)+' left)</span>':'')+'<div class="actions"><button class="btn" type="button" onclick="cmAdd(\''+esc(p.id)+'\')">Add to cart</button><a class="btn secondary" href="/market/product/'+esc(p.id)+'">Buy now</a></div></div>'}).join('')}
 else if(d.pinned){tray.innerHTML='<strong>'+esc(d.pinned.title)+'</strong> · '+esc(d.pinned.currency)+' '+Number(d.pinned.price).toFixed(2)+'<div class="actions"><button class="btn" type="button" onclick="cmAdd(\''+esc(d.pinned.id)+'\')">Add to cart</button><a class="btn secondary" href="/market/product/'+esc(d.pinned.id)+'">Buy now</a></div>'}
 (d.messages||[]).forEach(function(m){const el=document.createElement('div');el.innerHTML='<strong>'+esc(m.name)+(m.host?' (host)':'')+':</strong> '+esc(m.body);chat.appendChild(el);after=m.at||after});if((d.messages||[]).length)chat.scrollTop=chat.scrollHeight}catch(e){}}
-document.getElementById('cmChatForm').onsubmit=async function(e){e.preventDefault();const i=document.getElementById('cmChatText'),v=i.value.trim();if(!v)return;i.value='';try{const r=await fetch('/api/market/live/'+rid+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(!r.ok){const d=await r.json().catch(function(){return {}});say(d.error||'Message not sent')}else tick()}catch(x){say('Message not sent')}};
+document.getElementById('cmChatForm').onsubmit=async function(e){e.preventDefault();if(!window.KOJA_LOGGED_IN){location.href=window.KOJA_LOGIN_URL;return}const i=document.getElementById('cmChatText'),v=i.value.trim();if(!v)return;i.value='';try{const r=await fetch('/api/market/live/'+rid+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(!r.ok){const d=await r.json().catch(function(){return {}});say(d.error||'Message not sent')}else tick()}catch(x){say('Message not sent')}};
 tick();setInterval(tick,3000)})();</script>
 <script>
 (function(){
@@ -18870,14 +18874,13 @@ def cm_live_tray(room_id):
 
 
 @app.route("/api/market/live/<room_id>/state")
-@login_required
 def cm_live_state(room_id):
     room = _cm_room(room_id)
     if not room:
         return jsonify(ok=False), 404
     uid = _cm_uid()
     now = datetime.now(timezone.utc)
-    if not _cm_is_host(room):
+    if uid and not _cm_is_host(room):
         v = first_row("koja_market_live_viewers", {"room_id": room_id, "user_id": uid})
         if v: db_update("koja_market_live_viewers", {"room_id": room_id, "user_id": uid}, {"last_seen_at": utc_now()})
         else: db_insert("koja_market_live_viewers", {"room_id": room_id, "user_id": uid, "last_seen_at": utc_now()})
@@ -18890,7 +18893,7 @@ def cm_live_state(room_id):
     if after: q["created_at"] = "gt." + after
     msgs = list(reversed(_cm_rows("koja_market_live_messages", q, order="created_at.desc", limit=50)))
     pinned = market_product(room.get("pinned_product_id")) if room.get("pinned_product_id") else None
-    return jsonify(ok=True, likes=_cm_like_count(room_id), liked=_cm_liked(room_id, uid), status=room.get("status"), viewers=viewers, peak=max(viewers, int(room.get("peak_viewers") or 0)),
+    return jsonify(ok=True, likes=_cm_like_count(room_id), liked=bool(uid) and _cm_liked(room_id, uid), status=room.get("status"), viewers=viewers, peak=max(viewers, int(room.get("peak_viewers") or 0)),
                    pinned=({"id": str(pinned["id"]), "title": pinned.get("title"), "price": pinned.get("price"), "currency": pinned.get("currency") or "ZMW"} if pinned else None),
                    tray=_cm_tray(room_id), messages=[{"name": m.get("name"), "body": m.get("body"), "at": m.get("created_at"), "host": str(m.get("user_id")) == str(room.get("seller_id"))} for m in msgs])
 
