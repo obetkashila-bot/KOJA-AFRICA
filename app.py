@@ -1033,7 +1033,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a href="{{ url_for('research') }}">Research</a>
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
-<a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
+<a href="{{ '/market' }}">KOJA Market</a> {% if koja_live_now() %}<a href="{{ url_for('market_live') }}">Live Shop</a>{% endif %}
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
 <a class="nexus-nav-link" href="{{ url_for('koja_nexus_home') }}">KOJA NEXUS</a>
 <div class="menu-group">
@@ -4131,7 +4131,7 @@ def koja_market():
 <div class="hero"><h1>️ KOJA Market</h1><p>Buy and sell products and services across Africa — physical goods, digital products, local sellers and delivery.</p>
 <div class="actions">
 <a class="btn" href="#products"> Buy / Browse</a>
-<a class="btn" href="{{ url_for('market_live') }}">LIVE Shop</a>
+{% if koja_live_now() %}<a class="btn" href="{{ url_for('market_live') }}">LIVE Shop</a>{% endif %}
 <a class="btn" href="{{ url_for('market_sell') if user else url_for('login',next='/market/sell') }}"> Sell a Product</a>
 {% if user %}<a class="btn secondary" href="{{ url_for('market_cart') }}">️ Cart{% if cart_count %} ({{ cart_count }}){% endif %}</a><a class="btn secondary" href="{{ url_for('market_wishlist') }}">️ Wishlist</a><a class="btn secondary" href="{{ url_for('market_my') }}"> My Orders / Store</a>{% if business %}<a class="btn" href="{{ url_for('business_intelligence_v3',business_id=business.id) }}">Business AI Intelligence</a>{% else %}<a class="btn" href="{{ url_for('business_new') }}">Create Business</a>{% endif %}{% else %}<a class="btn secondary" href="{{ url_for('login',next='/market/cart') }}">️ Cart</a>{% endif %}
 </div></div>
@@ -11626,6 +11626,28 @@ def _live_seller_ok(room):
     seller = market_seller(uid) or {}
     return str(seller.get('approval_status') or '').lower() == 'approved'
 
+_LIVE_NOW_CACHE = {'at': 0.0, 'rooms': []}
+
+def _koja_live_now():
+    """Rooms that are live right now (cached 20 s). Used to show Live Shop links only when someone is live."""
+    import time as _t
+    now_ts = _t.time()
+    if now_ts - _LIVE_NOW_CACHE['at'] < 20:
+        return _LIVE_NOW_CACHE['rooms']
+    rooms = []
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=8)
+        for r in db_select('koja_market_live_rooms', {'status': 'live'}, order='started_at.desc', limit=50) or []:
+            started = _cx_dt(r.get('started_at'))
+            if started and started >= cutoff:
+                rooms.append(r)
+    except Exception:
+        rooms = []
+    _LIVE_NOW_CACHE.update(at=now_ts, rooms=rooms)
+    return rooms
+
+app.jinja_env.globals['koja_live_now'] = _koja_live_now
+
 @app.route('/market/live')
 def market_live():
     rooms = db_select('koja_market_live_rooms', {'status': 'live'}, order='started_at.desc', limit=100) or []
@@ -11656,7 +11678,7 @@ def market_live():
 {% else %}<div class="card"><h3>No sellers are live right now.</h3><p>Come back when a KOJA seller starts a live shopping session.</p></div>{% endfor %}
 </div>
 {% if user %}<div class="actions"><a class="btn success" href="{{ url_for('market_live_start') }}">GO LIVE NOW</a><a class="btn secondary" href="{{ url_for('market_my') }}">Seller Center</a></div>{% endif %}
-''', rooms=visible, upcoming=upcoming, user=current_user(), money=market_money)
+''', rooms=visible, upcoming=[u for u in upcoming if str(u.get('seller_id')) == str((current_user() or {}).get('id') or '')], user=current_user(), money=market_money)
 
 @app.route('/market/live/start', methods=['GET', 'POST'])
 @login_required
@@ -11685,7 +11707,9 @@ def market_live_end(room_id):
     room = _live_room(room_id)
     if not _live_seller_ok(room): abort(403)
     db_update('koja_market_live_rooms', {'id': room_id}, {'status': 'ended', 'ended_at': utc_now(), 'updated_at': utc_now()})
-    return redirect(url_for('cm_live_summary', room_id=room_id))
+    # Ended lives leave the live dashboard (only status='live' rooms are listed there).
+    flash('Live ended. It has been removed from the live dashboard.', 'success')
+    return redirect(url_for('market_live'))
 
 @app.route('/market/live/pin/<room_id>', methods=['POST'])
 @login_required
@@ -11738,6 +11762,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
   <div id="liveVideo" class="live-video"><div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div></div>
   {% if product %}<div class="live-watermark"><a href="{{ url_for('market_product_view', product_id=product.id) }}"><div class="wm-title">{{ product.title }}</div><div class="wm-price">{{ money(product.price, product.currency) }} · Shop</div></a></div>{% endif %}
   <div id="liveControls" class="live-controls">
+    {% if is_seller %}<button class="live-icon-btn" type="button" id="continueLive">Continue live</button>{% endif %}
     {% if is_seller %}<button class="live-icon-btn" type="button" id="startMediaLive" hidden>Start camera &amp; mic</button>{% endif %}
     <button class="live-icon-btn" type="button" id="retryLive">Retry</button>
     {% if is_seller %}<form method="post" action="{{ url_for('market_live_end', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="live-icon-btn" type="submit">End Live</button></form>{% endif %}
@@ -11908,6 +11933,15 @@ tick();setInterval(tick,3000)})();</script>
      else{ await publishSellerMedia(); }
    }catch(e){ setStatus('Could not start camera: '+(e&&e.message?e.message:'unknown error'),true); }
    finally{ startMedia.disabled=false; }
+ });
+ const cont=document.getElementById('continueLive');
+ if(cont)cont.addEventListener('click',async()=>{
+   cont.disabled=true;
+   try{
+     if(liveRoom && liveRoom.state==='connected'){ await publishSellerMedia(); }
+     else { await connect(); }
+   }catch(e){ setStatus('Could not continue live: '+(e&&e.message?e.message:'unknown error'),true); }
+   finally{ cont.disabled=false; }
  });
  if(retry)retry.addEventListener('click',connect);
  const fs=document.getElementById('fullscreenLive'), shell=document.getElementById('liveShell');
