@@ -11636,10 +11636,10 @@ def _koja_live_now():
         return _LIVE_NOW_CACHE['rooms']
     rooms = []
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=8)
+        fresh = datetime.now(timezone.utc) - timedelta(minutes=3)
         for r in db_select('koja_market_live_rooms', {'status': 'live'}, order='started_at.desc', limit=50) or []:
-            started = _cx_dt(r.get('started_at'))
-            if started and started >= cutoff:
+            seen = _cx_dt(r.get('updated_at')) or _cx_dt(r.get('started_at'))
+            if seen and seen >= fresh:
                 rooms.append(r)
     except Exception:
         rooms = []
@@ -11653,8 +11653,8 @@ def market_live():
     rooms = db_select('koja_market_live_rooms', {'status': 'live'}, order='started_at.desc', limit=100) or []
     _stale = datetime.now(timezone.utc) - timedelta(hours=8)
     for _r in list(rooms):
-        _st = _cx_dt(_r.get('started_at'))
-        if _st and _st < _stale:
+        _st = _cx_dt(_r.get('updated_at')) or _cx_dt(_r.get('started_at'))
+        if _st and _st < (datetime.now(timezone.utc) - timedelta(minutes=3)):
             db_update('koja_market_live_rooms', {'id': _r['id']}, {'status': 'ended', 'ended_at': utc_now(), 'updated_at': utc_now()}); rooms.remove(_r)
     upcoming = [dict(u, _seller_name=(market_seller(u.get('seller_id')) or {}).get('store_name') or 'KOJA Seller') for u in (db_select('koja_market_live_rooms', {'status': 'scheduled'}, order='scheduled_at.asc', limit=30) or [])]
     visible = []
@@ -11710,6 +11710,18 @@ def market_live_end(room_id):
     # Ended lives leave the live dashboard (only status='live' rooms are listed there).
     flash('Live ended. It has been removed from the live dashboard.', 'success')
     return redirect(url_for('market_live'))
+
+@app.route('/api/market/live/<room_id>/heartbeat', methods=['POST'])
+@login_required
+def market_live_heartbeat(room_id):
+    # The seller's open live page pings every 20 s. A room with no ping for 3 minutes is treated as off.
+    room = _live_room(room_id)
+    if not room or not _live_seller_ok(room):
+        return jsonify({'ok': False}), 403
+    if str(room.get('status') or '').lower() != 'live':
+        return jsonify({'ok': False, 'status': room.get('status')}), 409
+    db_update('koja_market_live_rooms', {'id': room_id}, {'updated_at': utc_now()})
+    return jsonify({'ok': True})
 
 @app.route('/market/live/pin/<room_id>', methods=['POST'])
 @login_required
@@ -11895,6 +11907,7 @@ tick();setInterval(tick,3000)})();</script>
      await liveRoom.connect(data.server_url,data.token);
      setStatus(data.is_seller?'You are LIVE. Start your camera if prompted.':'You are watching LIVE Shopping.');
      if(data.is_seller){
+       startHeartbeat();
        await publishSellerMedia();
      } else {
        let found=false; liveRoom.remoteParticipants.forEach(participant=>participant.trackPublications.forEach(pub=>{if(pub.track){found=true;attach(pub.track)}}));
@@ -11902,6 +11915,13 @@ tick();setInterval(tick,3000)})();</script>
      }
    }catch(e){console.error('KOJA LIVE connection failed',e);setStatus('Live video unavailable: '+(e.message||'connection failed'),true);clearVideo();}
    finally{connecting=false;}
+ }
+ let hbTimer=null;
+ function startHeartbeat(){
+   const hbRid={{ room.id|tojson }}, hbTok={{ csrf_token()|tojson }};
+   const beat=()=>fetch('/api/market/live/'+encodeURIComponent(hbRid)+'/heartbeat',{method:'POST',credentials:'same-origin',headers:{'X-CSRF-Token':hbTok}}).catch(()=>{});
+   if(hbTimer)clearInterval(hbTimer);
+   beat(); hbTimer=setInterval(beat,20000);
  }
  async function publishSellerMedia(){
    const startBtn=document.getElementById('startMediaLive');
