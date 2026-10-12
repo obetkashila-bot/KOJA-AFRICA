@@ -13517,7 +13517,7 @@ def _koja_readiness_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    # Permissions-Policy is set once in security_headers (camera/mic allowed for this site only).
     return response
 
 @app.route("/api/v1/core/readiness")
