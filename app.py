@@ -929,6 +929,7 @@ BASE_HTML = r"""
 <meta name="theme-color" content="#0b1220">
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -960,61 +961,128 @@ BASE_HTML = r"""
 </script>
 <style>
 *{box-sizing:border-box}
-:root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
-html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
-@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}}
-body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
-
-nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 4px 18px rgba(0,0,0,.12)}
-.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px}
-.brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
-.menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:9px;font-weight:700;cursor:pointer}
-.menu-toggle:hover{background:rgba(255,255,255,.18);transform:none}
-.nav-links{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
-nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
-nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
-.nexus-nav-link{font-weight:800;background:rgba(23,107,135,.28);border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 10px!important;white-space:nowrap}
-.notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:#e11d48;color:#fff;font-size:11px;font-weight:800;margin-left:4px}.notification-row{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--border);cursor:pointer}.notification-row.unread{background:rgba(23,107,135,.07)}.notification-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:7px;flex:none}.notification-row:not(.unread) .notification-dot{background:transparent}#np label{display:block;padding:12px 0;border-bottom:1px solid var(--border)}
-.menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
-.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:var(--surface);border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
-.dropdown.open{display:block;animation:menuDrop .18s ease both}.dropdown a{display:block;color:var(--text)!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:#eef5f8;transform:none}
-@keyframes menuDrop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
-.container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
-.card{background:var(--surface);border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
-.hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
+:root{color-scheme:light;--bg:#f5f7fb;--surface:#ffffff;--surface-2:#f1f5f9;--text:#0f172a;--muted:#5b6b7f;--border:#e2e8f0;--nav:#0b1f3a;--nav-2:#10335a;--accent:#0f7b93;--accent-2:#19a7b8;--gold:#f2b84b;--success:#15803d;--danger:#b42318;--warn:#b45309;--focus:#f2b84b;--radius:14px;--shadow:0 1px 2px rgba(15,23,42,.05),0 6px 20px rgba(15,23,42,.06);--shadow-hover:0 2px 4px rgba(15,23,42,.06),0 12px 28px rgba(15,23,42,.10)}
+html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0b1220;--surface:#131d2e;--surface-2:#1a2639;--text:#e6edf5;--muted:#9aa9bc;--border:#243247;--nav:#070e1a;--nav-2:#0d1d33;--accent:#2aa7b8;--accent-2:#34c3d6;--gold:#f2c15b;--success:#4ade80;--danger:#fca5a5;--warn:#fcd34d;--focus:#f2c15b;--shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.30);--shadow-hover:0 2px 6px rgba(0,0,0,.4),0 14px 32px rgba(0,0,0,.42)}
+@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0b1220;--surface:#131d2e;--surface-2:#1a2639;--text:#e6edf5;--muted:#9aa9bc;--border:#243247;--nav:#070e1a;--nav-2:#0d1d33;--accent:#2aa7b8;--accent-2:#34c3d6;--gold:#f2c15b;--success:#4ade80;--danger:#fca5a5;--warn:#fcd34d;--focus:#f2c15b;--shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.30);--shadow-hover:0 2px 6px rgba(0,0,0,.4),0 14px 32px rgba(0,0,0,.42)}}
+body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:var(--accent)}
+h1,h2,h3,h4{letter-spacing:-.01em;line-height:1.25;color:var(--text)}
+h1{font-size:clamp(24px,3.2vw,32px);font-weight:800}
+h2{font-size:clamp(19px,2.2vw,23px);font-weight:700}
+h3{font-size:17px;font-weight:700}
 h1,h2,h3{margin-top:0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px}
-input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}
-textarea{min-height:150px;line-height:1.55;resize:vertical} textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem} textarea[name="q"]{min-height:90px;resize:vertical}
-button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}button:active,.btn:active{transform:translateY(0)}
-.btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00}
-table{width:100%;border-collapse:collapse}
-th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}
-.alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff}
-.stat{padding:18px;background:var(--surface);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
-.big{font-size:28px;font-weight:800}
-.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px}
-#map{height:430px;border-radius:12px;overflow:hidden}
+p{margin:0 0 .75em}
+
+nav{background:linear-gradient(180deg,var(--nav-2),var(--nav));color:#fff;padding:10px 16px;position:sticky;top:0;z-index:1000;box-shadow:0 1px 0 rgba(255,255,255,.06),0 6px 22px rgba(2,8,20,.22)}
+.nav-inner{max-width:1280px;margin:auto;display:flex;align-items:center;gap:6px}
+.brand{font-weight:800;font-size:18px;margin-right:auto;display:flex;align-items:center;gap:10px;letter-spacing:.2px}
+.brand-mark{width:34px;height:34px;border-radius:10px;display:inline-grid;place-items:center;background:linear-gradient(135deg,var(--accent-2),var(--gold));box-shadow:0 6px 18px rgba(0,0,0,.25);animation:logoFloat 4s ease-in-out infinite}
+.brand-mark svg{width:22px;height:22px}
+.brand-name{white-space:nowrap}
+.menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);color:#fff;border-radius:10px;font-weight:700;cursor:pointer}
+.menu-toggle:hover{background:rgba(255,255,255,.16);transform:none;box-shadow:none}
+.nav-links{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+nav a{color:#e8eef7;text-decoration:none;padding:8px 10px;border-radius:9px;font-size:14.5px;font-weight:500;transition:background .18s ease,color .18s ease}
+nav a:hover{background:rgba(255,255,255,.1);color:#fff}
+.nexus-nav-link{font-weight:700;background:rgba(25,167,184,.2);border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:8px 11px!important;white-space:nowrap;color:#fff!important}
+.notification-bell{position:relative}
+.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:#e11d48;color:#fff;font-size:11px;font-weight:800;margin-left:4px}
+.notification-row{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--border);cursor:pointer}
+.notification-row.unread{background:rgba(15,123,147,.07)}
+.notification-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:7px;flex:none}
+.notification-row:not(.unread) .notification-dot{background:transparent}
+#np label{display:block;padding:12px 0;border-bottom:1px solid var(--border)}
+.menu-group{position:relative}
+.menu-group>button{width:auto;margin:0;padding:8px 11px;background:transparent;color:#e8eef7;border:0;border-radius:9px;cursor:pointer;font:inherit;font-size:14.5px;font-weight:500}
+.menu-group>button:hover{background:rgba(255,255,255,.1);color:#fff;transform:none;box-shadow:none}
+.dropdown{display:none;position:absolute;right:0;top:calc(100% + 8px);min-width:220px;background:var(--surface);border-radius:12px;padding:6px;box-shadow:0 18px 44px rgba(2,8,20,.28);border:1px solid var(--border)}
+.dropdown.open{display:block;animation:menuDrop .16s ease both}
+.dropdown a{display:block;color:var(--text)!important;padding:10px 12px;white-space:nowrap;border-radius:8px;font-size:14.5px}
+.dropdown a:hover{background:var(--surface-2)}
+@keyframes menuDrop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+
+.container{width:min(1280px,calc(100% - 32px));margin:24px auto 56px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;box-shadow:var(--shadow);animation:fadeUp .4s ease both;transition:box-shadow .2s ease,border-color .2s ease}
+.card:hover{box-shadow:var(--shadow-hover)}
+.hero{background:radial-gradient(120% 140% at 100% 0%,rgba(25,167,184,.35),transparent 55%),linear-gradient(135deg,var(--nav),var(--accent));color:#fff;padding:34px 28px;border-radius:18px;margin-bottom:20px;box-shadow:var(--shadow);animation:fadeUp .5s ease both}
+.hero h1,.hero h2,.hero h3{color:#fff}
+.hero p{color:rgba(255,255,255,.88);max-width:70ch}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+
+input,select,textarea,button{width:100%;padding:11px 13px;margin-top:6px;margin-bottom:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit;font-size:15px;transition:border-color .15s ease,box-shadow .15s ease}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(15,123,147,.18)}
+input[type="checkbox"],input[type="radio"]{width:auto;margin:0 6px 0 0}
+label{font-size:14px;font-weight:600;color:var(--text)}
+textarea{min-height:150px;line-height:1.6;resize:vertical}
+textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem}
+textarea[name="q"]{min-height:90px;resize:vertical}
+
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:linear-gradient(180deg,var(--accent-2),var(--accent));color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 16px;border-radius:10px;font-weight:600;font-size:14.5px;line-height:1.2;box-shadow:0 1px 2px rgba(15,23,42,.12);transition:transform .15s ease,box-shadow .15s ease,filter .15s ease,opacity .15s ease}
+button:hover,.btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(15,23,42,.16);filter:brightness(1.05)}
+button:active,.btn:active{transform:translateY(0)}
+button:disabled,.btn[disabled]{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
+.btn.secondary{background:var(--surface-2);color:var(--text);border:1px solid var(--border);box-shadow:none}
+.btn.secondary:hover{background:var(--surface);border-color:var(--accent)}
+.btn.success{background:linear-gradient(180deg,#1f9d5a,var(--success));color:#fff}
+.btn.danger{background:linear-gradient(180deg,#d13b2e,var(--danger));color:#fff}
+.btn.warning{background:linear-gradient(180deg,#c9861a,var(--warn));color:#fff}
+html[data-koja-theme="dark"] .btn.success,html[data-koja-theme="dark"] .btn.danger,html[data-koja-theme="dark"] .btn.warning{color:#0b1220}
+
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+th,td{border-bottom:1px solid var(--border);padding:12px 10px;text-align:left;vertical-align:top}
+th{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--surface-2)}
+tr:last-child td{border-bottom:0}
+
+.alert{padding:13px 16px;border-radius:10px;margin-bottom:12px;background:var(--surface-2);border:1px solid var(--border);border-left:4px solid var(--accent)}
+.stat{padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);animation:fadeUp .45s ease both}
+.big{font-size:28px;font-weight:800;letter-spacing:-.02em}
+.small{color:var(--muted);font-size:13px}
+.badge{display:inline-block;padding:3px 10px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text)}
+.koja-ico{display:inline-flex;width:16px;height:16px;margin-right:2px;vertical-align:-3px}.koja-ico svg{width:16px;height:16px;stroke-width:2}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.actions .btn,.actions button{width:auto}
+#map{height:430px;border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)}
 .map-small{height:300px!important}
-.driver-card{border:2px solid #e4e7ec}
-.driver-card.selected{border-color:#176b87}
-.online{color:#177245;font-weight:700}
-.offline{color:#a62d2d;font-weight:700}
-footer{text-align:center;color:var(--muted);padding:30px}
-/* KOJA GLOBAL LOADING ENGINE — progressive, non-blocking by default */
-#kojaLoadBar{position:fixed;left:0;top:0;width:0;height:3px;background:linear-gradient(90deg,#176b87,#2aa7b8,#f2b84b);z-index:2147483647;opacity:0;pointer-events:none;transition:width .22s ease,opacity .18s ease;box-shadow:0 1px 8px rgba(23,107,135,.35)}
+.driver-card{border:1px solid var(--border)}
+.driver-card.selected{border-color:var(--accent);box-shadow:0 0 0 3px rgba(15,123,147,.15)}
+.online{color:var(--success);font-weight:700;animation:pulseSoft 2.4s ease-in-out infinite}
+.offline{color:var(--danger);font-weight:700}
+footer{text-align:center;color:var(--muted);padding:32px 16px;font-size:14px;border-top:1px solid var(--border);margin-top:24px}
+
+#kojaLoadBar{position:fixed;left:0;top:0;width:0;height:3px;background:linear-gradient(90deg,var(--accent),var(--accent-2),var(--gold));z-index:2147483647;opacity:0;pointer-events:none;transition:width .22s ease,opacity .18s ease;box-shadow:0 1px 8px rgba(15,123,147,.35)}
 #kojaLoadBar.active{opacity:1;width:72%}
 #kojaLoadBar.done{width:100%;opacity:0;transition:width .18s ease,opacity .35s ease .08s}
 .koja-loading-inline{position:relative;opacity:.72;pointer-events:none}
 .koja-loading-inline::after{content:"";display:inline-block;width:13px;height:13px;margin-left:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:kojaSpin .7s linear infinite}
-.koja-skeleton{position:relative;overflow:hidden;background:var(--border)!important;color:transparent!important;border-color:transparent!important;min-height:18px;border-radius:8px}
+.koja-skeleton{position:relative;overflow:hidden;background:var(--surface-2)!important;color:transparent!important;border-color:transparent!important;min-height:18px;border-radius:8px}
 .koja-skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);animation:kojaShimmer 1.15s infinite}
 html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent)}
 @keyframes kojaSpin{to{transform:rotate(360deg)}}
 @keyframes kojaShimmer{100%{transform:translateX(100%)}}
-.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
-@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes logoFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
+@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(42,167,184,.20)}50%{box-shadow:0 0 0 6px rgba(42,167,184,0)}}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
+
+@media(max-width:760px){
+  nav{padding:9px 12px}
+  .nav-inner{position:relative;flex-wrap:wrap}
+  .menu-toggle{display:block}
+  .nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:2px;padding-top:8px}
+  .nav-links.open{display:flex;animation:fadeUp .2s ease both}
+  .nav-links>a{font-size:15px;padding:12px 12px;background:rgba(255,255,255,.05)}
+  .menu-group{width:100%}
+  .menu-group>button{width:100%;text-align:left;padding:12px}
+  .dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}
+  .dropdown a{font-size:15px}
+  .container{width:calc(100% - 32px);margin-top:16px}
+  .card{padding:16px}
+  .hero{padding:24px 18px;border-radius:14px}
+  table{display:block;overflow-x:auto}
+  #map{height:350px}
+  .actions .btn,.actions button{width:100%}
+}
 @media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
@@ -1129,6 +1197,31 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 })();
 </script>
 {% if user %}<script>async function refreshKOJANotifications(){try{let r=await fetch('/api/notifications');if(!r.ok)return;let d=await r.json(),b=document.getElementById('kojaNotifBadge');if(!b)return;if(d.unread>0){b.hidden=false;b.textContent=d.unread>99?'99+':d.unread}else b.hidden=true}catch(e){}}refreshKOJANotifications();setInterval(refreshKOJANotifications,20000);</script>{% endif %}
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.263.1/dist/umd/lucide.min.js" defer></script>
+<script>
+(function(){
+  // Icons are added only when the Lucide library loads; if it does not, buttons keep their text labels.
+  var ICONS=[[/^(delete|remove|trash)/i,'trash-2'],[/^(edit|update|rename)/i,'pencil'],[/^(refresh|reload|retry|continue)/i,'refresh-cw'],[/^upload/i,'upload'],[/^(play|start|go live)/i,'play'],[/^(stop|end live|end)/i,'square'],[/^settings?$/i,'settings'],[/billing|payment|subscri/i,'credit-card'],[/analytics|summary|report/i,'bar-chart-3'],[/secur/i,'shield'],[/^users?$/i,'users'],[/dashboard/i,'layout-dashboard'],[/download/i,'download'],[/^(search|find)/i,'search']];
+  var CONFIRM=/(delete|remove|end live|reverse|reject|cancel order)/i;
+  function enhance(){
+    document.querySelectorAll('button, a.btn').forEach(function(el){
+      if(el.dataset.kojaIcon) return;
+      el.dataset.kojaIcon='1';
+      var label=(el.textContent||'').replace(/\s+/g,' ').trim();
+      if(!label){ if(el.getAttribute('aria-label')) el.title=el.getAttribute('aria-label'); return; }
+      var hit=ICONS.find(function(p){return p[0].test(label)});
+      if(hit && window.lucide){ var i=document.createElement('i'); i.setAttribute('data-lucide',hit[1]); i.className='koja-ico'; i.setAttribute('aria-hidden','true'); el.insertBefore(i, el.firstChild); }
+    });
+    if(window.lucide) lucide.createIcons();
+  }
+  document.addEventListener('submit',function(e){
+    var b=e.submitter; var label=b?(b.textContent||''):'';
+    if(CONFIRM.test(label) && !window.confirm('Are you sure? This action may not be undone.')) e.preventDefault();
+  },true);
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',enhance); else enhance();
+  window.addEventListener('load',enhance);
+})();
+</script>
 <div class="container">
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
@@ -8310,16 +8403,6 @@ def api_push_status():
     web=bool(os.getenv('VAPID_PUBLIC_KEY','').strip() and os.getenv('VAPID_PRIVATE_KEY','').strip())
     return jsonify(native_push_configured=relay,native_devices=len(devices),web_push_configured=web)
 
-@app.route('/api/notifications/test-native-push',methods=['POST'])
-@login_required
-def api_test_native_push():
-    uid=str(current_user()['id'])
-    devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
-    if not devices:
-        return jsonify(ok=False,error='No Android FCM device is registered for this account'),400
-    sent=_send_native_fcm(uid,'KOJA Push Test','KOJA phone push is working.','/notifications','system',None)
-    return jsonify(ok=sent>0,sent=sent,devices=len(devices))
-
 @app.route('/api/notifications/vapid-public-key')
 @login_required
 def api_vapid_public_key(): return (os.getenv('VAPID_PUBLIC_KEY','').strip(),200,{'Content-Type':'text/plain'})
@@ -11670,8 +11753,7 @@ def market_live():
 {% if user %}<div class="actions" style="margin-top:14px"><a class="btn success" href="{{ url_for('market_live_start') }}" style="font-size:17px;font-weight:800;padding:12px 22px">GO LIVE</a><a class="btn secondary" href="{{ url_for('market_my') }}">Seller Center</a></div>{% endif %}</div>
 {% if upcoming %}<div class="card"><h3>Upcoming lives</h3>{% for u in upcoming %}<p><strong>{{ u.title }}</strong> · {{ u._seller_name }} · <span class="cm-local" data-t="{{ u.scheduled_at }}">{{ u.scheduled_at }}</span>
 {% if user and u.seller_id|string == user.id|string %}<form method="post" action="{{ url_for('cm_live_room_go', room_id=u.id) }}" style="display:inline"><button class="btn success">Go live now</button></form>{% endif %}</p>{% endfor %}</div>
-<script>document.querySelectorAll('.cm-local').forEach(function(e){var d=new Date(e.dataset.t);if(!isNaN(d))e.textContent=d.toLocaleString()})</script>{% endif %}<div class="card"><p class="small">Live video is secured with short-lived LiveKit access tokens. The LiveKit server secret is never sent to the browser.</p></div>
-<div class="grid">
+<script>document.querySelectorAll('.cm-local').forEach(function(e){var d=new Date(e.dataset.t);if(!isNaN(d))e.textContent=d.toLocaleString()})</script>{% endif %}<div class="grid">
 {% for room in rooms %}<div class="card"><h2>{{ room.title }}</h2><p><strong>{{ room._seller_name }}</strong></p>
 {% if room._product %}<p>Featured: <strong>{{ room._product.title }}</strong> · {{ money(room._product.price, room._product.currency) }}</p>{% endif %}
 <a class="btn" href="{{ url_for('market_live_room', room_id=room.id) }}">Watch Live</a></div>
