@@ -11841,7 +11841,19 @@ tick();setInterval(tick,3000)})();</script>
  let liveRoom=null, connecting=false;
  function setStatus(text,error){status.textContent=text;status.className='live-status'+(error?' live-error':'');const m=document.getElementById('liveMessage');if(m)m.textContent=text;if(error&&m)m.className='live-note live-error';else if(m)m.className='live-note';}
  function clearVideo(){if(!mount)return;mount.innerHTML='<div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div>';}
- function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.width='100%';el.style.height='100%';el.style.objectFit='contain';mount.innerHTML='';mount.appendChild(el);}catch(e){console.error('KOJA Live track attach failed',e);}}
+ function attach(track){
+   if(!track)return;
+   try{
+     const el=track.attach();
+     if(track.kind==='audio'){ el.dataset.kojaLive='audio'; el.autoplay=true; el.style.display='none'; document.body.appendChild(el); el.play().catch(()=>{}); return; }
+     if(!mount)return;
+     el.autoplay=true; el.playsInline=true; el.muted=true;
+     el.style.width='100%'; el.style.height='100%'; el.style.objectFit='contain'; el.style.background='#000';
+     mount.innerHTML=''; mount.appendChild(el);
+     el.play().catch(()=>{});
+   }catch(e){ console.error('KOJA Live track attach failed',e); }
+ }
+ if(mount)mount.addEventListener('click',()=>{document.querySelectorAll('audio[data-koja-live]').forEach(a=>{a.muted=false;a.play().catch(()=>{});});});
  function clientGlobal(){return window.LivekitClient||window.LiveKitClient||window.livekitClient||null;}
  function loadScript(src){return new Promise((resolve,reject)=>{const existing=document.querySelector('script[data-koja-livekit]');if(existing&&clientGlobal())return resolve();const sc=document.createElement('script');sc.src=src;sc.async=true;sc.dataset.kojaLivekit='1';sc.onload=()=>clientGlobal()?resolve():reject(new Error('LiveKit client loaded but global object is unavailable.'));sc.onerror=()=>reject(new Error('LiveKit client could not be loaded.'));document.head.appendChild(sc);});}
  async function ensureClient(){if(clientGlobal())return clientGlobal();try{await loadScript('https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}catch(e){await loadScript('https://unpkg.com/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}const LK=clientGlobal();if(!LK||!LK.Room)throw new Error('LiveKit client did not initialise. Refresh the page.');return LK;}
@@ -11854,7 +11866,7 @@ tick();setInterval(tick,3000)})();</script>
      liveRoom=new LK.Room({adaptiveStream:true,dynacast:true});
      liveRoom.on(LK.RoomEvent.TrackSubscribed,(track)=>attach(track));
      liveRoom.on(LK.RoomEvent.TrackUnsubscribed,(track)=>track.detach().forEach(e=>e.remove()));
-     if(LK.RoomEvent.LocalTrackPublished) liveRoom.on(LK.RoomEvent.LocalTrackPublished,(publication)=>{if(publication&&publication.track)attach(publication.track);});
+     if(LK.RoomEvent.LocalTrackPublished) liveRoom.on(LK.RoomEvent.LocalTrackPublished,(publication)=>{if(publication&&publication.track&&publication.track.kind==='video')attach(publication.track);});
      await liveRoom.connect(data.server_url,data.token);
      setStatus(data.is_seller?'You are LIVE. Start your camera if prompted.':'You are watching LIVE Shopping.');
      if(data.is_seller){
