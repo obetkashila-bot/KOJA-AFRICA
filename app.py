@@ -11738,6 +11738,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
   <div id="liveVideo" class="live-video"><div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div></div>
   {% if product %}<div class="live-watermark"><a href="{{ url_for('market_product_view', product_id=product.id) }}"><div class="wm-title">{{ product.title }}</div><div class="wm-price">{{ money(product.price, product.currency) }} · Shop</div></a></div>{% endif %}
   <div id="liveControls" class="live-controls">
+    {% if is_seller %}<button class="live-icon-btn" type="button" id="startMediaLive" hidden>Start camera &amp; mic</button>{% endif %}
     <button class="live-icon-btn" type="button" id="retryLive">Retry</button>
     {% if is_seller %}<form method="post" action="{{ url_for('market_live_end', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="live-icon-btn" type="submit">End Live</button></form>{% endif %}
   </div>
@@ -11853,8 +11854,7 @@ tick();setInterval(tick,3000)})();</script>
      await liveRoom.connect(data.server_url,data.token);
      setStatus(data.is_seller?'You are LIVE. Start your camera if prompted.':'You are watching LIVE Shopping.');
      if(data.is_seller){
-       try{await liveRoom.localParticipant.setCameraEnabled(true);await liveRoom.localParticipant.setMicrophoneEnabled(true);}catch(mediaErr){setStatus('LIVE connected. Camera/microphone permission is needed to publish video.',true);console.warn(mediaErr);}
-       liveRoom.localParticipant.videoTrackPublications.forEach(p=>{if(p.track)attach(p.track)});
+       await publishSellerMedia();
      } else {
        let found=false; liveRoom.remoteParticipants.forEach(participant=>participant.trackPublications.forEach(pub=>{if(pub.track){found=true;attach(pub.track)}}));
        if(!found)setStatus('Connected. Waiting for the seller video…');
@@ -11862,6 +11862,28 @@ tick();setInterval(tick,3000)})();</script>
    }catch(e){console.error('KOJA LIVE connection failed',e);setStatus('Live video unavailable: '+(e.message||'connection failed'),true);clearVideo();}
    finally{connecting=false;}
  }
+ async function publishSellerMedia(){
+   const startBtn=document.getElementById('startMediaLive');
+   const problems=[];
+   if(!window.isSecureContext||!navigator.mediaDevices) problems.push('this page cannot access the camera (secure https page required)');
+   const steps=[['camera',()=>liveRoom.localParticipant.setCameraEnabled(true)],['microphone',()=>liveRoom.localParticipant.setMicrophoneEnabled(true)]];
+   if(problems.length===0){
+     for(const [label,fn] of steps){
+       try{ await fn(); }
+       catch(err){ problems.push(label+' blocked ('+((err&&err.name)||'Error')+(err&&err.message?': '+err.message:'')+')'); console.error('KOJA Live '+label+' failed',err); }
+     }
+   }
+   if(problems.length){
+     setStatus('You are LIVE, but '+problems.join('; ')+'. Allow access in the browser, then tap "Start camera & mic".',true);
+     if(startBtn)startBtn.hidden=false;
+   } else {
+     setStatus('You are LIVE. Camera and microphone are on.');
+     if(startBtn)startBtn.hidden=true;
+   }
+   liveRoom.localParticipant.videoTrackPublications.forEach(p=>{if(p.track)attach(p.track)});
+ }
+ const startMedia=document.getElementById('startMediaLive');
+ if(startMedia)startMedia.addEventListener('click',async()=>{ if(!liveRoom)return; startMedia.disabled=true; try{ await publishSellerMedia(); } finally{ startMedia.disabled=false; } });
  if(retry)retry.addEventListener('click',connect);
  const fs=document.getElementById('fullscreenLive'), shell=document.getElementById('liveShell');
  if(fs&&shell){fs.addEventListener('click',async()=>{try{if(!document.fullscreenElement){await shell.requestFullscreen();fs.textContent='Exit full screen';}else{await document.exitFullscreen();fs.textContent='Full screen';}}catch(e){console.warn('Fullscreen unavailable',e);}});document.addEventListener('fullscreenchange',()=>{if(document.fullscreenElement!==shell)fs.textContent='Full screen';});}
