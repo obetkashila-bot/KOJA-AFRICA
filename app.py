@@ -11835,7 +11835,7 @@ tick();setInterval(tick,3000)})();</script>
 (function(){
  const status=document.getElementById('liveStatus'), mount=document.getElementById('liveVideo'), msg=document.getElementById('liveMessage'), retry=document.getElementById('retryLive');
  let liveRoom=null, connecting=false;
- function setStatus(text,error){status.textContent=text;status.className='live-status'+(error?' live-error':'');if(msg)msg.textContent=text;}
+ function setStatus(text,error){status.textContent=text;status.className='live-status'+(error?' live-error':'');const m=document.getElementById('liveMessage');if(m)m.textContent=text;if(error&&m)m.className='live-note live-error';else if(m)m.className='live-note';}
  function clearVideo(){if(!mount)return;mount.innerHTML='<div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div>';}
  function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.width='100%';el.style.height='100%';el.style.objectFit='contain';mount.innerHTML='';mount.appendChild(el);}catch(e){console.error('KOJA Live track attach failed',e);}}
  function clientGlobal(){return window.LivekitClient||window.LiveKitClient||window.livekitClient||null;}
