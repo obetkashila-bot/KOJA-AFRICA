@@ -11874,8 +11874,10 @@ tick();setInterval(tick,3000)})();</script>
      }
    }
    if(problems.length){
-     setStatus('You are LIVE, but '+problems.join('; ')+'. Allow access in the browser, then tap "Start camera & mic".',true);
-     if(startBtn)startBtn.hidden=false;
+     const blocked=problems.some(p=>p.indexOf('NotAllowedError')!==-1);
+     const help=blocked?' Your browser is blocking the camera for this site. Tap the lock icon in the address bar, set Camera and Microphone to Allow, then reload this page. If you are using an in-app browser, open the link in Chrome or Safari.':' Allow access in the browser, then tap "Start camera & mic".';
+     setStatus('You are LIVE, but '+problems.join('; ')+'.'+help,true);
+     if(startBtn){ startBtn.hidden=false; startBtn.textContent=blocked?'Ask to allow camera & mic':'Start camera & mic'; }
    } else {
      setStatus('You are LIVE. Camera and microphone are on.');
      if(startBtn)startBtn.hidden=true;
