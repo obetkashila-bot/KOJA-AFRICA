@@ -97,9 +97,12 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
+RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:")
+
 def _rate_limited(key, limit, window=60):
-    # Rate limits removed by request.
-    return False
+    # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
+    if not str(key).startswith(RATE_LIMITED_PREFIXES):
+        return False
     now = datetime.now(timezone.utc).timestamp()
     bucket = _rate_hits.get(key, [])
     bucket = [t for t in bucket if now - t < window]
@@ -213,6 +216,23 @@ def sb_storage_url(path):
         f"{quote(STORAGE_BUCKET, safe='')}/"
         f"{quote(path, safe='/')}"
     )
+
+def _once_seen(scope):
+    # Browser-side memory of what was already counted today. Clearing cookies can reset it.
+    day=datetime.now(timezone.utc).strftime('%Y%m%d')
+    key=hashlib.sha256(('%s:%s' % (scope, day)).encode('utf-8')).hexdigest()[:20]
+    seen=set(x for x in (request.cookies.get('koja_once') or '').split(',') if x)
+    return key, seen
+
+def _once_store(resp, seen, key):
+    keep=[x for x in list(seen | {key}) if x][-300:]
+    resp.set_cookie('koja_once', ','.join(keep), max_age=60*60*48, httponly=True, samesite='Lax', secure=True)
+    return resp
+
+def _safe_error(err):
+    # Users see a generic message; the real error goes to the server log only.
+    logger.error("Request error: %s", str(err)[:500])
+    return "Something went wrong. Please try again."
 
 def json_or_empty(response):
     try:
@@ -3810,7 +3830,7 @@ def _finalize_market_order(order, tx):
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical' and str(order.get('fulfillment_method') or 'delivery')=='delivery':
-        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code='KDP-'+secrets.token_hex(4).upper(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/deliveries')
+        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code='KDP-'+secrets.token_hex(4).upper(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code_hash':_hash_pickup_code(pickup_code),'pickup_code':None,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/deliveries')
     _cm_notify_digital_ready(order,p)
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
@@ -4238,10 +4258,13 @@ def flutterwave_webhook():
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
     b2b_orders=db_select('koja_b2b_v4_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
-    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders:
+    gift_row=first_row('koja_live_gifts',{'payment_reference':tx_ref})
+    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders and not gift_row:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
+    if gift_row:
+        results.append('live_gift:'+('finalized' if _finalize_live_gift(gift_row,tx) else 'not_applied'))
     if market_orders:
         ok_count=0
         for market_order in market_orders:
@@ -4604,7 +4627,7 @@ def professional_presence():
     updates = {"last_seen_at": now, "is_available": online, "updated_at": now}
     _, error = db_update("service_providers", {"id": provider.get("id")}, updates)
     if error:
-        return jsonify({"connected": False, "error": str(error)[:400]}), 500
+        return jsonify({"connected": False, "error": _safe_error(error)}), 500
     return jsonify({"ok": True, "connected": online})
 
 
@@ -4660,7 +4683,7 @@ def professional_chat_api(provider_id):
         if not message: return jsonify({"error":"Message required"}),400
         payload={"id":str(uuid.uuid4()),"sender_id":me_id,"receiver_id":provider_user,"provider_id":provider_id,"message":message,"created_at":utc_now()}
         row,error=db_insert("professional_messages",payload)
-        if error: return jsonify({"error":str(error)[:500]}),500
+        if error: return jsonify({"error":_safe_error(error)}),500
         return jsonify({"ok":True,"message":row or payload})
     rows=db_select("professional_messages", order="created_at.asc", limit=500)
     relevant=[]
@@ -4711,7 +4734,7 @@ def professional_call_create(provider_id):
     if not professional_is_connected(provider): return jsonify({"error":"This professional is not connected right now."}),409
     payload={"id":str(uuid.uuid4()),"caller_id":me.get("id"),"callee_id":provider.get("user_id"),"provider_id":provider_id,"mode":mode,"status":"ringing","offer":offer,"created_at":utc_now()}
     row,error=db_insert("professional_calls",payload)
-    if error:return jsonify({"error":str(error)[:500]}),500
+    if error:return jsonify({"error":_safe_error(error)}),500
     return jsonify({"ok":True,"call_id":payload["id"]})
 
 @app.route("/api/professional/call/<call_id>")
@@ -4732,7 +4755,7 @@ def professional_call_ice(call_id):
     if side not in {"caller","callee"} or not candidate:return jsonify({"error":"Invalid candidate"}),400
     key="caller_ice" if side=="caller" else "callee_ice"; arr=row.get(key) or []; arr.append(candidate)
     _,error=db_update("professional_calls", {"id":call_id}, {key:arr})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}), 200 if not error else 500)
+    return (jsonify({"ok":True}) if not error else jsonify({"error":_safe_error(error)}), 200 if not error else 500)
 
 @app.route("/api/professional/call/<call_id>/answer", methods=["POST"])
 @login_required
@@ -4743,7 +4766,7 @@ def professional_call_answer(call_id):
     answer=data.get("answer")
     if not answer:return jsonify({"error":"Answer required"}),400
     _,error=db_update("professional_calls", {"id":call_id}, {"answer":answer,"status":"connected","answered_at":utc_now()})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}),200 if not error else 500)
+    return (jsonify({"ok":True}) if not error else jsonify({"error":_safe_error(error)}),200 if not error else 500)
 
 @app.route("/api/professional/call/<call_id>/hangup", methods=["POST"])
 @login_required
@@ -4752,7 +4775,7 @@ def professional_call_hangup(call_id):
     if not row:return jsonify({"error":"Call not found"}),404
     if str(me.get("id")) not in {str(row.get("caller_id")),str(row.get("callee_id"))}:return jsonify({"error":"Forbidden"}),403
     _,error=db_update("professional_calls", {"id":call_id}, {"status":"ended","ended_at":utc_now()})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}),200 if not error else 500)
+    return (jsonify({"ok":True}) if not error else jsonify({"error":_safe_error(error)}),200 if not error else 500)
 
 
 @app.route("/professional/calls")
@@ -5162,7 +5185,7 @@ def driver_location_update():
         row, error = db_insert("driver_locations", payload)
     if error:
         logger.error("driver_locations insert failed: %s", error)
-        return jsonify({"ok":False,"message":"GPS location could not be saved.","error":str(error)[:700]}),500
+        return jsonify({"ok":False,"message":"GPS location could not be saved.","error":_safe_error(error)}),500
     delivery_id = clean(body.get("delivery_id"))
     if delivery_id:
         delivery = first_row("deliveries", {"id": delivery_id})
@@ -5192,7 +5215,7 @@ def driver_offline():
     try: db_update("koja_driver_latest",{"driver_id":provider_id},{"is_online":False,"updated_at":utc_now()})
     except Exception: pass
     if error:
-        return jsonify({"ok":False,"message":"Could not mark driver offline.","error":str(error)[:700]}),500
+        return jsonify({"ok":False,"message":"Could not mark driver offline.","error":_safe_error(error)}),500
     return jsonify({"ok":True,"message":"Driver is now offline."})
 
 # ============================================================
@@ -5532,10 +5555,13 @@ def _attach_delivery_security(tracking_code):
     if not delivery:
         return None, None
     patch = {}
-    pickup = clean(delivery.get('pickup_code')).upper()
-    if not pickup:
+    legacy = clean(delivery.get('pickup_code')).upper()
+    if clean(delivery.get('pickup_code_hash')) or legacy:
+        pickup = legacy or None  # already issued; a hash-only number is never shown again
+    else:
         pickup = make_delivery_pickup_code()
-        patch['pickup_code'] = pickup
+        patch['pickup_code_hash'] = _hash_pickup_code(pickup)
+        patch['pickup_code'] = None
     recipient = None
     if not clean(delivery.get('recipient_code_hash')):
         recipient = _new_recipient_code()
@@ -5610,7 +5636,7 @@ def create_delivery_request():
         row,error=db_insert("deliveries",minimal)
 
     if error:
-        return jsonify({"ok":False,"message":"Delivery request could not be created.","error":str(error)[:600]}),500
+        return jsonify({"ok":False,"message":"Delivery request could not be created.","error":_safe_error(error)}),500
 
     if broadcast:
         log_activity("delivery_requested",f"Delivery {tracking} posted to all available drivers.")
@@ -5838,7 +5864,7 @@ def delivery_route():
         return jsonify({"ok":False,"message":"Routing service is temporarily unavailable."}),503
     except Exception as exc:
         logger.exception("Route lookup failed")
-        return jsonify({"ok":False,"message":"Could not calculate route.","error":str(exc)[:200]}),500
+        return jsonify({"ok":False,"message":"Could not calculate route.","error":_safe_error(exc)}),500
 
 @app.route("/api/delivery/<tracking_code>/location")
 @login_required
@@ -6754,7 +6780,7 @@ def music_like_api(track_id):
         liked=False
     else:
         _,err=_music_optional_insert('koja_music_likes',{'id':str(uuid.uuid4()),'user_id':uid,'track_id':track_id,'created_at':utc_now()})
-        if err: return jsonify({'ok':False,'error':'like_unavailable','detail':str(err)[:200]}),503
+        if err: return jsonify({'ok':False,'error':'like_unavailable','detail':_safe_error(err)}),503
         liked=True
     count=_music_count('koja_music_likes',{'track_id':track_id})
     return jsonify({'ok':True,'liked':liked,'likes':count})
@@ -6766,10 +6792,13 @@ def music_play_api(track_id):
     if not track or track.get('status')!='published':
         return jsonify({'ok':False,'error':'track_not_found'}),404
     user=current_user(); uid=str(user.get('id')) if user else None
+    play_key,play_seen=_once_seen('play:%s' % track_id)
+    if play_key in play_seen:
+        return jsonify({'ok':True,'counted':False})
     payload={'id':str(uuid.uuid4()),'track_id':track_id,'user_id':uid,'session_key':clean(request.headers.get('X-Koja-Session'))[:120],'created_at':utc_now()}
     _,err=_music_optional_insert('koja_music_plays',payload)
     if err: return jsonify({'ok':False,'error':'play_tracking_unavailable'}),503
-    return jsonify({'ok':True})
+    return _once_store(jsonify({'ok':True,'counted':True}), play_seen, play_key)
 
 
 @app.route('/music/dashboard')
@@ -7742,9 +7771,10 @@ def _issue_new_security_codes(delivery, rotate_pickup):
         "updated_at": utc_now(),
     }
     pickup = None
-    if rotate_pickup or not clean(delivery.get("pickup_code")):
+    if rotate_pickup or not (clean(delivery.get("pickup_code")) or clean(delivery.get("pickup_code_hash"))):
         pickup = make_delivery_pickup_code()
-        patch["pickup_code"] = pickup
+        patch["pickup_code_hash"] = _hash_pickup_code(pickup)
+        patch["pickup_code"] = None
     _, err = db_update("deliveries", {"id": delivery.get("id")}, patch)
     if err:
         logger.error("Issuing new security codes failed for %s: %s", delivery.get("tracking_code"), str(err)[:300])
@@ -7757,6 +7787,8 @@ def receiver_access_claim(tracking_code):
     delivery=first_row("deliveries",{"tracking_code":tracking_code})
     if not delivery:
         abort(404)
+    if request.method=="POST" and _rate_limited("receiver:"+(request.remote_addr or "unknown"), 20, 600):
+        return "Too many code attempts. Please wait and try again.", 429
     error=None
     if request.method=="POST":
         if _delivery_is_terminal(delivery):
@@ -7874,7 +7906,7 @@ def participant_location_api(tracking_code):
         if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid GPS coordinates."}),400
         payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
         row,error=db_insert("delivery_participant_locations",payload)
-        if error:return jsonify({"ok":False,"message":"Could not save participant GPS.","error":str(error)[:400]}),500
+        if error:return jsonify({"ok":False,"message":"Could not save participant GPS.","error":_safe_error(error)}),500
         return jsonify({"ok":True,"role":role,"updated_at":payload["created_at"]})
     rows=db_select("delivery_participant_locations",filters={"delivery_id":str(delivery.get("id"))},order="created_at.desc",limit=100);now=datetime.now(timezone.utc);latest={}
     for x in rows:
@@ -7975,7 +8007,7 @@ def owner_location_update():
     row,error=db_insert("owner_locations",payload)
     if error:
         logger.error("owner_locations insert failed: %s",error)
-        return jsonify({"ok":False,"message":"Owner GPS could not be saved.","error":str(error)[:500]}),500
+        return jsonify({"ok":False,"message":"Owner GPS could not be saved.","error":_safe_error(error)}),500
     return jsonify({"ok":True,"latitude":lat,"longitude":lon,"accuracy":payload["accuracy"],"created_at":payload["created_at"]})
 
 @app.route("/api/owner/offline", methods=["POST"])
@@ -8717,7 +8749,7 @@ def connect_call_ice(call_id):
     field='caller_ice' if str(uid)==caller_id else 'callee_ice'
     updated,err=db_update('koja_calls',{'id':call_id},{field:mine})
     if err:
-        return jsonify(error=str(err)[:500]),500
+        return jsonify(error=_safe_error(err)),500
 
     return jsonify(ok=True,count=len(mine))
 
@@ -8748,7 +8780,7 @@ def connect_call_answer(call_id):
         'answered_at':utc_now()
     })
     if err:
-        return jsonify(error=str(err)[:500]),500
+        return jsonify(error=_safe_error(err)),500
     return jsonify(ok=True,call=updated or {'id':call_id,'status':'answered'})
 
 @app.route('/connect/calls')
@@ -8886,7 +8918,7 @@ def connect_call_reject(call_id):
     if not c or str(c.get('callee_id'))!=uid:return jsonify(error='Forbidden'),403
     if str(c.get('status','')).lower() not in ('ringing','answered'):return jsonify(ok=True,status=c.get('status'))
     updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
-    if err:return jsonify(error=str(err)[:500]),500
+    if err:return jsonify(error=_safe_error(err)),500
     return jsonify(ok=True,status='rejected')
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
@@ -9331,8 +9363,15 @@ def nextgen_media_event():
     if not pid or et not in allowed:return jsonify(error='Invalid event'),400
     sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
     uid=(current_user() or {}).get('id')
+    once_key=None; once_seen=set()
+    if et in ('impression','play'):
+        once_key,once_seen=_once_seen('media:%s:%s' % (pid, et))
+        if once_key in once_seen:
+            return jsonify(ok=True, counted=False)
     db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
-    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax')
+    if once_key: resp=_once_store(resp, once_seen, once_key)
+    return resp
 
 @app.route('/news-next')
 def news_nextgen():
@@ -9777,9 +9816,12 @@ def market_ad_event(ad_id,event):
     if event not in {'impression','click'}:abort(400)
     ad=first_row('koja_market_ads',{'id':ad_id})
     if not ad or str(ad.get('status'))!='active':abort(404)
+    key,seen=_once_seen('ad:%s:%s' % (ad_id, event))
+    if key in seen:
+        return jsonify(ok=True, counted=False)
     col='impressions' if event=='impression' else 'clicks'
     db_update('koja_market_ads',{'id':ad_id},{col:int(ad.get(col) or 0)+1,'updated_at':utc_now()})
-    return jsonify(ok=True)
+    return _once_store(jsonify(ok=True, counted=True), seen, key)
 
 @app.route('/admin/commerce',methods=['GET','POST'])
 @login_required
@@ -9933,7 +9975,7 @@ def business_store_payment_callback():
         prod=first_row('koja_business_products',{'id':order.get('product_id')}) or {}; qty=max(1,int(order.get('quantity') or 1)); db_update('koja_business_products',{'id':order.get('product_id')},{'stock':max(0,int(prod.get('stock') or 0)-qty),'updated_at':utc_now()})
         notify_user(prod.get('business_id'),'New business store order',f"Order {order.get('id')} paid for {prod.get('name') or 'product'}.",'market_order',order.get('id'),'/market/my')
         if str(order.get('fulfillment_method') or '')=='delivery':
-            tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':prod.get('business_id')}) or {}; pickup_code='KDP-'+secrets.token_hex(4).upper(); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':prod.get('business_id'),'pickup_location':clean(b.get('location')) or 'Business','pickup_address':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':prod.get('business_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,clean(b.get('location')) or 'Business',order.get('delivery_address'),order.get('delivery_fee')); notify_user(prod.get('business_id'),'Delivery pickup number created',f'Business order {order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/business/'+str(prod.get('business_id')))
+            tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':prod.get('business_id')}) or {}; pickup_code='KDP-'+secrets.token_hex(4).upper(); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':prod.get('business_id'),'pickup_location':clean(b.get('location')) or 'Business','pickup_address':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code_hash':_hash_pickup_code(pickup_code),'pickup_code':None,'created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':prod.get('business_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,clean(b.get('location')) or 'Business',order.get('delivery_address'),order.get('delivery_fee')); notify_user(prod.get('business_id'),'Delivery pickup number created',f'Business order {order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/business/'+str(prod.get('business_id')))
         flash('Business order paid successfully.','success'); return redirect(url_for('market_my'))
     flash('Payment is still pending.','info'); return redirect(url_for('market_my'))
 
@@ -10781,6 +10823,9 @@ def production_health_v2():
 # Additive only. Communications/Connect+ is untouched.
 # ============================================================
 
+def _hash_pickup_code(code):
+    return hashlib.sha256(('koja-pickup-v1:' + clean(code).upper()).encode('utf-8')).hexdigest()
+
 def make_delivery_pickup_code():
     return 'KDP-' + secrets.token_hex(4).upper()
 
@@ -10863,6 +10908,8 @@ def verify_delivery_pickup(tracking_code):
 
     body=request.get_json(silent=True) or {}
     entered_code=clean(body.get('pickup_code') or body.get('code')).upper()
+    if _rate_limited("pickup:"+(request.remote_addr or "unknown"), 30, 600):
+        return jsonify({'valid':False,'status':'rate_limited','message':'Too many attempts. Please wait and try again.'}),429
     delivery=first_row('deliveries',{'tracking_code':tracking_code})
     if not delivery:
         return jsonify({'valid':False,'status':'invalid','message':'Delivery not found.'}),404
@@ -10893,8 +10940,13 @@ def verify_delivery_pickup(tracking_code):
             'message':'Pickup number locked after too many wrong attempts. The sender must issue new codes.'
         }),423
 
-    real_code=clean(delivery.get('pickup_code')).upper()
-    if not entered_code or not real_code or not hmac.compare_digest(entered_code.encode('utf-8'), real_code.encode('utf-8')):
+    stored_hash=clean(delivery.get('pickup_code_hash'))
+    legacy_code=clean(delivery.get('pickup_code')).upper()
+    if stored_hash:
+        pickup_ok=bool(entered_code) and hmac.compare_digest(_hash_pickup_code(entered_code), stored_hash)
+    else:
+        pickup_ok=bool(entered_code) and bool(legacy_code) and hmac.compare_digest(entered_code.encode('utf-8'), legacy_code.encode('utf-8'))
+    if not pickup_ok:
         attempts=int(delivery.get('pickup_attempts') or 0)+1
         locked=attempts>=PICKUP_MAX_ATTEMPTS
         db_update('deliveries',{'id':delivery.get('id')},{'pickup_attempts':attempts,'pickup_locked':locked,'updated_at':utc_now()})
@@ -11710,9 +11762,17 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
 <div class="card live-social" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
   <button class="btn secondary" type="button" id="cmLikeBtn" aria-pressed="false">❤ Like <span id="cmLikeCount">0</span></button>
   <button class="btn secondary" type="button" id="cmCommentBtn">💬 Comment</button>
+  {% if not is_seller %}<button class="btn success" type="button" id="cmGiftBtn">🎁 Gift</button>{% endif %}
   <button class="btn secondary" type="button" id="cmShareBtn">↗ Share</button>
   <span id="cmSocialNote" class="small"></span>
 </div>
+{% if not is_seller %}<div class="card" id="cmGiftBox" hidden style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+  <select id="cmGiftAmount"><option value="5">K5</option><option value="20">K20</option><option value="100">K100</option></select>
+  <select id="cmGiftNetwork"><option value="MTN">MTN Mobile Money</option><option value="AIRTEL">Airtel Money</option></select>
+  <input id="cmGiftPhone" inputmode="tel" placeholder="Mobile-money number" maxlength="20">
+  <button class="btn success" type="button" id="cmGiftSend">Send gift</button>
+  <span id="cmGiftNote" class="small"></span>
+</div>{% endif %}
 <script>(function(){
  const rid={{ room.id|tojson }}, csrf={{ csrf_token()|tojson }};
  const likeBtn=document.getElementById('cmLikeBtn'), likeCount=document.getElementById('cmLikeCount'), note=document.getElementById('cmSocialNote');
@@ -11736,6 +11796,20 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
      else { note.textContent=url; }
    }catch(e){}
  });
+ const giftBtn=document.getElementById('cmGiftBtn');
+ if(giftBtn){
+   giftBtn.addEventListener('click', function(){ const b=document.getElementById('cmGiftBox'); b.hidden=!b.hidden; });
+   document.getElementById('cmGiftSend').addEventListener('click', async function(){
+     const gn=document.getElementById('cmGiftNote'), btn=this; gn.textContent=''; btn.disabled=true;
+     try{
+       const r=await fetch('/api/market/live/'+encodeURIComponent(rid)+'/gift',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({amount:document.getElementById('cmGiftAmount').value,network:document.getElementById('cmGiftNetwork').value,phone:document.getElementById('cmGiftPhone').value})});
+       const d=await r.json();
+       if(d.ok && d.redirect_url){ window.location.href=d.redirect_url; return; }
+       gn.textContent=d.error||'Gift could not be sent.';
+     }catch(e){ gn.textContent='Connection problem. Try again.'; }
+     finally{ btn.disabled=false; }
+   });
+ }
  loadState(); setInterval(loadState, 10000);
 })();</script>
 <div class="card" id="cmLive"><div class="actions"><strong id="cmViewers">0 watching</strong>{% if is_seller %}<a class="btn secondary" href="{{ url_for('cm_live_summary', room_id=room.id) }}">Sales summary</a>{% endif %}</div>
@@ -12031,7 +12105,7 @@ def _b2bv4_create_delivery(order):
         'delivery_address':(req or {}).get('delivery_address') or (req or {}).get('location'),
         'recipient_name':clean((current_user() or {}).get('name')),'package_description':(req or {}).get('title') or 'KOJA B2B order',
         'delivery_fee':0,'currency':order.get('currency') or 'ZMW','status':'requested','tracking_code':tracking,
-        'pickup_code':pickup_code,'notes':'KOJA B2B V4 order '+str(order.get('id')),
+        'pickup_code_hash':_hash_pickup_code(pickup_code),'pickup_code':None,'notes':'KOJA B2B V4 order '+str(order.get('id')),
         'created_at':utc_now(),'updated_at':utc_now()
     })
     if not row: return None
@@ -18791,10 +18865,308 @@ def cm_live_state(room_id):
 
 
 def _cm_like_count(room_id):
-    return len(_cm_rows("koja_market_live_likes", {"room_id": room_id}, limit=10000))
+    return len(_cm_rows("koja_market_live_room_likes", {"room_id": room_id}, limit=10000))
 
 def _cm_liked(room_id, uid):
-    return bool(first_row("koja_market_live_likes", {"room_id": room_id, "user_id": uid}))
+    return bool(first_row("koja_market_live_room_likes", {"room_id": room_id, "user_id": uid}))
+
+# ============================================================
+# KOJA LIVE GIFTS, HOST EARNINGS AND PAYOUT REQUESTS
+# Accounting: net = gross - processing_fee - adjustments (2 dp, ZMW)
+#             host_share = floor(net x 50%) to the tambala (rounded down)
+#             platform_share = net - host_share
+# Earnings are PENDING for KOJA_LIVE_EARNINGS_HOLD_HOURS (default 72),
+# then AVAILABLE. Withdrawals hold funds until paid, rejected or failed.
+# No payout is sent by this code: admin pays out manually and records
+# the provider reference.
+# ============================================================
+KOJA_LIVE_GIFT_AMOUNTS = (5, 20, 100)
+KOJA_LIVE_HOST_SHARE = 0.5
+KOJA_LIVE_MIN_WITHDRAWAL = 100
+KOJA_LIVE_NETWORKS = ("MTN", "AIRTEL")
+
+def _live_hold_hours():
+    try:
+        return max(0.0, float(os.getenv("KOJA_LIVE_EARNINGS_HOLD_HOURS", "72")))
+    except Exception:
+        return 72.0
+
+def _live_split(gross, processing_fee, adjustments=0.0):
+    gross = round(float(gross or 0), 2)
+    fee = round(float(processing_fee or 0), 2)
+    adj = round(float(adjustments or 0), 2)
+    net = round(gross - fee - adj, 2)
+    if net <= 0:
+        return {"gross": gross, "fee": fee, "adjustments": adj, "net": 0.0, "host": 0.0, "platform": 0.0}
+    host = int(net * 50 + 1e-9) / 100  # 50% rounded DOWN to the tambala
+    return {"gross": gross, "fee": fee, "adjustments": adj, "net": net, "host": host, "platform": round(net - host, 2)}
+
+def _live_processing_fee(tx, gross):
+    # Use the fee Flutterwave reports for this transaction. If it reports none,
+    # use KOJA_LIVE_DEFAULT_FEE_RATE (default 0) and record that in fee_source.
+    for key in ("app_fee", "charged_fee"):
+        value = (tx or {}).get(key)
+        if value not in (None, ""):
+            try:
+                return round(float(value), 2), "provider:" + key
+            except Exception:
+                pass
+    try:
+        rate = max(0.0, float(os.getenv("KOJA_LIVE_DEFAULT_FEE_RATE", "0")))
+    except Exception:
+        rate = 0.0
+    return round(float(gross or 0) * rate, 2), "rate:%s" % rate
+
+def _live_audit(actor_id, action, target_type, target_id, details=None):
+    try:
+        db_insert("koja_live_audit", {"id": str(uuid.uuid4()), "actor_id": str(actor_id) if actor_id else None, "action": action, "target_type": target_type, "target_id": str(target_id or ""), "details": json.dumps(details or {}, default=str), "created_at": utc_now()})
+    except Exception:
+        logger.exception("Live audit write failed")
+
+def _live_conditional_update(table, match, expected_status, payload):
+    # Single atomic PATCH: only applies when the row is still in expected_status.
+    params = {k: "eq." + str(v) for k, v in match.items()}
+    params["status"] = "eq." + expected_status
+    try:
+        r = _HTTP.patch(sb_rest_url(table), headers=sb_headers({"Prefer": "return=representation"}), params=params, json=payload, timeout=20)
+        data = json_or_empty(r)
+    except Exception:
+        logger.exception("Live conditional update failed table=%s", table)
+        return None
+    if not r.ok or not isinstance(data, list) or not data:
+        return None
+    return data[0]
+
+def _live_balances(host_id):
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=_live_hold_hours())
+    gifts = _cm_rows("koja_live_gifts", {"host_id": str(host_id), "status": "paid"}, limit=10000)
+    pending = 0.0
+    matured = 0.0
+    for g in gifts:
+        share = float(g.get("host_share") or 0)
+        paid_at = _cm_ts(g.get("paid_at"))
+        if paid_at and paid_at > cutoff:
+            pending += share
+        else:
+            matured += share
+    withdrawals = _cm_rows("koja_live_withdrawals", {"host_id": str(host_id)}, limit=10000)
+    held = sum(float(w.get("amount") or 0) for w in withdrawals if str(w.get("status")) in ("requested", "approved", "paid"))
+    return {"pending": round(pending, 2), "available": round(matured - held, 2), "matured": round(matured, 2), "held": round(held, 2)}
+
+def _finalize_live_gift(gift, tx):
+    # Called only after the server has verified the payment with Flutterwave.
+    if not gift or not tx:
+        return False
+    ref = str(gift.get("payment_reference") or "")
+    gross = round(float(gift.get("gross_amount") or 0), 2)
+    try:
+        paid = round(float(tx.get("amount") or 0), 2)
+    except Exception:
+        paid = -1.0
+    confirmed = (
+        str(tx.get("status") or "").lower() == "successful"
+        and str(tx.get("tx_ref") or tx.get("txRef") or tx.get("reference") or "") == ref
+        and str(tx.get("currency") or "").upper() == "ZMW"
+        and paid == gross
+    )
+    if not confirmed:
+        logger.warning("Live gift not confirmed ref=%s", ref)
+        return False
+    if str(gift.get("status") or "") != "pending":
+        return False  # duplicate webhook or repeated return page: already handled
+    fee, source = _live_processing_fee(tx, gross)
+    s = _live_split(gross, fee)
+    claimed = _live_conditional_update("koja_live_gifts", {"id": gift.get("id")}, "pending", {
+        "status": "paid", "processing_fee": s["fee"], "adjustments": s["adjustments"], "net_amount": s["net"],
+        "host_share": s["host"], "platform_share": s["platform"], "fee_source": source,
+        "provider_transaction_id": str(tx.get("id") or ""), "paid_at": utc_now(), "updated_at": utc_now()})
+    if not claimed:
+        return False  # another request already credited this gift
+    _live_audit(None, "gift_paid", "live_gift", gift.get("id"), {"gross": gross, "host_share": s["host"], "fee_source": source})
+    return True
+
+def _reverse_live_gift(gift_id, actor_id, reason):
+    row = _live_conditional_update("koja_live_gifts", {"id": gift_id}, "paid", {
+        "status": "reversed", "reversed_at": utc_now(), "reversal_reason": (clean(reason) or "refund")[:200], "updated_at": utc_now()})
+    if row:
+        _live_audit(actor_id, "gift_reversed", "live_gift", gift_id, {"reason": clean(reason)[:200]})
+    return row
+
+@app.route("/api/market/live/<room_id>/gift", methods=["POST"])
+@login_required
+def live_gift_create(room_id):
+    room = _cm_room(room_id)
+    if not room or room.get("status") != "live":
+        return jsonify(ok=False, error="This live is not active."), 400
+    uid = str(_cm_uid())
+    if uid == str(room.get("seller_id") or ""):
+        return jsonify(ok=False, error="Hosts cannot send gifts to their own live."), 400
+    body = request.get_json(silent=True) or {}
+    try:
+        amount = int(float(body.get("amount")))
+    except Exception:
+        amount = 0
+    if amount not in KOJA_LIVE_GIFT_AMOUNTS:
+        return jsonify(ok=False, error="Choose a gift of K5, K20 or K100."), 400
+    network = clean(body.get("network")).upper()
+    if network not in KOJA_LIVE_NETWORKS:
+        return jsonify(ok=False, error="Choose MTN or Airtel."), 400
+    phone = re.sub(r"\D", "", clean(body.get("phone")))
+    if len(phone) < 9:
+        return jsonify(ok=False, error="Enter the mobile-money phone number."), 400
+    if not FLW_SECRET_KEY:
+        return jsonify(ok=False, error="Gifts are not configured yet."), 503
+    ref = "KOJA-GIFT-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + secrets.token_hex(4).upper()
+    gift_id = str(uuid.uuid4())
+    row, err = db_insert("koja_live_gifts", {"id": gift_id, "room_id": room_id, "host_id": str(room.get("seller_id")), "payer_id": uid,
+        "amount": amount, "gross_amount": amount, "currency": "ZMW", "network": network, "payer_phone": phone,
+        "payment_reference": ref, "status": "pending", "created_at": utc_now(), "updated_at": utc_now()})
+    if err:
+        logger.error("Live gift could not be recorded: %s", str(err)[:300])
+        return jsonify(ok=False, error="Gift could not be started. Try again."), 500
+    user = current_user() or {}
+    payload = {"tx_ref": ref, "amount": amount, "currency": "ZMW", "email": clean(user.get("email")).lower(),
+        "fullname": first_nonempty(user.get("name"), user.get("full_name"), clean(user.get("email")), "KOJA viewer"),
+        "phone_number": phone, "network": network,
+        "redirect_url": url_for("live_gift_return", _external=True, tx_ref=ref),
+        "meta": {"koja_live_gift": gift_id}}
+    try:
+        r = _HTTP.post(FLW_BASE_URL + "/charges?type=mobile_money_zambia", headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json", "Accept": "application/json"}, json=payload, timeout=30)
+        data = json_or_empty(r)
+        auth = ((data.get("meta") or {}).get("authorization") or {}) if isinstance(data, dict) else {}
+        redirect_url = auth.get("redirect")
+        if r.ok and str(data.get("status") or "").lower() == "success" and redirect_url:
+            return jsonify(ok=True, redirect_url=redirect_url)
+        logger.error("Live gift charge refused: %s %s", r.status_code, str(data)[:800])
+    except Exception:
+        logger.exception("Live gift charge error")
+    db_update("koja_live_gifts", {"id": gift_id}, {"status": "failed", "updated_at": utc_now()})
+    return jsonify(ok=False, error="Payment could not be started. Try again."), 502
+
+@app.route("/market/live/gift/return")
+@login_required
+def live_gift_return():
+    ref = clean(request.args.get("tx_ref") or request.args.get("reference"))
+    transaction_id = clean(request.args.get("transaction_id") or request.args.get("id"))
+    gift = first_row("koja_live_gifts", {"payment_reference": ref}) if ref else None
+    if not gift or str(gift.get("payer_id")) != str(_cm_uid()):
+        flash("Gift not found.", "warning")
+        return redirect(url_for("market_live"))
+    tx = _flutterwave_verify(transaction_id or None, ref)
+    if tx and _finalize_live_gift(gift, tx):
+        flash("Gift sent. Thank you for supporting the host!", "success")
+    else:
+        flash("Gift payment is still pending or was not confirmed. It will update when the payment is confirmed.", "info")
+    return redirect(url_for("market_live_room", room_id=gift.get("room_id")))
+
+@app.route("/live/earnings")
+@login_required
+def live_earnings():
+    uid = str(_cm_uid())
+    gifts = _cm_rows("koja_live_gifts", {"host_id": uid}, order="created_at.desc", limit=100)
+    withdrawals = _cm_rows("koja_live_withdrawals", {"host_id": uid}, order="requested_at.desc", limit=100)
+    return render_page("Live Earnings", r'''
+<div class="hero"><h1>Live earnings</h1><p>Half of each gift's net amount goes to you. Earnings become available after the hold period.</p></div>
+<div class="card"><p>Pending: <strong>{{ money(bal.pending,'ZMW') }}</strong></p><p>Available: <strong>{{ money(bal.available,'ZMW') }}</strong></p><p class="small">Minimum withdrawal: {{ money(minimum,'ZMW') }}.</p></div>
+<div class="card"><h2>Request withdrawal</h2>
+<form method="post" action="{{ url_for('live_withdraw_request') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<label>Amount (ZMW)</label><input name="amount" type="number" step="0.01" min="{{ minimum }}" required>
+<label>Network</label><select name="network">{% for n in networks %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select>
+<label>Mobile-money number</label><input name="phone" inputmode="tel" required>
+<button class="btn success" type="submit">Request withdrawal</button></form>
+<p class="small">Only one withdrawal can be open at a time. Never share your mobile-money PIN with anyone.</p></div>
+<div class="card"><h2>Gift history</h2>{% for g in gifts %}<p>{{ g.created_at }} · {{ money(g.gross_amount,'ZMW') }} gift · your share {{ money(g.host_share or 0,'ZMW') }} · <strong>{{ g.status }}</strong></p>{% else %}<p>No gifts yet.</p>{% endfor %}</div>
+<div class="card"><h2>Withdrawal history</h2>{% for w in withdrawals %}<p>{{ w.requested_at }} · {{ money(w.amount,'ZMW') }} to {{ w.network }} · <strong>{{ w.status }}</strong></p>{% else %}<p>No withdrawals yet.</p>{% endfor %}</div>
+''', bal=_live_balances(uid), gifts=gifts, withdrawals=withdrawals, minimum=KOJA_LIVE_MIN_WITHDRAWAL, networks=KOJA_LIVE_NETWORKS, money=market_money)
+
+@app.route("/live/earnings/withdraw", methods=["POST"])
+@login_required
+def live_withdraw_request():
+    uid = str(_cm_uid())
+    try:
+        amount = round(float(request.form.get("amount") or 0), 2)
+    except Exception:
+        amount = 0.0
+    network = clean(request.form.get("network")).upper()
+    phone = re.sub(r"\D", "", clean(request.form.get("phone")))
+    if amount < KOJA_LIVE_MIN_WITHDRAWAL:
+        flash("The minimum withdrawal is ZMW %d." % KOJA_LIVE_MIN_WITHDRAWAL, "warning"); return redirect(url_for("live_earnings"))
+    if network not in KOJA_LIVE_NETWORKS or len(phone) < 9:
+        flash("Choose MTN or Airtel and enter a valid number.", "warning"); return redirect(url_for("live_earnings"))
+    if amount > _live_balances(uid)["available"]:
+        flash("That amount is more than your available balance.", "warning"); return redirect(url_for("live_earnings"))
+    row, err = db_insert("koja_live_withdrawals", {"id": str(uuid.uuid4()), "host_id": uid, "amount": amount, "currency": "ZMW",
+        "network": network, "payout_phone": phone, "status": "requested", "requested_at": utc_now(), "created_at": utc_now()})
+    if err:
+        flash("You already have a withdrawal open, or it could not be saved. Wait for it to finish.", "warning"); return redirect(url_for("live_earnings"))
+    _live_audit(uid, "withdrawal_requested", "live_withdrawal", row.get("id") if row else None, {"amount": amount, "network": network})
+    flash("Withdrawal requested. An administrator will review it.", "success")
+    return redirect(url_for("live_earnings"))
+
+@app.route("/admin/live-payouts")
+@admin_required
+def admin_live_payouts():
+    withdrawals = _cm_rows("koja_live_withdrawals", order="requested_at.desc", limit=200)
+    gifts = _cm_rows("koja_live_gifts", order="created_at.desc", limit=100)
+    return render_page("Live payouts", r'''
+<div class="hero"><h1>Live payouts and gifts</h1><p>Review each withdrawal. Pay out manually, then record the provider reference here.</p></div>
+<div class="card"><h2>Withdrawal requests</h2>{% for w in withdrawals %}
+<div style="border-bottom:1px solid var(--border);padding:8px 0"><p><strong>{{ money(w.amount,'ZMW') }}</strong> to {{ w.network }} · {{ w.payout_phone }} · <strong>{{ w.status }}</strong> · host {{ w.host_id }}</p>
+<form method="post" action="{{ url_for('admin_live_payout_action', withdrawal_id=w.id, action='approve') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn" type="submit">Approve</button></form>
+<form method="post" action="{{ url_for('admin_live_payout_action', withdrawal_id=w.id, action='reject') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn secondary" type="submit">Reject</button></form>
+<form method="post" action="{{ url_for('admin_live_payout_action', withdrawal_id=w.id, action='paid') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input name="provider_reference" placeholder="Payout reference" required><button class="btn success" type="submit">Mark paid</button></form>
+<form method="post" action="{{ url_for('admin_live_payout_action', withdrawal_id=w.id, action='failed') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input name="reason" placeholder="Reason" required><button class="btn secondary" type="submit">Payout failed</button></form></div>
+{% else %}<p>No withdrawal requests.</p>{% endfor %}</div>
+<div class="card"><h2>Recent gifts</h2>{% for g in gifts %}<p>{{ g.created_at }} · {{ money(g.gross_amount,'ZMW') }} · host share {{ money(g.host_share or 0,'ZMW') }} · <strong>{{ g.status }}</strong> · {{ g.payment_reference }}
+{% if g.status == 'paid' %}<form method="post" action="{{ url_for('admin_live_gift_reverse', gift_id=g.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input name="reason" placeholder="Refund or chargeback reason" required><button class="btn secondary" type="submit">Reverse</button></form>{% endif %}</p>{% else %}<p>No gifts yet.</p>{% endfor %}</div>
+''', withdrawals=withdrawals, gifts=gifts, money=market_money)
+
+@app.route("/admin/live-payouts/<withdrawal_id>/<action>", methods=["POST"])
+@admin_required
+def admin_live_payout_action(withdrawal_id, action):
+    actor = str((current_user() or {}).get("id") or "")
+    w = first_row("koja_live_withdrawals", {"id": withdrawal_id})
+    if not w:
+        abort(404)
+    if str(w.get("host_id")) == actor:
+        return _live_admin_back("An administrator cannot approve or pay their own withdrawal.", "danger")
+    now = utc_now()
+    if action == "approve":
+        row = _live_conditional_update("koja_live_withdrawals", {"id": withdrawal_id}, "requested", {"status": "approved", "reviewed_by": actor, "reviewed_at": now})
+    elif action == "reject":
+        row = _live_conditional_update("koja_live_withdrawals", {"id": withdrawal_id}, "requested", {"status": "rejected", "reviewed_by": actor, "reviewed_at": now})
+    elif action == "paid":
+        ref = clean(request.form.get("provider_reference"))
+        if not ref:
+            return _live_admin_back("Enter the payout reference.", "warning")
+        row = _live_conditional_update("koja_live_withdrawals", {"id": withdrawal_id}, "approved", {"status": "paid", "paid_at": now, "provider_reference": ref[:120], "reviewed_by": actor})
+    elif action == "failed":
+        reason = clean(request.form.get("reason"))
+        if not reason:
+            return _live_admin_back("Enter the reason.", "warning")
+        row = _live_conditional_update("koja_live_withdrawals", {"id": withdrawal_id}, "approved", {"status": "failed", "failure_reason": reason[:200], "reviewed_by": actor, "reviewed_at": now})
+    else:
+        abort(400)
+    if not row:
+        return _live_admin_back("That withdrawal has already changed or is no longer in the right state.", "warning")
+    _live_audit(actor, "withdrawal_" + action, "live_withdrawal", withdrawal_id, {"amount": w.get("amount")})
+    return _live_admin_back("Withdrawal updated.", "success")
+
+def _live_admin_back(message, category):
+    flash(message, category)
+    return redirect(url_for("admin_live_payouts"))
+
+@app.route("/admin/live-gifts/<gift_id>/reverse", methods=["POST"])
+@admin_required
+def admin_live_gift_reverse(gift_id):
+    actor = (current_user() or {}).get("id")
+    reason = clean(request.form.get("reason"))
+    if not reason:
+        return _live_admin_back("Enter the refund or chargeback reason.", "warning")
+    if not _reverse_live_gift(gift_id, actor, reason):
+        return _live_admin_back("That gift is not paid, or was already reversed.", "warning")
+    return _live_admin_back("Gift reversed. Its earnings were removed.", "success")
 
 @app.route("/api/market/live/<room_id>/like", methods=["POST"])
 @login_required
@@ -18805,10 +19177,10 @@ def cm_live_like(room_id):
     uid = _cm_uid()
     try:
         if _cm_liked(room_id, uid):
-            db_delete("koja_market_live_likes", {"room_id": room_id, "user_id": uid})
+            db_delete("koja_market_live_room_likes", {"room_id": room_id, "user_id": uid})
             liked = False
         else:
-            _, err = db_insert("koja_market_live_likes", {"id": str(uuid.uuid4()), "room_id": room_id, "user_id": uid, "created_at": utc_now()})
+            _, err = db_insert("koja_market_live_room_likes", {"id": str(uuid.uuid4()), "room_id": room_id, "user_id": uid, "created_at": utc_now()})
             if err:
                 return jsonify(ok=False, error="Likes are not set up yet."), 503
             liked = True
@@ -18850,11 +19222,16 @@ def cm_live_summary(room_id):
             if c and c <= end + timedelta(minutes=5) and str(o.get("product_id")) in tray_ids and str(o.get("status")).lower() in ("paid", "completed", "shipped", "processing"):
                 orders.append(o)
     chats = len(_cm_rows("koja_market_live_messages", {"room_id": room_id}, limit=2000))
+    paid_gifts = _cm_rows("koja_live_gifts", {"room_id": room_id, "status": "paid"}, limit=5000)
+    gift_count = len(paid_gifts)
+    gift_gross = round(sum(float(g.get("gross_amount") or 0) for g in paid_gifts), 2)
+    gift_host = round(sum(float(g.get("host_share") or 0) for g in paid_gifts), 2)
     gross = round(sum(float(o.get("total_amount") or 0) for o in orders), 2)
     return _cm_page("Live summary", r'''<div class="card"><a href="{{ url_for('market_live') }}">← LIVE Shopping</a><h2>{{ room.title }} — summary</h2>
 <p>Peak viewers: <strong>{{ room.peak_viewers or 0 }}</strong> · Chat messages: <strong>{{ chats }}</strong></p>
 <p>Orders on featured products during the live: <strong>{{ orders|length }}</strong> · Sales: <strong>{{ money(gross) }}</strong></p>
-<p class="small">Counts paid orders for products in your live tray, placed while the live was on (plus 5 minutes).</p></div>''', room=room, chats=chats, orders=orders, gross=gross)
+<p>Gifts received: <strong>{{ gift_count }}</strong> · Gift total: <strong>{{ money(gift_gross) }}</strong> · Your share: <strong>{{ money(gift_host) }}</strong></p>
+<p class="small">Counts paid orders for products in your live tray, placed while the live was on (plus 5 minutes).</p></div>''', room=room, chats=chats, orders=orders, gross=gross, gift_count=gift_count, gift_gross=gift_gross, gift_host=gift_host)
 
 
 # =================== DIGITAL DOWNLOADS ===================
@@ -19106,7 +19483,7 @@ def cm_delivery_events(tracking_code):
 def cm_gps_prune():
     days = int(safe_float(request.form.get("days") or (request.get_json(silent=True) or {}).get("days")) or 3)
     ok, err = db_delete("driver_locations", {"created_at": "lt." + (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()})
-    return jsonify(ok=bool(ok), error=str(err)[:300] if err else None)
+    return jsonify(ok=bool(ok), error=_safe_error(err) if err else None)
 
 
 if __name__=="__main__":
