@@ -3122,14 +3122,21 @@ def can_access_assignment(item, user):
         return True
     return str(assignment_owner_id(item) or "") == str(user.get("id") or "")
 
+def assignment_answer_released(item):
+    """An answer (text or PDF) is visible to the owner only after the Approval Centre approves it."""
+    return str((item or {}).get("answer_approval_status") or "") == "approved"
+
 @app.route("/assignments", methods=["GET","POST"])
 @login_required
 def assignments():
     user=current_user()
     if request.method=="POST":
-        title=clean(request.form.get("title"))
-        description=clean(request.form.get("description"))
+        title=clean(request.form.get("title"))[:160]
+        description=clean(request.form.get("description"))[:5000]
         file=request.files.get("file")
+        if not title:
+            flash("Give the assignment a title.","danger")
+            return redirect(url_for("assignments"))
         uploaded=None
         if file and file.filename:
             uploaded,error=upload_storage(file,"assignments",public=False)
@@ -3196,7 +3203,7 @@ def assignments():
 <a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>
 <a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}"> Read Question</a>
 {% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}
-{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% endif %}
+{% if item.get("answer_file_path") and item.get("answer_approval_status") == "approved" %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% endif %}
 {% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answered') }}">Download Answered File</a>{% endif %}
 </div>
 {% else %}<p>No assignments found for this account.</p>{% endfor %}
@@ -3219,8 +3226,8 @@ def assignment_question_view(assignment_id):
 <div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question was provided." }}</div>
 <div class="actions" style="margin-top:16px"><a class="btn" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>{% if item.get("file_path") %}<a class="btn secondary" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}</div>
 </div>
-{% if item.get("answer") %}<div class="card"><h3>Answer</h3><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("answer") }}</div></div>{% endif %}
-""", item=item)
+{% if item.get("answer") and (is_admin or item.get("answer_approval_status") == "approved") %}<div class="card"><h3>Answer</h3><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("answer") }}</div></div>{% endif %}
+""", item=item, is_admin=bool((current_user() or {}).get("is_admin")))
 
 @app.route("/assignments/<assignment_id>/question/download", methods=["GET"])
 @login_required
@@ -3256,6 +3263,8 @@ def assignment_file(assignment_id, kind):
     }
     if kind not in field_map:
         return "Invalid file type.",400
+    if kind in ("answer","answered") and not user.get("is_admin") and not assignment_answer_released(item):
+        return "This answer has not been approved for release yet.",403
     path_field,name_field,mime_field=field_map[kind]
     path=item.get(path_field)
     if not path:
@@ -7425,6 +7434,11 @@ def admin_assignment_answer(assignment_id):
                 "answer_file_name": uploaded["file_name"],
                 "answer_file_path": uploaded["path"],
                 "answer_file_url": uploaded["path"],
+                # A new PDF must be approved again; an earlier approval must not carry over to it.
+                "answer_approval_status": "pending",
+                "approved_by": None,
+                "approved_at": None,
+                "approval_note": None,
             })
         row, error = db_update("assignments", {"id": assignment_id}, updates)
         if error:
@@ -7453,12 +7467,20 @@ def admin_assignment_answer(assignment_id):
 <form method="post" action="{{ url_for('admin_send_assignment_email', assignment_id=item.get('id')) }}">
 <label>Recipient Email</label><input type="email" name="recipient_email" value="{{ recipient_email }}" required>
 <label>Email Subject</label><input name="subject" value="KOJA AFRICA — Assignment Answer {{ item.get('tracking_code') or '' }}">
-<label>Email Message</label><textarea name="message">Hello {{ recipient_name }},\n\nYour KOJA AFRICA assignment answer is attached as a PDF.\n\nTracking code: {{ item.get('tracking_code') or '—' }}\n\nKOJA AFRICA</textarea>
+<label>Email Message</label><textarea name="message" rows="8">{{ default_message }}</textarea>
 <button class="btn success" type="submit"> Send Answer PDF</button>
 </form>
 {% elif item.get("answer_file_path") %}<p>Answer PDF is uploaded, but it must be <strong>approved</strong> in the Approval Centre before it can be emailed.</p>{% else %}<p>Upload and save an answer PDF first.</p>{% endif %}
 </div>
-""", item=item, recipient_name=(recipient or {}).get("full_name") or (recipient or {}).get("name") or "User", recipient_email=recipient_email, max_upload_mb=MAX_UPLOAD_MB)
+""", item=item, recipient_name=(recipient or {}).get("full_name") or (recipient or {}).get("name") or "User", recipient_email=recipient_email, max_upload_mb=MAX_UPLOAD_MB,
+                    default_message="\n".join([
+                        "Hello %s," % ((recipient or {}).get("full_name") or (recipient or {}).get("name") or "User"),
+                        "",
+                        "Your KOJA AFRICA assignment answer is attached as a PDF.",
+                        "",
+                        "Tracking code: %s" % (item.get("tracking_code") or "—"),
+                        "",
+                        "KOJA AFRICA"]))
 
 @app.route("/admin/assignments/<assignment_id>/status", methods=["POST"])
 @admin_required
@@ -18262,7 +18284,7 @@ def ac_my_sessions():
 <div class="hero"><h2>My lessons</h2></div>
 {% for s in sessions %}<div class="card"><h3>{{ s.subject }} with {{ s._teacher }}</h3><p>{{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.price, s.currency) }}</p>
 <p>Status: <strong>{{ s.status }}</strong> · Payment: <strong>{{ s.payment_status }}</strong></p>
-{% if s.status == 'accepted' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Join live room</a>{% endif %}
+{% if s.status == 'accepted' and s.payment_status == 'paid' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Join live room</a>{% elif s.status == 'accepted' %}<p>The live room opens once payment is recorded.</p>{% endif %}
 {% if s.status in ['requested','accepted'] %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='cancel') }}" style="display:inline">{{ csrf }}<button class="btn secondary">Cancel</button></form>{% endif %}
 {% if s.status == 'completed' and not s._reviewed %}<form method="post" action="{{ url_for('ac_review', sid=s.id) }}">{{ csrf }}<select name="rating"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select><input name="comment" maxlength="500" placeholder="How was the lesson?"><button class="btn">Review</button></form>{% endif %}</div>
 {% else %}<div class="card"><p>No lessons yet.</p></div>{% endfor %}
@@ -18286,6 +18308,9 @@ def ac_session_action(sid, action):
     elif action == "complete" and is_teacher and cur == "accepted": new, other = "completed", s.get("student_id")
     elif action == "mark-paid" and is_admin and s.get("payment_status") != "paid":
         db_update("koja_academic_sessions", {"id": sid}, {"payment_status": "paid", "paid_at": utc_now(), "updated_at": utc_now()})
+        # A lesson completed before payment was recorded has not credited the teacher yet.
+        if s.get("status") == "completed":
+            _ac_credit_teacher(s, "session")
         flash("Payment recorded.", "success"); return redirect(url_for("ac_admin"))
     if not new:
         abort(403)
@@ -18340,7 +18365,7 @@ def ac_teacher_dashboard():
 <div class="grid"><div class="card"><h3>Earned</h3>{{ money(earned, t.currency or 'ZMW') }}</div><div class="card"><h3>Paid out</h3>{{ money(paid, t.currency or 'ZMW') }}</div><div class="card"><h3>Wallet balance</h3>{{ money(balance, t.currency or 'ZMW') }}</div></div>
 <h3>Lesson requests</h3>{% for s in sessions %}<div class="card"><strong>{{ s.subject }}</strong> · {{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.teacher_earning, s.currency) }} after fee<br>Status: {{ s.status }} · Payment: {{ s.payment_status }}
 <div class="actions">{% if s.status == 'requested' %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='accept') }}">{{ csrf }}<button class="btn">Accept</button></form><form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='decline') }}">{{ csrf }}<button class="btn secondary">Decline</button></form>{% endif %}
-{% if s.status == 'accepted' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Start live room</a><form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='complete') }}">{{ csrf }}<button class="btn secondary">Mark completed</button></form>{% endif %}</div></div>
+{% if s.status == 'accepted' and s.payment_status == 'paid' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Start live room</a>{% elif s.status == 'accepted' %}<span>Live room opens once payment is recorded.</span>{% endif %}{% if s.status == 'accepted' %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='complete') }}">{{ csrf }}<button class="btn secondary">Mark completed</button></form>{% endif %}</div></div>
 {% else %}<div class="card"><p>No lesson requests yet.</p></div>{% endfor %}
 <h3>My classes</h3>{% for c in classes %}<div class="card"><a href="{{ url_for('ac_class', cid=c.id) }}">{{ c.title }}</a> · {{ c.scheduled_date }} {{ c.start_time }}</div>{% else %}<div class="card"><p>No classes yet.</p></div>{% endfor %}''',
                     t=t, sessions=sessions, classes=classes, earned=earned, paid=paid, balance=balance, pct=ACADEMIC_COMMISSION_PCT)
@@ -18485,7 +18510,8 @@ def _ac_room_access(kind, rid):
     uid = _ac_uid()
     if kind == "session":
         s = first_row("koja_academic_sessions", {"id": rid})
-        ok = s and s.get("status") == "accepted" and uid in (str(s.get("teacher_user_id")), str(s.get("student_id")))
+        ok = bool(s) and s.get("status") == "accepted" and s.get("payment_status") == "paid" \
+            and uid in (str(s.get("teacher_user_id")), str(s.get("student_id")))
         return (s, str(s.get("teacher_user_id")) == uid) if ok else (None, False)
     if kind == "class":
         c = first_row("koja_academic_classes", {"id": rid})
@@ -18498,6 +18524,10 @@ def _ac_room_access(kind, rid):
     return None, False
 
 
+def _ac_board_key(kind, rid):
+    return "%s:%s" % (kind, rid)
+
+
 @app.route("/academic/room/<kind>/<rid>")
 @login_required
 def ac_room(kind, rid):
@@ -18505,28 +18535,104 @@ def ac_room(kind, rid):
     if not obj:
         flash("The live room opens for confirmed, paid lessons and enrolled students.", "warning")
         return redirect(url_for("ac_home"))
+    back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
     return _ac_page("Live room", r'''
-<div class="card"><h2>Live room</h2><p id="ac-status">Connecting…</p><div id="ac-videos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px"></div>
-<h3>Whiteboard</h3><canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
-<button class="btn secondary" type="button" id="ac-clear">Clear board</button></div>
+<div class="card"><h2>Live room</h2><p id="ac-status">Connecting…</p>
+<div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button></div>
+<div id="ac-videos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:12px 0"></div>
+<h3>Whiteboard</h3>
+<canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
+{% if is_teacher %}<div class="actions"><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div>{% endif %}</div>
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
-<script>(async function(){const st=document.getElementById('ac-status');
-try{const r=await fetch({{ token_url|tojson }});const d=await r.json();if(!d.token){st.textContent=d.error||'Live video is not configured.';return}
-const room=new LivekitClient.Room();const box=document.getElementById('ac-videos');
-function attach(t){if(t.kind==='video'||t.kind==='audio'){const el=t.attach();el.style.width='100%';box.appendChild(el)}}
-room.on(LivekitClient.RoomEvent.TrackSubscribed,attach);
-const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');cx.lineWidth=2;cx.lineCap='round';let draw=false,last=null;
-function seg(a,b){cx.beginPath();cx.moveTo(a[0],a[1]);cx.lineTo(b[0],b[1]);cx.stroke()}
+<script>
+(function(){
+const st=document.getElementById('ac-status');
+const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');
+cx.lineWidth=2;cx.lineCap='round';cx.strokeStyle='#111';
+const box=document.getElementById('ac-videos');
+const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }};
+let room=null;
+function setStatus(t){st.textContent=t}
+function drawStroke(pts){if(!pts||pts.length<2)return;cx.beginPath();cx.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)cx.lineTo(pts[i][0],pts[i][1]);cx.stroke()}
+function clearBoard(){cx.clearRect(0,0,cv.width,cv.height)}
+function send(o){if(!room||room.state!=='connected')return;try{room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(o)),{reliable:true})}catch(_){}}
+function save(body){return fetch(BOARD,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.ok).catch(()=>false)}
 function pos(e){const q=cv.getBoundingClientRect();return[(e.clientX-q.left)*cv.width/q.width,(e.clientY-q.top)*cv.height/q.height]}
-function send(o){room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(o)),{reliable:true})}
-cv.onpointerdown=e=>{draw=true;last=pos(e)};cv.onpointerup=cv.onpointerleave=()=>{draw=false};
-cv.onpointermove=e=>{if(!draw)return;const p=pos(e);seg(last,p);send({s:[last,p]});last=p};
-document.getElementById('ac-clear').onclick=()=>{cx.clearRect(0,0,cv.width,cv.height);send({c:1})};
-room.on(LivekitClient.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)seg(o.s[0],o.s[1]);if(o.c)cx.clearRect(0,0,cv.width,cv.height)}catch(_){}});
-await room.connect(d.url,d.token);await room.localParticipant.enableCameraAndMicrophone();st.textContent='Connected.';
-room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>x.track&&attach(x.track)));
-}catch(e){st.textContent='Could not join the live room: '+e.message}})();</script>''',
-                    token_url=url_for("ac_room_token", kind=kind, rid=rid))
+let drawing=false,last=null,cur=null;
+cv.onpointerdown=e=>{drawing=true;last=pos(e);cur=[last];try{cv.setPointerCapture(e.pointerId)}catch(_){}};
+cv.onpointermove=e=>{if(!drawing)return;const p=pos(e);drawStroke([last,p]);send({s:[last,p]});cur.push(p);last=p;
+  if(cur.length>=300){save({kind:'stroke',points:cur});cur=[p]}};
+function endStroke(){if(!drawing)return;drawing=false;if(cur&&cur.length>1)save({kind:'stroke',points:cur});cur=null;last=null}
+cv.onpointerup=endStroke;cv.onpointercancel=endStroke;
+const clr=document.getElementById('ac-clear');
+if(clr)clr.onclick=()=>{clearBoard();send({c:1});save({kind:'clear'})};
+document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.disconnect()}catch(_){}location.href=BACK};
+(async function(){
+  try{const h=await fetch(BOARD,{credentials:'same-origin'});if(h.ok){const j=await h.json();(j.strokes||[]).forEach(s=>drawStroke(s.points))}}catch(_){}
+  try{
+    const r=await fetch(TOKEN,{credentials:'same-origin'});const d=await r.json();
+    if(!d.token){setStatus(d.error||'Live video is not configured. You can still use the whiteboard.');return}
+    const LK=window.LivekitClient;
+    if(!LK){setStatus('Video library did not load. Check your connection and reload.');return}
+    room=new LK.Room();
+    const shown=new Set();
+    function attach(track){if(!track||shown.has(track.sid)||(track.kind!=='video'&&track.kind!=='audio'))return;shown.add(track.sid);const el=track.attach();el.style.width='100%';box.appendChild(el)}
+    room.on(LK.RoomEvent.TrackSubscribed,(track)=>attach(track));
+    room.on(LK.RoomEvent.TrackUnsubscribed,(track)=>{shown.delete(track.sid);track.detach().forEach(el=>el.remove())});
+    room.on(LK.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)drawStroke(o.s);if(o.c)clearBoard()}catch(_){}});
+    room.on(LK.RoomEvent.Disconnected,()=>setStatus('Disconnected. Reload the page to rejoin.'));
+    await room.connect(d.url,d.token);
+    setStatus('Connected.');
+    room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>attach(x.track)));
+    try{await room.localParticipant.enableCameraAndMicrophone()}
+    catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}
+  }catch(e){setStatus('Could not join the live room: '+e.message)}
+})();
+})();
+</script>''',
+                    token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid),
+                    back_url=back_url, is_teacher=is_teacher)
+
+
+@app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
+@login_required
+def ac_board(kind, rid):
+    obj, is_teacher = _ac_room_access(kind, rid)
+    if not obj:
+        return jsonify({"error": "Not allowed to use this board."}), 403
+    key = _ac_board_key(kind, rid)
+    if request.method == "GET":
+        # Newest first, then keep only strokes after the most recent clear, in order.
+        rows = _ac_rows("koja_academic_board_events", {"room_key": key}, order="created_at.desc", limit=2000)
+        cut = next((i for i, r in enumerate(rows) if r.get("kind") == "clear"), len(rows))
+        strokes = [{"points": r.get("points") or []} for r in reversed(rows[:cut]) if r.get("kind") == "stroke"]
+        return jsonify({"strokes": strokes})
+    data = request.get_json(silent=True) or {}
+    action = data.get("kind")
+    if action == "clear":
+        if not is_teacher:
+            return jsonify({"error": "Only the teacher can clear the board."}), 403
+        row = {"room_key": key, "author_id": _ac_uid(), "kind": "clear", "points": []}
+    elif action == "stroke":
+        pts = data.get("points")
+        if not isinstance(pts, list) or not (2 <= len(pts) <= 300):
+            return jsonify({"error": "Invalid stroke."}), 400
+        clean_pts = []
+        for p in pts:
+            if not (isinstance(p, list) and len(p) == 2):
+                return jsonify({"error": "Invalid stroke."}), 400
+            try:
+                x, y = float(p[0]), float(p[1])
+            except (TypeError, ValueError):
+                return jsonify({"error": "Invalid stroke."}), 400
+            clean_pts.append([round(min(max(x, 0.0), 800.0), 1), round(min(max(y, 0.0), 420.0), 1)])
+        row = {"room_key": key, "author_id": _ac_uid(), "kind": "stroke", "points": clean_pts}
+    else:
+        return jsonify({"error": "Unknown board action."}), 400
+    _, err = db_insert("koja_academic_board_events", dict(row, id=str(uuid.uuid4()), created_at=utc_now()))
+    if err:
+        return jsonify({"error": "Could not save to the board."}), 503
+    return jsonify({"ok": True})
 
 
 @app.route("/academic/room/<kind>/<rid>/token")
@@ -18555,6 +18661,12 @@ def ac_admin():
              "payable": round(sum(float(l.get("amount") or 0) * (1 if l.get("kind") == "earning" else -1) for l in ledger), 2)}
     for t in teachers:
         t["_balance"] = _ac_balance(t.get("user_id"))[2]
+    class_titles = {str(c.get("id")): c.get("title") for c in _ac_rows("koja_academic_classes", limit=1000)}
+    unpaid_seats = []
+    for e in _ac_rows("koja_academic_enrollments", {"payment_status": "unpaid"}, order="created_at.desc", limit=500):
+        if float(e.get("price") or 0) > 0:
+            e["_title"] = class_titles.get(str(e.get("class_id"))) or "Class"
+            unpaid_seats.append(e)
     return _ac_page("Academic admin", r'''
 <div class="hero"><h2>Academic admin</h2></div>
 <div class="grid"><div class="card"><h3>Teachers</h3>{{ stats.verified }}/{{ stats.teachers }} verified</div><div class="card"><h3>Lessons</h3>{{ stats.completed }}/{{ stats.sessions }} completed</div>
@@ -18565,8 +18677,35 @@ def ac_admin():
 <button class="btn" name="action" value="verify">Verify</button><button class="btn secondary" name="action" value="reject">Reject</button><button class="btn secondary" name="action" value="suspend">Suspend</button>
 {% if t._balance > 0 %}<button class="btn success" name="action" value="payout">Record payout of {{ t._balance }}</button>{% endif %}</form></p>{% else %}<p>None.</p>{% endfor %}</div>
 <div class="card"><h3>Unpaid lessons</h3>{% for s in unpaid %}<p>{{ s.subject }} · {{ s.scheduled_date }} · {{ money(s.price, s.currency) }}
-<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='mark-paid') }}" style="display:inline">{{ csrf }}<button class="btn">Mark paid</button></form></p>{% else %}<p>None.</p>{% endfor %}</div>''',
-                    teachers=teachers, unpaid=unpaid, stats=stats)
+<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='mark-paid') }}" style="display:inline">{{ csrf }}<button class="btn">Mark paid</button></form></p>{% else %}<p>None.</p>{% endfor %}</div>
+<div class="card"><h3>Unpaid class seats</h3>{% for e in unpaid_seats %}<p>{{ e._title }} · {{ money(e.price, e.currency) }}
+<form method="post" action="{{ url_for('ac_enrolment_mark_paid', eid=e.id) }}" style="display:inline">{{ csrf }}<button class="btn">Mark paid</button></form></p>{% else %}<p>None.</p>{% endfor %}</div>''',
+                    teachers=teachers, unpaid=unpaid, unpaid_seats=unpaid_seats, stats=stats)
+
+
+def _ac_credit_seat_if_due(e, teacher_user_id):
+    """Credit the teacher for a group-class seat only when the seat is paid AND the student attended."""
+    if e.get("payment_status") != "paid":
+        return
+    att = first_row("koja_academic_attendance", {"class_id": e.get("class_id"), "student_id": e.get("student_id")})
+    if att and att.get("present"):
+        _ac_credit_teacher(dict(e, teacher_user_id=teacher_user_id), "class")
+
+
+@app.route("/admin/academic/enrolment/<eid>/mark-paid", methods=["POST"])
+@admin_required
+def ac_enrolment_mark_paid(eid):
+    e = first_row("koja_academic_enrollments", {"id": clean(eid)})
+    if not e:
+        abort(404)
+    if e.get("payment_status") != "paid":
+        db_update("koja_academic_enrollments", {"id": e["id"]}, {"payment_status": "paid", "paid_at": utc_now()})
+        c = first_row("koja_academic_classes", {"id": e.get("class_id")}) or {}
+        _ac_credit_seat_if_due(dict(e, payment_status="paid"), c.get("teacher_user_id"))
+        notify_user(e.get("student_id"), "Class seat confirmed", "Your payment for %s was recorded." % (c.get("title") or "a class"),
+                    "/academic/class/" + str(e.get("class_id")))
+        flash("Seat payment recorded.", "success")
+    return redirect(url_for("ac_admin"))
 
 
 @app.route("/admin/academic/action", methods=["POST"])
