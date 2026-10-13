@@ -974,15 +974,15 @@ h1,h2,h3{margin-top:0}
 p{margin:0 0 .75em}
 
 nav{background:linear-gradient(180deg,var(--nav-2),var(--nav));color:#fff;padding:10px 16px;position:sticky;top:0;z-index:1000;box-shadow:0 1px 0 rgba(255,255,255,.06),0 6px 22px rgba(2,8,20,.22)}
-.nav-inner{max-width:1280px;margin:auto;display:flex;align-items:center;gap:6px}
+.nav-inner{max-width:1360px;margin:auto;display:flex;align-items:center;gap:6px}
 .brand{font-weight:800;font-size:18px;margin-right:auto;display:flex;align-items:center;gap:10px;letter-spacing:.2px}
 .brand-mark{width:34px;height:34px;border-radius:10px;display:inline-grid;place-items:center;background:linear-gradient(135deg,var(--accent-2),var(--gold));box-shadow:0 6px 18px rgba(0,0,0,.25);animation:logoFloat 4s ease-in-out infinite}
 .brand-mark svg{width:22px;height:22px}
 .brand-name{white-space:nowrap}
 .menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);color:#fff;border-radius:10px;font-weight:700;cursor:pointer}
 .menu-toggle:hover{background:rgba(255,255,255,.16);transform:none;box-shadow:none}
-.nav-links{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
-nav a{color:#e8eef7;text-decoration:none;padding:8px 10px;border-radius:9px;font-size:14.5px;font-weight:500;transition:background .18s ease,color .18s ease}
+.nav-links{display:flex;align-items:center;gap:2px;flex-wrap:nowrap}
+nav a{color:#e8eef7;text-decoration:none;padding:8px 7px;border-radius:9px;font-size:14px;font-weight:500;white-space:nowrap;transition:background .18s ease,color .18s ease}
 nav a:hover{background:rgba(255,255,255,.1);color:#fff}
 .nexus-nav-link{font-weight:700;background:rgba(25,167,184,.2);border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:8px 11px!important;white-space:nowrap;color:#fff!important}
 .notification-bell{position:relative}
@@ -1002,8 +1002,8 @@ nav a:hover{background:rgba(255,255,255,.1);color:#fff}
 @keyframes menuDrop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 
 .container{width:min(1280px,calc(100% - 32px));margin:24px auto 56px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;box-shadow:var(--shadow);animation:fadeUp .4s ease both;transition:box-shadow .2s ease,border-color .2s ease}
-.card:hover{box-shadow:var(--shadow-hover)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:16px;box-shadow:none}
+.card h2:first-child,.card h3:first-child{margin-bottom:8px}
 .hero{background:radial-gradient(120% 140% at 100% 0%,rgba(25,167,184,.35),transparent 55%),linear-gradient(135deg,var(--nav),var(--accent));color:#fff;padding:34px 28px;border-radius:18px;margin-bottom:20px;box-shadow:var(--shadow);animation:fadeUp .5s ease both}
 .hero h1,.hero h2,.hero h3{color:#fff}
 .hero p{color:rgba(255,255,255,.88);max-width:70ch}
@@ -1346,6 +1346,59 @@ def render_page(title, body_template, **context):
 # USER SETTINGS
 # ============================================================
 
+KOJA_SETTING_DEFAULTS = {'theme': 'system', 'allow_research': True}
+
+def _koja_settings_from_form(form):
+    theme = clean(form.get('theme', 'system')).lower()
+    if theme not in ('system', 'light', 'dark'):
+        theme = 'system'
+    return {'theme': theme, 'allow_research': bool(form.get('allow_research'))}
+
+def _koja_load_settings():
+    """Defaults, then this device's session copy, then the account's saved row (account wins)."""
+    prefs = dict(KOJA_SETTING_DEFAULTS)
+    prefs.update(session.get('koja_settings') or {})
+    uid = str((current_user() or {}).get('id') or '')
+    if uid:
+        try:
+            row = first_row('koja_user_settings', {'user_id': uid}) or {}
+            for k in KOJA_SETTING_DEFAULTS:
+                if row.get(k) is not None:
+                    prefs[k] = row[k]
+        except Exception:
+            logger.exception('KOJA settings load failed')
+    prefs = {k: prefs[k] for k in KOJA_SETTING_DEFAULTS}
+    session['koja_settings'] = prefs
+    session.modified = True
+    return prefs
+
+def _koja_save_settings(prefs):
+    """Save to the session and to the account. Returns True only when the account copy was stored."""
+    prefs = {k: prefs[k] for k in KOJA_SETTING_DEFAULTS}
+    session['koja_settings'] = prefs
+    session.modified = True
+    uid = str((current_user() or {}).get('id') or '')
+    if not uid:
+        return False
+    try:
+        payload = dict(prefs, user_id=uid, updated_at=utc_now())
+        if first_row('koja_user_settings', {'user_id': uid}):
+            ok, _err = db_update('koja_user_settings', {'user_id': uid}, payload)
+        else:
+            row, err = db_insert('koja_user_settings', payload)
+            ok = bool(row and not err)
+        return bool(ok)
+    except Exception:
+        logger.exception('KOJA settings save failed')
+        return False
+
+def _research_external_allowed():
+    """The 'Allow external research sources' setting. Defaults to allowed if it cannot be read."""
+    try:
+        return bool(_koja_load_settings().get('allow_research', True))
+    except Exception:
+        return True
+
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
@@ -1353,21 +1406,25 @@ def settings():
     if request.method == 'POST':
         action = clean(request.form.get('action', 'preferences'))
         if action == 'preferences':
-            theme = clean(request.form.get('theme', 'system')).lower()
-            if theme not in ('system', 'light', 'dark'):
-                theme = 'system'
-            research = bool(request.form.get('allow_research'))
-            session['koja_settings'] = {'theme': theme, 'allow_research': research}
-            session.modified = True
-            flash('Settings saved successfully.', 'success')
+            saved = _koja_save_settings(_koja_settings_from_form(request.form))
+            if saved:
+                flash('Your settings were saved to your account.', 'success')
+            else:
+                flash('Settings were saved on this device only. Your account storage is not ready yet; run koja_user_settings.sql.', 'warning')
+            return redirect(url_for('settings'))
+        if action == 'reset':
+            saved = _koja_save_settings(dict(KOJA_SETTING_DEFAULTS))
+            flash('Settings were reset to the defaults.' if saved else 'Settings were reset on this device only.', 'success' if saved else 'warning')
             return redirect(url_for('settings'))
         flash('Unknown settings action.', 'danger')
         return redirect(url_for('settings'))
-    prefs = session.get('koja_settings', {'theme': 'system', 'allow_research': True})
+    prefs = _koja_load_settings()
     return render_page('Settings', r'''<div class="hero"><h2>KOJA Settings</h2><p>Manage your account, preferences, security and the platform engines connected to your KOJA services.</p></div>
 <div class="grid">
 <div class="card"><h3>Account</h3><p><strong>Name:</strong> {{ user.name or "KOJA User" }}</p><p><strong>Email:</strong> {{ user.email or "Not provided" }}</p><p><strong>Role:</strong> {{ user.role or "student" }}</p><p class="small">KOJA Identity protects account identity, verification and security across connected services.</p><button class="btn secondary" type="button" onclick="activateEngine('identity',this)">Activate KOJA Identity</button></div>
-<div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form></div>
+<div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form><form method="post" style="margin-top:6px"><input type="hidden" name="action" value="reset"><button class="btn secondary" type="submit">Reset to defaults</button></form></div>
+<div class="card"><h3>Notifications</h3><p>Choose which updates you receive and how: in the app, push, email or SMS.</p><a class="btn" href="{{ url_for('notification_settings') }}">Notification settings</a></div>
+<div class="card"><h3>Privacy and your data</h3><p>Read how KOJA uses your data, or request deletion of your account and data.</p><div class="actions"><a class="btn secondary" href="{{ url_for('public_privacy') }}">Privacy Policy</a><a class="btn secondary" href="{{ url_for('public_data_deletion') }}">Data deletion</a></div></div>
 <div class="card"><h3>KOJA Intelligence</h3><p>Shared intelligence for AI, Business, Market, payments and logistics. Settings access is recorded as a platform event.</p><button class="btn" type="button" onclick="activateEngine('intelligence',this)">Connect Intelligence</button></div>
 <div class="card"><h3>KOJA Workspace</h3><p>Workspace, documents, research and enterprise capabilities connected to your account.</p><button class="btn" type="button" onclick="activateEngine('workspace',this)">Connect Workspace</button></div>
 <div class="card"><h3>KOJA Ecosystem</h3><p>Connects Discovery, Market, Business, Logistics, AI and Pay into one platform layer.</p><button class="btn" type="button" onclick="activateEngine('ecosystem',this)">Connect Ecosystem</button></div>
@@ -1980,15 +2037,17 @@ def _research_score_logic(results, query):
 def _research_collect(query, year=None, author=None):
     """Run independent evidence sources concurrently so one slow provider does not block all others."""
     plan=_research_query_plan(query)
+    external=_research_external_allowed()  # Settings > "Allow external research sources"
     jobs=[]
     for q in plan:
-        jobs.extend([
-            ('google',lambda q=q: research_google(q,6)),
-            ('wikipedia',lambda q=q: research_wikipedia(q,4)),
-            ('openalex',lambda q=q: research_openalex(q,year,8)),
-            ('crossref',lambda q=q: research_crossref(q,year,author,8)),
-            ('koja',lambda q=q: research_local_documents(q,8)),
-        ])
+        if external:
+            jobs.extend([
+                ('google',lambda q=q: research_google(q,6)),
+                ('wikipedia',lambda q=q: research_wikipedia(q,4)),
+                ('openalex',lambda q=q: research_openalex(q,year,8)),
+                ('crossref',lambda q=q: research_crossref(q,year,author,8)),
+            ])
+        jobs.append(('koja',lambda q=q: research_local_documents(q,8)))
     raw=[]
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures=[pool.submit(fn) for _,fn in jobs]
@@ -8249,8 +8308,13 @@ def _notification_allowed(uid, notification_type):
     if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
     return bool(p.get('system_enabled',True))
 
+def _notification_channel_on(uid, channel):
+    """channel: push | email | sms. Missing preference rows mean the channel is on."""
+    p=first_row('koja_notification_preferences',{'user_id':str(uid)}) or {}
+    return p.get(channel+'_enabled', True) is not False
+
 def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_id=None):
-    if not uid or not _notification_allowed(uid,notification_type): return 0
+    if not uid or not _notification_allowed(uid,notification_type) or not _notification_channel_on(uid,'push'): return 0
     relay=(os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip()
     secret=os.getenv('FCM_RELAY_SECRET','').strip()
     if not relay or not secret or not table_exists('koja_fcm_devices'): return 0
@@ -8267,7 +8331,7 @@ def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_
     return sent
 
 def _send_web_push(uid,title,body,url=None,notification_type='system',related_id=None):
-    if not _notification_allowed(uid,notification_type): return 0
+    if not _notification_allowed(uid,notification_type) or not _notification_channel_on(uid,'push'): return 0
     try: from pywebpush import webpush
     except Exception: return 0
     pk=os.getenv('VAPID_PUBLIC_KEY','').strip(); sk=os.getenv('VAPID_PRIVATE_KEY','').strip(); subject=os.getenv('VAPID_CLAIMS_EMAIL','mailto:admin@koja-africa.com').strip()
@@ -8310,8 +8374,9 @@ def _notify_external_channels(uid, title, body, url, notification_type, related_
     try:
         u=find_user_by_id(uid) or {}
         email=clean(u.get('email'))
-        if email and email_configured(): send_plain_email(email,title,body)
-        _send_optional_sms(first_nonempty(u.get('phone'),u.get('mobile_money_phone')), f'{title}: {body}')
+        if email and email_configured() and _notification_channel_on(uid,'email'): send_plain_email(email,title,body)
+        if _notification_channel_on(uid,'sms'):
+            _send_optional_sms(first_nonempty(u.get('phone'),u.get('mobile_money_phone')), f'{title}: {body}')
     except Exception: logger.exception('KOJA multi-channel notification failed')
 
 def notify_user(uid,title,body,notification_type='system',related_id=None,url=None):
@@ -8347,7 +8412,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><label><input type='checkbox' name='email_enabled' {% if p.get('email_enabled',True) %}checked{% endif %}> Email notifications</label><label><input type='checkbox' name='sms_enabled' {% if p.get('sms_enabled',True) %}checked{% endif %}> SMS notifications</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -8370,7 +8435,7 @@ def api_notification_read_all():
 @app.route('/api/notifications/preferences',methods=['POST'])
 @login_required
 def api_notification_preferences():
-    uid=str(current_user()['id']); data=request.get_json(silent=True) or {}; payload={k:bool(data.get(k,False)) for k in ['push_enabled','sound_enabled','market_enabled','delivery_enabled','ai_enabled','messages_enabled','system_enabled']}; payload['user_id']=uid; payload['updated_at']=utc_now(); old=first_row('koja_notification_preferences',{'user_id':uid})
+    uid=str(current_user()['id']); data=request.get_json(silent=True) or {}; payload={k:bool(data.get(k,False)) for k in ['push_enabled','sound_enabled','market_enabled','delivery_enabled','ai_enabled','messages_enabled','system_enabled','email_enabled','sms_enabled']}; payload['user_id']=uid; payload['updated_at']=utc_now(); old=first_row('koja_notification_preferences',{'user_id':uid})
     if old: ok,err=db_update('koja_notification_preferences',{'user_id':uid},payload)
     else: row,err=db_insert('koja_notification_preferences',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok)),200 if ok else 400
@@ -9502,6 +9567,22 @@ def security_headers(response):
     response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
     response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
     response.headers.setdefault("Origin-Agent-Cluster", "?1")
+    # Content-Security-Policy. Inline scripts/styles are used throughout the templates,
+    # so 'unsafe-inline' is required. Hosts are the third-party sources the app loads.
+    response.headers.setdefault("Content-Security-Policy", (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://cdn.dashjs.org; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' blob: https:; "
+        "connect-src 'self' https: wss:; "
+        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv; "
+        "worker-src 'self' blob:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'self'"
+    ))
     if request.is_secure:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     if request.path.startswith("/api/"):
