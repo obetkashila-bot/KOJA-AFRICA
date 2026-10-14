@@ -929,7 +929,7 @@ BASE_HTML = r"""
 <meta name="theme-color" content="#0b1220">
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" onload="this.onload=null;this.rel='stylesheet'"><noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"></noscript>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -9599,7 +9599,7 @@ def security_headers(response):
         "img-src 'self' data: blob: https:; "
         "media-src 'self' blob: https:; "
         "connect-src 'self' https: wss:; "
-        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv; "
+        "frame-src 'self' https:; "
         "worker-src 'self' blob:; "
         "object-src 'none'; "
         "base-uri 'self'; "
@@ -12884,19 +12884,40 @@ def detect_live_provider(value):
     if 'twitch.tv' in u: return 'twitch'
     if '.m3u8' in u: return 'hls'
     if '.mpd' in u: return 'dash'
-    if any(x in u.split('?')[0] for x in ('.mp4','.webm','.mov','.m4v')): return 'video'
+    if any(x in u.split('?')[0] for x in ('.mp4','.webm','.mov','.m4v','.ogv','.ogg','.mp3','.m4a','.aac','.wav')): return 'video'
     if 'microsoftstream.com' in u or 'stream.microsoft.com' in u: return 'microsoft'
     return 'other'
 
 def youtube_embed_url(value):
-    from urllib.parse import urlparse, parse_qs, urljoin
+    from urllib.parse import urlparse, parse_qs
     u=clean(value)
     try:
-        q=parse_qs(urlparse(u).query)
-        vid=(q.get('v') or [''])[0]
-        if not vid and 'youtu.be/' in u: vid=urlparse(u).path.strip('/').split('/')[0]
-        if not vid and '/live/' in u: vid=u.split('/live/',1)[1].split('?',1)[0].split('/',1)[0]
-        if vid: return f'https://www.youtube.com/embed/{quote(vid,safe="")}?autoplay=1&rel=0'
+        p=urlparse(u)
+        host=(p.hostname or '').lower()
+        vid=''
+        if host in ('youtu.be','www.youtu.be'):
+            vid=p.path.strip('/').split('/')[0]
+        elif host.endswith('youtube.com') or host.endswith('youtube-nocookie.com'):
+            vid=(parse_qs(p.query).get('v') or [''])[0]
+            if not vid:
+                parts=[x for x in p.path.split('/') if x]
+                if len(parts)>=2 and parts[0] in ('live','embed','shorts','v'):
+                    vid=parts[1]
+        vid=re.sub(r'[^A-Za-z0-9_-]','',vid)
+        if vid: return f'https://www.youtube.com/embed/{vid}?autoplay=1&rel=0'
+    except Exception: pass
+    return ''
+
+def microsoft_embed_url(value):
+    from urllib.parse import urlparse
+    u=clean(value)
+    try:
+        p=urlparse(u)
+        host=(p.hostname or '').lower()
+        if not (host=='microsoftstream.com' or host.endswith('.microsoftstream.com')): return ''
+        query=('?'+p.query) if p.query else ''
+        if p.path.startswith('/embed/video/'): return f'https://{host}{p.path}{query}'
+        if p.path.startswith('/video/'): return f'https://{host}/embed'+p.path+query
     except Exception: pass
     return ''
 
@@ -12917,12 +12938,80 @@ def facebook_embed_url(value):
     u=clean(value)
     return 'https://www.facebook.com/plugins/video.php?href='+quote(u,safe='')+'&show_text=false&autoplay=true' if u else ''
 
+_EMBED_CACHE = {}
+
+def _host_is_public(host):
+    """Refuse hosts that resolve to private, loopback, link-local or reserved addresses (no internal fetches)."""
+    import socket, ipaddress
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            return False
+    return bool(infos)
+
+def _page_allows_embedding(url):
+    """True only for https pages that the publisher allows to be shown inside another site."""
+    import time as _t
+    from urllib.parse import urlparse
+    p = urlparse(url or '')
+    if p.scheme != 'https' or not p.hostname:
+        return False
+    hit = _EMBED_CACHE.get(url)
+    now = _t.time()
+    if hit and now - hit[1] < 3600:
+        return hit[0]
+    ok = False
+    try:
+        if _host_is_public(p.hostname):
+            r = requests.get(url, headers={'User-Agent': 'KOJA-AFRICA-embed-check/1.0'}, timeout=5, allow_redirects=False, stream=True)
+            try:
+                xfo = (r.headers.get('X-Frame-Options') or '').upper()
+                csp = (r.headers.get('Content-Security-Policy') or '').lower()
+                blocked = 'DENY' in xfo or 'SAMEORIGIN' in xfo
+                m = re.search(r'frame-ancestors([^;]*)', csp)
+                if m and not any(x in m.group(1) for x in ('*', 'https:', 'koja-africa.onrender.com')):
+                    blocked = True
+                ok = r.status_code == 200 and not blocked
+            finally:
+                r.close()
+    except Exception:
+        ok = False
+    if len(_EMBED_CACHE) > 500:
+        _EMBED_CACHE.clear()
+    _EMBED_CACHE[url] = (ok, now)
+    return ok
+
+def _iframe_or_link(src, label, url):
+    # An empty iframe is a blank page; send people to the original link instead.
+    return {'kind':'iframe','src':src,'label':label} if src else {'kind':'other','src':url,'label':label}
+
+MEDIA_LIVE_CATEGORIES = ['Action Movies', 'Nollywood', 'Hollywood', 'Korean Movies', 'Latest', 'New Releases', 'Crime', 'News', 'Sports', 'Music', 'Comedy', 'Documentary', 'Kids', 'Other']
+
+def media_live_category(value):
+    v = clean(value)
+    return v if v in MEDIA_LIVE_CATEGORIES else 'Other'
+
+SOURCE_ONLY_SCHEMES = ('rtmp://', 'rtmps://', 'rtsp://', 'rtsps://')
+SOURCE_ONLY_EXTENSIONS = ('.mkv', '.flv', '.ts', '.mpg', '.mpeg', '.avi', '.wmv', '.3gp')
+
+def is_source_only_url(url):
+    """RTMP/RTSP and container formats browsers cannot play. They need a streaming service to convert them to HLS first."""
+    u = clean(url).lower()
+    return u.startswith(SOURCE_ONLY_SCHEMES) or u.split('?')[0].endswith(SOURCE_ONLY_EXTENSIONS)
+
 def live_player_config(stream):
     url=clean(stream.get('stream_url'))
-    provider=clean(stream.get('provider')).lower() or detect_live_provider(url)
-    if provider=='youtube': return {'kind':'iframe','src':youtube_embed_url(url),'label':'YouTube Live'}
-    if provider=='facebook': return {'kind':'iframe','src':facebook_embed_url(url),'label':'Facebook Live'}
-    if provider=='twitch': return {'kind':'iframe','src':twitch_embed_url(url),'label':'Twitch Live'}
+    stored=clean(stream.get('provider')).lower()
+    # A stored 'other' (or blank) is re-checked against the URL, so saved links still play.
+    provider=stored if stored and stored!='other' else detect_live_provider(url)
+    if provider=='youtube': return _iframe_or_link(youtube_embed_url(url),'YouTube Live',url)
+    if provider=='facebook': return _iframe_or_link(facebook_embed_url(url),'Facebook Live',url)
+    if provider=='twitch': return _iframe_or_link(twitch_embed_url(url),'Twitch Live',url)
+    if provider=='microsoft': return _iframe_or_link(microsoft_embed_url(url),'Microsoft Stream',url)
     if provider=='hls' or '.m3u8' in url.lower(): return {'kind':'hls','src':url,'label':'HLS Live'}
     if provider=='dash' or '.mpd' in url.lower(): return {'kind':'dash','src':url,'label':'DASH Live'}
     if provider=='video': return {'kind':'video','src':url,'label':'Direct Live Video'}
@@ -12930,37 +13019,124 @@ def live_player_config(stream):
 
 @app.route('/media-live')
 @app.route('/media/live')
-@login_required
 def media_live():
-    rows=db_select('koja_media_live_streams',{'is_public':'eq.true'},order='created_at.desc',limit=100) or []
-    for r in rows: r['_provider']=clean(r.get('provider')) or detect_live_provider(r.get('stream_url'))
+    rows=db_select('koja_media_live_streams',{'is_public':'eq.true'},order='created_at.desc',limit=300) or []
+    for r in rows:
+        r['_provider']=clean(r.get('provider')) or detect_live_provider(r.get('stream_url'))
+        r['_category']=media_live_category(r.get('category'))
+    active=clean(request.args.get('category'))
+    if active in MEDIA_LIVE_CATEGORIES:
+        rows=[r for r in rows if r['_category']==active]
+    sections=[(c,[r for r in rows if r['_category']==c]) for c in MEDIA_LIVE_CATEGORIES]
+    sections=[(c,items) for c,items in sections if items]
     return render_page('KOJA Live',r'''<style>
 .live-home{background:#05070b;color:#f7f9fc;min-height:calc(100vh - 110px);padding-bottom:35px}.live-head{padding:28px 20px;background:linear-gradient(135deg,#07101b,#101722);border-bottom:1px solid rgba(255,255,255,.08)}.live-head h1{margin:0 0 7px;font-size:clamp(28px,5vw,48px)}.live-head p{color:#aeb9c8}.live-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:15px;padding:20px}.live-card{background:#0b1119;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;text-decoration:none;color:#fff}.live-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#111923}.live-placeholder{width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#0c1622,#111923);display:grid;place-items:center;font-weight:800;letter-spacing:.12em}.live-card-info{padding:12px}.live-badge{display:inline-block;background:#e50914;border-radius:999px;padding:4px 7px;font-size:10px;font-weight:800}.live-provider{font-size:11px;color:#8f9caf;margin-top:7px}
-</style><div class="live-home"><div class="live-head"><div style="color:#63b4ff;font-weight:800;letter-spacing:.15em">KOJA MEDIA</div><h1>KOJA LIVE</h1><p>Watch permitted live streams from KOJA creators, businesses and external providers.</p><div class="live-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a>{% if user %}<a class="btn" href="{{ url_for('media_live_add') }}">Add Live Stream</a>{% endif %}</div></div><div class="live-grid">{% for s in streams %}<a class="live-card" href="{{ url_for('media_live_watch',stream_id=s.id) }}">{% if s.thumbnail_url %}<img src="{{ s.thumbnail_url }}" loading="lazy" alt="{{ s.title }}">{% else %}<div class="live-placeholder">KOJA LIVE</div>{% endif %}<div class="live-card-info"><span class="live-badge">LIVE</span><h3>{{ s.title }}</h3><div class="live-provider">{{ s._provider|title }} · {{ s.category or 'Live Stream' }}</div></div></a>{% else %}<div class="card"><h3>No live streams yet.</h3><p>Sign in and add an external live stream URL.</p></div>{% endfor %}</div></div>''',streams=rows)
+</style><div class="live-home"><div class="live-head"><div style="color:#63b4ff;font-weight:800;letter-spacing:.15em">KOJA MEDIA</div><h1>KOJA LIVE</h1><p>Watch permitted live streams from KOJA creators, businesses and external providers.</p><div class="live-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a>{% if can_publish %}<a class="btn" href="{{ url_for('media_live_add') }}">Add Live Stream</a>{% endif %}<a class="btn secondary" href="{{ url_for('media_live_manage') }}">Manage</a></div></div><div style="padding:14px 20px 0;display:flex;gap:8px;flex-wrap:wrap"><a class="btn secondary" href="{{ url_for('media_live') }}" style="{{ '' if active else 'background:#e50914' }}">All</a>{% for c in cats %}<a class="btn secondary" href="{{ url_for('media_live', category=c) }}" style="{{ 'background:#e50914' if active==c else '' }}">{{ c }}</a>{% endfor %}</div>{% for cname, items in sections %}<h2 class="live-cat">{{ cname }}</h2><div class="live-grid">{% for s in items %}<a class="live-card" href="{{ url_for('media_live_watch',stream_id=s.id) }}">{% if s.thumbnail_url %}<img src="{{ s.thumbnail_url }}" loading="lazy" alt="{{ s.title }}">{% else %}<div class="live-placeholder">KOJA LIVE</div>{% endif %}<div class="live-card-info"><span class="live-badge">LIVE</span><h3>{{ s.title }}</h3><div class="live-provider">{{ s._provider|title }} · {{ s.category or 'Live Stream' }}</div></div></a>{% endfor %}</div>{% endfor %}{% if not sections %}<div class="card"><h3>No live streams yet.</h3><p>Streams are added by KOJA admins and approved partners.</p></div>{% endif %}</div></div>''',sections=sections,cats=MEDIA_LIVE_CATEGORIES,active=active,can_publish=_media_live_can_publish(current_user()))
+
+# ---- KOJA Live access: admins and approved partners publish; owners and admins remove ----
+def _media_live_partner(uid):
+    if not uid:
+        return None
+    return first_row('koja_media_live_partners', {'user_id': str(uid), 'status': 'approved'})
+
+def _media_live_can_publish(user):
+    return bool(user) and (bool(user.get('is_admin')) or bool(_media_live_partner(user.get('id'))))
+
+def _media_live_can_manage(user, stream):
+    return bool(user) and bool(stream) and (bool(user.get('is_admin')) or str(stream.get('owner_id') or '') == str(user.get('id') or ''))
+
+@app.route('/media/live/manage')
+@login_required
+def media_live_manage():
+    user = current_user()
+    if not _media_live_can_publish(user):
+        flash('Live streams are managed by KOJA admins and approved partners.', 'warning')
+        return redirect(url_for('media_live'))
+    if user.get('is_admin'):
+        rows = db_select('koja_media_live_streams', order='created_at.desc', limit=300) or []
+    else:
+        rows = db_select('koja_media_live_streams', {'owner_id': str(user.get('id'))}, order='created_at.desc', limit=300) or []
+    return render_page('Manage KOJA Live', r"""
+<div class="hero"><h1>Manage KOJA Live</h1><p>Admins see every stream. Partners see the streams they added.</p>
+<div class="actions"><a class="btn" href="{{ url_for('media_live_add') }}">Add a stream</a></div></div>
+{% for s in rows %}<div class="card"><h3>{{ s.title }}</h3><p class="small">{{ s.provider or 'other' }} · {{ s.stream_url }}</p>
+<p><span class="badge">{{ 'Public' if s.is_public else 'Removed' }}</span></p>
+{% if s.is_public %}<form method="post" action="{{ url_for('media_live_remove', stream_id=s.id) }}">{{ csrf }}<button class="btn secondary" type="submit">Remove from KOJA Live</button></form>{% endif %}</div>
+{% else %}<div class="card"><p>No streams yet.</p></div>{% endfor %}""", rows=rows, csrf=Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
+
+@app.route('/media/live/<stream_id>/remove', methods=['POST'])
+@login_required
+def media_live_remove(stream_id):
+    stream = first_row('koja_media_live_streams', {'id': clean(stream_id)})
+    if not stream:
+        abort(404)
+    if not _media_live_can_manage(current_user(), stream):
+        abort(403)
+    ok, err = db_update('koja_media_live_streams', {'id': stream['id']}, {'is_public': False, 'updated_at': utc_now()})
+    flash('Stream removed from KOJA Live.' if ok else 'Could not remove the stream.', 'success' if ok else 'danger')
+    return redirect(url_for('media_live_manage'))
+
+@app.route('/admin/media-live/partners', methods=['GET', 'POST'])
+@admin_required
+def media_live_partners():
+    if request.method == 'POST':
+        action = clean(request.form.get('action'))
+        ident = clean(request.form.get('identifier'))
+        uid = ident
+        if '@' in ident:
+            u = find_user_by_email(ident)
+            uid = (u or {}).get('id') or ''
+        if not uid:
+            flash('No account found for that email or user ID.', 'danger')
+            return redirect(url_for('media_live_partners'))
+        existing = first_row('koja_media_live_partners', {'user_id': uid})
+        status = 'approved' if action == 'approve' else 'revoked'
+        if existing:
+            db_update('koja_media_live_partners', {'user_id': uid}, {'status': status, 'updated_at': utc_now()})
+        else:
+            db_insert('koja_media_live_partners', {'user_id': uid, 'status': status, 'added_by': (current_user() or {}).get('id'), 'created_at': utc_now(), 'updated_at': utc_now()})
+        flash('Partner %s.' % status, 'success')
+        return redirect(url_for('media_live_partners'))
+    partners = db_select('koja_media_live_partners', order='created_at.desc', limit=300) or []
+    return render_page('KOJA Live partners', r"""
+<div class="hero"><h1>KOJA Live partners</h1><p>Only admins and approved partners can add live streams. Partners paste the stream URL; they can remove their own streams.</p></div>
+<div class="card"><form method="post">{{ csrf }}<label>Partner email or user ID</label><input name="identifier" required>
+<button class="btn" name="action" value="approve" type="submit">Approve partner</button>
+<button class="btn secondary" name="action" value="revoke" type="submit">Revoke</button></form></div>
+<div class="card"><h3>Partners</h3>{% for p in partners %}<p>{{ p.user_id }} · <strong>{{ p.status }}</strong></p>{% else %}<p>No partners yet.</p>{% endfor %}</div>""",
+        partners=partners, csrf=Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
 
 @app.route('/media-live/add', methods=['GET','POST'])
 @app.route('/media/live/add', methods=['GET','POST'])
 @login_required
 def media_live_add():
+    if not _media_live_can_publish(current_user()):
+        flash('Live streams are added by KOJA admins and approved partners.', 'warning')
+        return redirect(url_for('media_live'))
     if request.method=='POST':
-        title=clean(request.form.get('title')); stream_url=clean(request.form.get('stream_url')); thumbnail=clean(request.form.get('thumbnail_url')); category=clean(request.form.get('category')) or 'Live Stream'; provider=clean(request.form.get('provider')).lower() or detect_live_provider(stream_url)
+        title=clean(request.form.get('title')); stream_url=clean(request.form.get('stream_url')); thumbnail=clean(request.form.get('thumbnail_url')); category=media_live_category(request.form.get('category')); provider=clean(request.form.get('provider')).lower() or detect_live_provider(stream_url)
         if not title or not stream_url:
             flash('Title and live stream URL are required.','danger'); return redirect(url_for('media_live_add'))
+        if is_source_only_url(stream_url):
+            flash('RTMP, RTSP, MKV, FLV and MPEG-TS sources cannot be played directly. Send the source to your streaming service, then paste the HLS playback link from the service (it ends in .m3u8).','warning')
+            return redirect(url_for('media_live_add'))
         if not re.match(r'^https://',stream_url,re.I):
             flash('For external live streams, use a secure HTTPS URL.','danger'); return redirect(url_for('media_live_add'))
         if provider not in {'youtube','facebook','twitch','hls','dash','video','microsoft','other'}: provider=detect_live_provider(stream_url)
         row,err=db_insert('koja_media_live_streams',{'owner_id':(current_user() or {}).get('id'),'title':title,'stream_url':stream_url,'provider':provider,'thumbnail_url':thumbnail or None,'category':category,'is_public':True,'created_at':utc_now(),'updated_at':utc_now()})
         if err: flash('Could not save the live stream. Run the KOJA Live migration in Supabase first.','danger')
         else: flash('Live stream connected to KOJA Media.','success'); return redirect(url_for('media_live'))
-    return render_page('Add KOJA Live Stream',r'''<div class="hero"><h1>Add KOJA Live Stream</h1><p>Connect a permitted external live URL without downloading or re-hosting the stream.</p></div><div class="card" style="max-width:760px;margin:auto"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Title</label><input name="title" maxlength="180" required placeholder="Live event title"><label>Live URL</label><input name="stream_url" type="url" required placeholder="https://...m3u8 or provider live URL"><label>Provider</label><select name="provider"><option value="">Auto detect</option><option value="youtube">YouTube Live</option><option value="facebook">Facebook Live</option><option value="twitch">Twitch</option><option value="hls">HLS (.m3u8)</option><option value="dash">DASH (.mpd)</option><option value="video">Direct video</option><option value="microsoft">Microsoft / Stream</option><option value="other">Other</option></select><label>Thumbnail URL (optional)</label><input name="thumbnail_url" type="url" placeholder="https://..."><label>Category</label><input name="category" maxlength="80" placeholder="News, Sports, Education, Business..."><p class="small">KOJA can play direct HLS/DASH/video URLs and supported provider embeds. A normal webpage URL is not automatically a video stream.</p><button class="btn" type="submit">Connect Live Stream</button></form></div>''')
+    return render_page('Add KOJA Live Stream',r'''<div class="hero"><h1>Add KOJA Live Stream</h1><p>Connect a permitted external live URL without downloading or re-hosting the stream.</p></div><div class="card" style="max-width:760px;margin:auto"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Title</label><input name="title" maxlength="180" required placeholder="Live event title"><label>Live URL</label><input name="stream_url" type="url" required placeholder="https://...m3u8 or provider live URL"><label>Provider</label><select name="provider"><option value="">Auto detect</option><option value="youtube">YouTube Live</option><option value="facebook">Facebook Live</option><option value="twitch">Twitch</option><option value="hls">HLS (.m3u8)</option><option value="dash">DASH (.mpd)</option><option value="video">Direct video</option><option value="microsoft">Microsoft / Stream</option><option value="other">Other</option></select><label>Thumbnail URL (optional)</label><input name="thumbnail_url" type="url" placeholder="https://..."><label>Category</label><select name="category">{% for c in cats %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select><p class="small">KOJA plays HLS (.m3u8), DASH (.mpd), direct video and audio files, YouTube, Facebook, Twitch and Microsoft Stream links, and web pages that allow embedding. For RTMP, RTSP, MKV, FLV or MPEG-TS sources, use your streaming service and paste its HLS playback link (.m3u8).</p><button class="btn" type="submit">Connect Live Stream</button></form></div>''',cats=MEDIA_LIVE_CATEGORIES)
 
 @app.route('/media-live/<stream_id>')
 @app.route('/media/live/<stream_id>')
-@login_required
 def media_live_watch(stream_id):
     stream=first_row('koja_media_live_streams',{'id':stream_id})
     if not stream or not as_bool(stream.get('is_public')): abort(404)
     cfg=live_player_config(stream)
+    if cfg['kind']=='other' and _page_allows_embedding(cfg['src']):
+        # The publisher allows embedding, so play the page inline instead of only linking to it.
+        cfg={'kind':'iframe','src':cfg['src'],'label':'External Live URL'}
     return render_page('KOJA Live Player',r'''<style>
 .koja-live-watch{background:#05070b;color:#fff;min-height:calc(100vh - 110px);padding:14px}.koja-live-watch-inner{max-width:1200px;margin:auto}.live-player{background:#000;border-radius:14px;overflow:hidden;position:relative;min-height:52vh;display:grid;place-items:center}.live-player video,.live-player iframe{width:100%;height:68vh;min-height:360px;border:0;background:#000}.live-status{position:absolute;left:12px;top:12px;z-index:12;background:#e50914;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}.live-info{padding:16px 0}.live-info h1{font-size:clamp(24px,4vw,40px);margin:0 0 7px}.live-note{color:#9eabbc;font-size:13px}.live-back{margin-bottom:12px}.koja-load{position:absolute;inset:0;z-index:10;display:grid;place-items:center;pointer-events:none;opacity:1;transition:opacity .25s ease;background:rgba(0,0,0,.26)}.koja-load.hide{opacity:0}.koja-load-mark{width:58px;height:58px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8,#f2b84b);box-shadow:0 8px 28px rgba(0,0,0,.45);animation:kojaPulse 1.25s ease-in-out infinite}.koja-load-mark svg{width:38px;height:38px}.koja-load span{position:absolute;margin-top:88px;font-size:12px;color:#fff;opacity:.86}.koja-watermark{position:absolute;right:14px;bottom:58px;z-index:11;width:42px;height:42px;opacity:.82;pointer-events:none;transition:opacity .25s ease,transform .25s ease}.koja-watermark.hide{opacity:0;transform:scale(.9)}.koja-watermark span{width:100%;height:100%;border-radius:12px;display:grid;place-items:center;background:rgba(9,18,28,.62);backdrop-filter:blur(5px)}.koja-watermark svg{width:27px;height:27px}.koja-fullscreen{position:absolute;right:12px;top:12px;z-index:13;border:0;background:rgba(0,0,0,.58);color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer}.koja-retry{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:14;display:none}.koja-retry.show{display:block}.koja-error{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:13;width:min(92%,520px);display:none;text-align:center;padding:20px;border-radius:14px;background:rgba(8,12,18,.94);border:1px solid rgba(255,255,255,.12);box-shadow:0 14px 50px rgba(0,0,0,.45)}.koja-error.show{display:block}.koja-error h3{margin:0 0 7px}.koja-error p{margin:0 0 14px;color:#b7c1ce;font-size:13px}@keyframes kojaPulse{0%,100%{transform:scale(.94);opacity:.72}50%{transform:scale(1);opacity:1}}@media(max-width:600px){.koja-live-watch{padding:8px}.live-player video,.live-player iframe{height:58vh;min-height:280px}.koja-watermark{right:10px;bottom:50px;width:34px;height:34px}.koja-watermark svg{width:22px;height:22px}}
 </style><div class="koja-live-watch"><div class="koja-live-watch-inner"><div class="live-back"><a class="btn secondary" href="{{ url_for('media_live') }}">Back to KOJA Live</a></div><div class="live-player" id="livePlayer"><span class="live-status">LIVE</span>{% if cfg.kind in ['hls','dash','video'] %}<video id="externalLiveVideo" controls autoplay playsinline preload="auto"></video><button id="kojaFullscreen" class="koja-fullscreen" type="button">Fullscreen</button><div id="kojaLoading" class="koja-load"><div class="koja-load-mark"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span>Connecting to live stream…</span></div><div id="kojaWatermark" class="koja-watermark hide" aria-hidden="true"><span><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div id="kojaError" class="koja-error"><h3>Live stream temporarily unavailable</h3><p>KOJA is trying to reconnect. If the source is offline, please try again later.</p><button id="kojaErrorRetry" class="btn" type="button">Retry now</button></div><div id="kojaRetry" class="koja-retry"><button class="btn" type="button">Retry</button></div>{% elif cfg.kind=='iframe' %}<iframe src="{{ cfg.src }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>{% else %}<div style="padding:30px;text-align:center"><h2>Provider requires a supported player</h2><p class="live-note">This URL cannot be converted into a video player automatically.</p><a class="btn" href="{{ cfg.src }}" target="_blank" rel="noopener">Open Source</a></div>{% endif %}</div><div class="live-info"><h1>{{ stream.title }}</h1><div class="live-note">{{ stream.provider|title }} · {{ stream.category or 'Live Stream' }}</div><p>{{ stream.description or 'External live stream connected through KOJA Media.' }}</p></div></div></div>
