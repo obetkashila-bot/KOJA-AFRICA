@@ -3120,7 +3120,9 @@ def can_access_assignment(item, user):
         return False
     if user.get("is_admin"):
         return True
-    return str(assignment_owner_id(item) or "") == str(user.get("id") or "")
+    uid = str(user.get("id") or "")
+    answerer = str((item.get("answerer_id") if isinstance(item, dict) else None) or "")
+    return str(assignment_owner_id(item) or "") == uid or (bool(answerer) and answerer == uid)
 
 def assignment_answer_released(item):
     """An answer (text or PDF) is visible to the owner only after the Approval Centre approves it."""
@@ -3186,8 +3188,10 @@ def assignments():
         rows=db_select("assignments",filters={"owner_id":user["id"]},order="created_at.desc",limit=100)
         if not rows:
             rows=db_select("assignments",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
+    for _r in rows or []:
+        _r["_paid"]=_assignment_answer_paid(_r,user)
     return render_page("Assignments",r"""
-<div class="card"><h2>Upload Assignment</h2>
+{% if can_answer %}<div class="card"><h3>Answer queue</h3><p class="small">Assignments assigned to you to answer.</p><a class="btn" href="{{ url_for('assignment_answer_queue') }}">Open answer queue</a></div>{% endif %}<div class="card"><h2>Upload Assignment</h2>
 <p class="small">Each assignment is linked to your account as its specific sender and owner. Other users cannot see your assignment documents.</p>
 <form method="post" enctype="multipart/form-data">
 <label>Assignment Title</label><input name="title" required>
@@ -3203,12 +3207,11 @@ def assignments():
 <a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>
 <a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}"> Read Question</a>
 {% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}
-{% if item.get("answer_file_path") and item.get("answer_approval_status") == "approved" %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% endif %}
-{% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answered') }}">Download Answered File</a>{% endif %}
+{% if item.get("answer_approval_status") == "approved" and (item.get("answer_file_path") or item.get("answer")) %}{% if item.get("_paid") or can_answer %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% elif item.get("answer_price") %}<form method="post" action="{{ url_for('assignment_answer_buy',assignment_id=item.get('id')) }}" class="actions"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="network"><option value="MTN">MTN</option><option value="Airtel">Airtel</option></select><input name="phone" placeholder="Mobile money number" maxlength="20"><button class="btn success" type="submit">Pay K{{ item.get("answer_price")|int }} to download answer</button></form>{% else %}<span class="small">Answer ready. Price not set yet.</span>{% endif %}{% endif %}
 </div>
 {% else %}<p>No assignments found for this account.</p>{% endfor %}
 </div>
-""",rows=rows,current_user=user)
+""",rows=rows,current_user=user,can_answer=_assignment_is_answerer(user))
 
 @app.route("/assignments/<assignment_id>/question", methods=["GET"])
 @login_required
@@ -3226,8 +3229,8 @@ def assignment_question_view(assignment_id):
 <div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question was provided." }}</div>
 <div class="actions" style="margin-top:16px"><a class="btn" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>{% if item.get("file_path") %}<a class="btn secondary" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}</div>
 </div>
-{% if item.get("answer") and (is_admin or item.get("answer_approval_status") == "approved") %}<div class="card"><h3>Answer</h3><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("answer") }}</div></div>{% endif %}
-""", item=item, is_admin=bool((current_user() or {}).get("is_admin")))
+{% if item.get("answer") and show_answer %}<div class="card"><h3>Answer</h3><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("answer") }}</div></div>{% endif %}
+""", item=item, is_admin=bool((current_user() or {}).get("is_admin")), show_answer=bool((current_user() or {}).get("is_admin")) or (assignment_answer_released(item) and _assignment_answer_paid(item, user)))
 
 @app.route("/assignments/<assignment_id>/question/download", methods=["GET"])
 @login_required
@@ -3263,8 +3266,13 @@ def assignment_file(assignment_id, kind):
     }
     if kind not in field_map:
         return "Invalid file type.",400
-    if kind in ("answer","answered") and not user.get("is_admin") and not assignment_answer_released(item):
-        return "This answer has not been approved for release yet.",403
+    is_answerer = bool(item.get("answerer_id")) and str(user.get("id")) == str(item.get("answerer_id"))
+    if kind == "answer" and not (user.get("is_admin") or is_answerer) and not assignment_answer_released(item):
+        return "This answer has not been approved for release yet.", 403
+    if kind == "answer" and not (user.get("is_admin") or is_answerer or _assignment_answer_paid(item, user)):
+        return "Pay for this answer to download it.", 403
+    if kind == "answered" and not user.get("is_admin") and not assignment_answer_released(item):
+        return "This answer has not been approved for release yet.", 403
     path_field,name_field,mime_field=field_map[kind]
     path=item.get(path_field)
     if not path:
@@ -3278,6 +3286,370 @@ def assignment_file(assignment_id, kind):
     except Exception:
         logger.exception("Assignment file retrieval failed")
         return "File could not be retrieved.",503
+
+# ============================================================
+# Assignment answerers, pay-to-download answers and the KOJA fee
+# An admin assigns an approved answerer to each assignment. The answerer writes the answer and
+# sets the price. Admin approves it. The student pays the price to download it. KOJA keeps
+# ASSIGNMENT_ADMIN_FEE for each paid download; the rest goes to the answerer.
+# ============================================================
+ASSIGNMENT_ADMIN_FEE = 2  # K2 kept by KOJA for each paid answer download (whole kwacha)
+ASSIGNMENT_CURRENCY = "ZMW"
+
+def _money2(v):
+    try: return round(float(v or 0), 2)
+    except Exception: return 0.0
+
+def _assignment_answerer_row(uid):
+    if not uid:
+        return None
+    return first_row("koja_assignment_answerers", {"user_id": str(uid), "status": "approved"})
+
+def _assignment_is_answerer(user):
+    return bool(user) and (bool(user.get("is_admin")) or bool(_assignment_answerer_row(user.get("id"))))
+
+def _assignment_answer_paid(item, user):
+    if not item or not user:
+        return False
+    if user.get("is_admin"):
+        return True
+    return bool(first_row("koja_assignment_payments", {"assignment_id": str(item.get("id")), "buyer_id": str(user.get("id")), "status": "paid"}))
+
+def _valid_answer_price(raw):
+    """Whole kwacha, above the KOJA fee, so the answerer always receives something."""
+    try:
+        price = int(round(float(str(raw).strip())))
+    except Exception:
+        return None
+    return price if price > ASSIGNMENT_ADMIN_FEE else None
+
+@app.route("/admin/assignment-answerers", methods=["GET", "POST"])
+@admin_required
+def admin_assignment_answerers():
+    if request.method == "POST":
+        action = clean(request.form.get("action"))
+        ident = clean(request.form.get("identifier"))
+        uid = ident
+        if "@" in ident:
+            u = find_user_by_email(ident)
+            uid = (u or {}).get("id") or ""
+        if not uid:
+            flash("No account found for that email or user ID.", "danger")
+            return redirect(url_for("admin_assignment_answerers"))
+        status = "approved" if action == "approve" else "revoked"
+        if first_row("koja_assignment_answerers", {"user_id": uid}):
+            _, err = db_update("koja_assignment_answerers", {"user_id": uid}, {"status": status, "updated_at": utc_now()})
+        else:
+            _, err = db_insert("koja_assignment_answerers", {"user_id": uid, "status": status, "added_by": (current_user() or {}).get("id"), "created_at": utc_now(), "updated_at": utc_now()})
+        flash(("Answerer %s." % status) if not err else "Could not save. Run the assignment answers migration first.", "success" if not err else "danger")
+        return redirect(url_for("admin_assignment_answerers"))
+    answerers = db_select("koja_assignment_answerers", order="created_at.desc", limit=300) or []
+    return render_page("Assignment answerers", r"""
+<div class="hero"><h1>Assignment answerers</h1><p>Approved answerers write answers for the assignments an admin assigns to them. They set the price. Admin approves each answer before a student can pay for it.</p></div>
+<div class="card"><form method="post"><label>Answerer email or user ID</label><input name="identifier" required>
+<button class="btn" name="action" value="approve" type="submit">Approve answerer</button>
+<button class="btn secondary" name="action" value="revoke" type="submit">Revoke</button></form></div>
+<div class="card"><h3>Answerers</h3>{% for p in answerers %}<p>{{ p.user_id }} · <strong>{{ p.status }}</strong></p>{% else %}<p>No answerers yet.</p>{% endfor %}</div>""",
+        answerers=answerers)
+
+@app.route("/admin/assignments/<assignment_id>/assign-answerer", methods=["POST"])
+@admin_required
+def admin_assign_answerer(assignment_id):
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    ident = clean(request.form.get("answerer"))
+    uid = ident
+    if "@" in ident:
+        u = find_user_by_email(ident)
+        uid = (u or {}).get("id") or ""
+    if not uid or not _assignment_answerer_row(uid):
+        flash("That person is not an approved answerer. Approve them first.", "danger")
+        return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+    _, err = db_update("assignments", {"id": assignment_id}, {"answerer_id": uid, "updated_at": utc_now()})
+    flash("Answerer assigned." if not err else "Could not assign the answerer. Run the assignment answers migration first.", "success" if not err else "danger")
+    return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+
+@app.route("/assignments/answer-queue")
+@login_required
+def assignment_answer_queue():
+    user = current_user()
+    if not _assignment_is_answerer(user):
+        flash("Only approved answerers can open the answer queue.", "warning")
+        return redirect(url_for("assignments"))
+    rows = db_select("assignments", order="created_at.desc", limit=200) or []
+    if not user.get("is_admin"):
+        rows = [r for r in rows if str(r.get("answerer_id") or "") == str(user.get("id"))]
+    earned = sum(_money2(p.get("answerer_amount")) for p in (db_select("koja_assignment_payments", {"answerer_id": str(user.get("id")), "status": "paid"}, limit=500) or []))
+    return render_page("Answer queue", r"""
+<div class="hero"><h1>Answer queue</h1><p>Assignments assigned to you. Your earnings from paid downloads: K{{ earned }}</p></div>
+{% for item in rows %}<div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3><p>{{ item.get("description") or "" }}</p>
+<p class="small">Tracking: {{ item.get("tracking_code") or "—" }} · Status: {{ item.get("status") or "submitted" }}{% if item.get("answer_price") %} · Price: K{{ item.get("answer_price")|int }}{% endif %}</p>
+<a class="btn" href="{{ url_for('assignment_answer_queue_item',assignment_id=item.get('id')) }}">Write answer</a></div>
+{% else %}<div class="card"><p>No assignments assigned to you yet.</p></div>{% endfor %}""",
+        rows=rows, earned=round(earned, 2))
+
+@app.route("/assignments/answer-queue/<assignment_id>", methods=["GET", "POST"])
+@login_required
+def assignment_answer_queue_item(assignment_id):
+    user = current_user()
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    if not (user.get("is_admin") or str(item.get("answerer_id") or "") == str(user.get("id"))):
+        abort(403)
+    if request.method == "POST":
+        answer_text = clean(request.form.get("answer"))
+        pdf = request.files.get("answer_pdf")
+        price = _valid_answer_price(request.form.get("answer_price"))
+        if price is None:
+            flash("Set a whole-kwacha price above K%d (the KOJA fee)." % ASSIGNMENT_ADMIN_FEE, "danger")
+            return redirect(url_for("assignment_answer_queue_item", assignment_id=assignment_id))
+        if not answer_text and not (pdf and pdf.filename) and not item.get("answer"):
+            flash("Write an answer or upload an answer PDF.", "danger")
+            return redirect(url_for("assignment_answer_queue_item", assignment_id=assignment_id))
+        updates = {
+            "answer": answer_text or item.get("answer") or None,
+            "answered_by": user.get("id"),
+            "answered_at": utc_now(),
+            "status": "answered",
+            "answer_price": price,
+            "updated_at": utc_now(),
+        }
+        uploaded = None
+        if pdf and pdf.filename:
+            if not pdf.filename.lower().endswith(".pdf"):
+                flash("The answer file must be a PDF.", "danger")
+                return redirect(url_for("assignment_answer_queue_item", assignment_id=assignment_id))
+            uploaded, error = upload_storage(pdf, "assignment-answers", public=False)
+            if error:
+                flash("PDF upload failed: %s" % error, "danger")
+                return redirect(url_for("assignment_answer_queue_item", assignment_id=assignment_id))
+            updates.update({
+                "answer_file_name": uploaded["file_name"],
+                "answer_file_path": uploaded["path"],
+                "answer_file_url": uploaded["path"],
+                "answer_approval_status": "pending",
+                "approved_by": None,
+                "approved_at": None,
+                "approval_note": None,
+            })
+        _, error = db_update("assignments", {"id": assignment_id}, updates)
+        if error:
+            if uploaded:
+                delete_storage_path(uploaded.get("path"))
+            flash("Answer could not be saved. Check the assignments table columns and run the migration.", "danger")
+            return redirect(url_for("assignment_answer_queue_item", assignment_id=assignment_id))
+        log_activity("assignment_answered", f"Answerer answered assignment {item.get('tracking_code') or assignment_id}.")
+        flash("Answer saved. Admin approves it before a student can pay for it.", "success")
+        return redirect(url_for("assignment_answer_queue"))
+    return render_page("Write answer", r"""
+<div class="hero"><h1>Write answer</h1><p>{{ item.get("title") or "Assignment" }} · {{ item.get("tracking_code") or "" }}</p></div>
+<div class="card"><h3>Question</h3><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question." }}</div></div>
+<div class="card"><form method="post" enctype="multipart/form-data">
+<label>Your price (whole kwacha, more than K{{ fee }})</label><input name="answer_price" type="number" min="{{ fee + 1 }}" step="1" value="{{ item.get("answer_price")|int if item.get("answer_price") else "" }}" required>
+<p class="small">The student pays this price to download the answer. KOJA keeps K{{ fee }} and you receive the rest.</p>
+<label>Written answer</label><textarea name="answer" rows="8">{{ item.get("answer") or "" }}</textarea>
+<label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
+<p class="small">Maximum {{ max_upload_mb }} MB. A new PDF needs admin approval again.</p>
+<button type="submit">Save answer</button></form></div>""",
+        item=item, fee=ASSIGNMENT_ADMIN_FEE, max_upload_mb=MAX_UPLOAD_MB)
+
+ASSIGNMENT_CHECKOUT_MINUTES = 30
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+def _assignment_pending_rows(assignment_id, buyer_id):
+    return db_select("koja_assignment_payments", {"assignment_id": str(assignment_id), "buyer_id": str(buyer_id), "status": "pending"}, order="created_at.desc", limit=10) or []
+
+def _assignment_checkout(user, item, price, network, phone):
+    if not FLW_SECRET_KEY:
+        return None, "Payments are not configured."
+    email = clean(user.get("email")).lower()
+    if not email:
+        return None, "Your account needs an email address before payment."
+    if network not in ("MTN", "AIRTEL", "ZAMTEL") or not phone:
+        return None, "Select MTN, Airtel or Zamtel and enter the mobile-money number."
+    assignment_id = str(item.get("id"))
+    buyer_id = str(user.get("id"))
+    now = datetime.now(timezone.utc)
+    # One active checkout per student per answer. Reuse a live one; close stale or different-price ones.
+    for row in _assignment_pending_rows(assignment_id, buyer_id):
+        expires = _parse_ts(row.get("expires_at"))
+        same_price = abs(_money2(row.get("amount")) - _money2(price)) < 0.01
+        if row.get("checkout_url") and expires and expires > now and same_price:
+            return row.get("checkout_url"), None
+        db_update("koja_assignment_payments", {"id": row.get("id"), "status": "pending"}, {"status": "expired"})
+    tx_ref = "KOJA-ANS-" + uuid.uuid4().hex[:24]
+    expires_at = (now + timedelta(minutes=ASSIGNMENT_CHECKOUT_MINUTES)).isoformat()
+    _, err = db_insert("koja_assignment_payments", {
+        "assignment_id": assignment_id, "buyer_id": buyer_id, "answerer_id": item.get("answerer_id"),
+        "amount": price, "admin_fee": ASSIGNMENT_ADMIN_FEE, "answerer_amount": price - ASSIGNMENT_ADMIN_FEE,
+        "currency": ASSIGNMENT_CURRENCY, "network": network, "tx_ref": tx_ref, "status": "pending",
+        "expires_at": expires_at, "created_at": now.isoformat(),
+    })
+    if err:
+        # The unique index refused a second active checkout: another request for this student and answer won.
+        for row in _assignment_pending_rows(assignment_id, buyer_id):
+            if row.get("checkout_url"):
+                return row.get("checkout_url"), None
+        return None, "A payment for this answer is already starting. Please try again in a moment."
+    payload = {
+        "tx_ref": tx_ref, "amount": price, "currency": ASSIGNMENT_CURRENCY, "email": email,
+        "fullname": first_nonempty(user.get("name"), user.get("full_name"), email), "phone_number": phone, "network": network,
+        "redirect_url": url_for("assignment_payment_callback", _external=True),
+        "meta": {"koja_assignment_id": assignment_id},
+    }
+    try:
+        r = _HTTP.post(FLW_BASE_URL + "/charges?type=mobile_money_zambia",
+                       headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json", "Accept": "application/json"},
+                       json=payload, timeout=30)
+        body = json_or_empty(r)
+        redirect_url = ((body.get("meta") or {}).get("authorization") or {}).get("redirect") if isinstance(body, dict) else None
+        if r.ok and str(body.get("status") or "").lower() == "success" and redirect_url:
+            db_update("koja_assignment_payments", {"tx_ref": tx_ref, "status": "pending"}, {"checkout_url": redirect_url})
+            return redirect_url, None
+        logger.error("KOJA assignment checkout failed: %s %s", r.status_code, str(body)[:1200])
+    except Exception:
+        logger.exception("KOJA assignment checkout error")
+    db_update("koja_assignment_payments", {"tx_ref": tx_ref, "status": "pending"}, {"status": "failed"})
+    return None, "Checkout could not be started."
+
+@app.route("/assignments/<assignment_id>/answer/buy", methods=["POST"])
+@login_required
+def assignment_answer_buy(assignment_id):
+    user = current_user()
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    if not can_access_assignment(item, user) or user.get("is_admin"):
+        abort(403)
+    if _assignment_answer_paid(item, user):
+        flash("You have already paid for this answer.", "success")
+        return redirect(url_for("assignments"))
+    if not assignment_answer_released(item) or not item.get("answer_file_path"):
+        flash("This answer is not ready yet. Admin has to approve it first.", "warning")
+        return redirect(url_for("assignments"))
+    price = _valid_answer_price(item.get("answer_price"))
+    if price is None:
+        flash("The answerer has not set a price for this answer yet.", "warning")
+        return redirect(url_for("assignments"))
+    network = clean(request.form.get("network")).upper()
+    phone = clean(request.form.get("phone"))
+    redirect_url, error = _assignment_checkout(user, item, price, network, phone)
+    if error:
+        flash(error, "danger")
+        return redirect(url_for("assignments"))
+    return redirect(redirect_url)
+
+def _assignment_payment_tx_ok(tx, payment):
+    """A verified Flutterwave transaction that matches this exact payment: reference, status, currency, amount and assignment."""
+    if not tx or not payment:
+        return False
+    if not _flutterwave_payment_valid(tx, str(payment.get("tx_ref") or ""), payment.get("amount"), payment.get("currency")):
+        return False
+    if abs(_money2(tx.get("amount")) - _money2(payment.get("amount"))) > 0.01:
+        return False
+    meta = tx.get("meta")
+    if isinstance(meta, dict):
+        ref = clean(meta.get("koja_assignment_id"))
+        if ref and ref != str(payment.get("assignment_id")):
+            return False
+    return True
+
+def _finalize_assignment_payment(payment, tx):
+    """Record a verified assignment payment. Shared by the return page and the webhook.
+
+    - Idempotent: a payment already recorded as paid or refund_review is not changed again.
+    - Unlock once: the first successful charge for a student and answer becomes 'paid' (earns K8, KOJA keeps K2).
+    - A later successful charge for the same student and answer is kept as 'refund_review' with no fee or earnings.
+    - Late success after expiry is still recorded.
+    """
+    if not payment or not tx:
+        return False
+    if str(payment.get("status") or "").lower() in ("paid", "refund_review"):
+        return True
+    if not _assignment_payment_tx_ok(tx, payment):
+        return False
+    pid = payment.get("id")
+    tx_ref = str(payment.get("tx_ref") or "")
+    tx_id = str(tx.get("id") or "")
+    now = utc_now()
+    already = first_row("koja_assignment_payments", {"assignment_id": str(payment.get("assignment_id")), "buyer_id": str(payment.get("buyer_id")), "status": "paid"})
+    if not (already and str(already.get("id")) != str(pid)):
+        updated, _err = db_update("koja_assignment_payments", {"id": pid}, {"status": "paid", "transaction_id": tx_id, "paid_at": now})
+        if updated:
+            return True
+        current = first_row("koja_assignment_payments", {"id": pid})
+        if str((current or {}).get("status") or "").lower() == "paid":
+            return True
+    updated, err = db_update("koja_assignment_payments", {"id": pid}, {
+        "status": "refund_review", "transaction_id": tx_id, "paid_at": now,
+        "admin_fee": 0, "answerer_amount": 0,
+        "review_reason": "Second successful charge for an answer this student already unlocked.",
+    })
+    if updated:
+        logger.warning("KOJA assignment duplicate charge flagged for refund review tx_ref=%s", tx_ref)
+        return True
+    current = first_row("koja_assignment_payments", {"id": pid})
+    if str((current or {}).get("status") or "").lower() in ("paid", "refund_review"):
+        return True
+    logger.error("KOJA assignment payment finalization failed tx_ref=%s: %s", tx_ref, err or "no row updated")
+    return False
+
+@app.route("/assignments/payment/callback")
+@login_required
+def assignment_payment_callback():
+    tx_ref = clean(request.args.get("tx_ref") or request.args.get("reference"))
+    tid = clean(request.args.get("transaction_id") or request.args.get("id"))
+    user = current_user()
+    payment = first_row("koja_assignment_payments", {"tx_ref": tx_ref, "buyer_id": str(user.get("id"))}) if tx_ref else None
+    if not payment:
+        flash("Payment not found.", "danger")
+        return redirect(url_for("assignments"))
+    status = str(payment.get("status") or "").lower()
+    if status == "paid":
+        flash("Already paid. You can download the answer.", "success")
+        return redirect(url_for("assignments"))
+    if status == "refund_review":
+        flash("Payment received. You already have access to this answer, so this extra charge has been flagged for KOJA to review.", "info")
+        return redirect(url_for("assignments"))
+    tx = _flutterwave_verify(tid, tx_ref) if tid else _flutterwave_verify(tx_ref=tx_ref)
+    if tx and _assignment_payment_tx_ok(tx, payment):
+        if _finalize_assignment_payment(payment, tx):
+            current = first_row("koja_assignment_payments", {"id": payment.get("id")}) or {}
+            if str(current.get("status") or "").lower() == "refund_review":
+                flash("Payment received. You already have access to this answer, so this extra charge has been flagged for KOJA to review.", "info")
+            else:
+                flash("Payment received. You can download the answer now.", "success")
+        else:
+            flash("Payment received but could not be recorded. Contact KOJA support.", "danger")
+    else:
+        flash("Payment is still pending or was not completed.", "info")
+    return redirect(url_for("assignments"))
+
+@app.route("/admin/assignment-payments")
+@admin_required
+def admin_assignment_payments():
+    payments = db_select("koja_assignment_payments", {"status": "paid"}, order="paid_at.desc", limit=500) or []
+    reviews = db_select("koja_assignment_payments", {"status": "refund_review"}, order="paid_at.desc", limit=500) or []
+    fees = round(sum(_money2(p.get("admin_fee")) for p in payments), 2)
+    earnings = round(sum(_money2(p.get("answerer_amount")) for p in payments), 2)
+    return render_page("Assignment payments", r"""
+<div class="hero"><h1>Assignment payments</h1><p>KOJA fee: K{{ fees }} from {{ payments|length }} paid download(s). Answerers received K{{ earnings }}.</p></div>
+<div class="card"><table><tr><th>Paid</th><th>Assignment</th><th>Amount</th><th>KOJA fee</th><th>Answerer</th><th>Reference</th></tr>
+{% for p in payments %}<tr><td>{{ p.paid_at or p.created_at }}</td><td>{{ p.assignment_id }}</td><td>K{{ p.amount }}</td><td>K{{ p.admin_fee }}</td><td>K{{ p.answerer_amount }}</td><td>{{ p.tx_ref }}</td></tr>{% else %}<tr><td colspan="6">No paid downloads yet.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Refund review ({{ reviews|length }})</h2><p>Second successful charges for answers the student had already unlocked. No K2 fee or answerer earnings are recorded for these. Check and refund manually.</p>
+<table><tr><th>Paid</th><th>Assignment</th><th>Student</th><th>Amount</th><th>Reference</th><th>Reason</th></tr>
+{% for p in reviews %}<tr><td>{{ p.paid_at }}</td><td>{{ p.assignment_id }}</td><td>{{ p.buyer_id }}</td><td>K{{ p.amount }}</td><td>{{ p.tx_ref }}</td><td>{{ p.review_reason }}</td></tr>{% else %}<tr><td colspan="6">Nothing to review.</td></tr>{% endfor %}</table></div>""",
+        payments=payments, reviews=reviews, fees=fees, earnings=earnings)
 
 # ============================================================
 # CV
@@ -4420,10 +4792,17 @@ def flutterwave_webhook():
     monetization_order=_mono_order_for_ref(tx_ref)
     b2b_orders=db_select('koja_b2b_v4_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
     gift_row=first_row('koja_live_gifts',{'payment_reference':tx_ref})
-    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders and not gift_row:
+    assignment_payment=first_row('koja_assignment_payments',{'tx_ref':tx_ref}) if tx_ref.startswith('KOJA-ANS-') else None
+    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders and not gift_row and not assignment_payment:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
+    assignment_failed=False
+    if assignment_payment:
+        ok=_finalize_assignment_payment(assignment_payment,tx)
+        logger.info('KOJA assignment payment finalization tx_ref=%s result=%s',tx_ref,ok)
+        results.append('assignment:'+('finalized' if ok else 'not_applied'))
+        assignment_failed=not ok
     if gift_row:
         results.append('live_gift:'+('finalized' if _finalize_live_gift(gift_row,tx) else 'not_applied'))
     if market_orders:
@@ -4447,6 +4826,9 @@ def flutterwave_webhook():
             if ok: ok_count+=1
             logger.info('KOJA B2B V4 finalization tx_ref=%s order=%s result=%s',tx_ref,b2b_order.get('id'),ok)
         results.append('b2b_v4:'+str(ok_count)+'_finalized')
+    if assignment_failed:
+        # Ask Flutterwave to retry the webhook so the assignment payment is not lost.
+        return jsonify({'status':'retry','processed':results}),500
     return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
@@ -7350,6 +7732,11 @@ def admin():
 <a class="btn success" href="{{ url_for('admin_approvals') }}"> Approval Centre</a>
 <a class="btn" href="{{ url_for('admin_email_settings') }}"> Email Management</a>
 <a class="btn success" href="{{ url_for('admin_market') }}">️ KOJA Market</a>
+<a class="btn" href="{{ url_for('media_live_manage') }}">KOJA Live streams</a>
+<a class="btn" href="{{ url_for('media_live_partners') }}">KOJA Live partners</a>
+<a class="btn success" href="{{ url_for('media_live_add') }}">Add live stream</a>
+<a class="btn" href="{{ url_for('admin_assignment_answerers') }}">Assignment answerers</a>
+<a class="btn" href="{{ url_for('admin_assignment_payments') }}">Assignment payments</a>
 <a class="btn" href="{{ url_for('admin_drivers') }}">Drivers</a>
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
@@ -7422,6 +7809,9 @@ def admin_assignment_answer(assignment_id):
             "answered_at": utc_now(),
             "status": "answered",
         }
+        _price = _valid_answer_price(request.form.get("answer_price"))
+        if _price is not None:
+            updates["answer_price"] = _price
         if pdf and pdf.filename:
             if not pdf.filename.lower().endswith(".pdf"):
                 flash("The answer file must be a PDF.", "danger")
@@ -7455,7 +7845,7 @@ def admin_assignment_answer(assignment_id):
 <div class="hero"><h2>️ Answer Assignment</h2><p>{{ item.get("title") or "Assignment" }} · {{ item.get("tracking_code") or "No tracking code" }}</p></div>
 <div class="card"><p><strong>Specific user:</strong> {{ recipient_name }}</p><p><strong>Email:</strong> {{ recipient_email or "No email found" }}</p><p><strong>Current status:</strong> <span class="badge">{{ item.get("status") or "submitted" }}</span></p><p class="small">The answer belongs only to this assignment owner.</p></div>
 <div class="card"><h3> Read Uploaded Assignment Question</h3><p><strong>{{ item.get("title") or "Assignment" }}</strong></p><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question was provided." }}</div><div class="actions" style="margin-top:14px"><a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Uploaded Assignment</a>{% endif %}</div></div>
-<div class="card"><h3> Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="submitted" {% if item.get('status')=='submitted' %}selected{% endif %}>Submitted</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="completed" {% if item.get('status')=='completed' %}selected{% endif %}>Completed</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
+<div class="card"><h3>Assigned answerer</h3><p class="small">Current answerer: {{ item.get("answerer_id") or "none" }}</p><form method="post" action="{{ url_for('admin_assign_answerer', assignment_id=item.get('id')) }}"><label>Answerer email or user ID (must be approved)</label><input name="answerer" required><button class="btn" type="submit">Assign answerer</button></form></div><div class="card"><h3> Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="submitted" {% if item.get('status')=='submitted' %}selected{% endif %}>Submitted</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="completed" {% if item.get('status')=='completed' %}selected{% endif %}>Completed</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
 <div class="card"><form method="post" enctype="multipart/form-data">
 <label>Written Answer / User Message</label><textarea name="answer" placeholder="Write the answer or explanation for the user...">{{ item.get("answer") or "" }}</textarea>
 <label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
@@ -7526,9 +7916,12 @@ def admin_send_assignment_email(assignment_id):
         filename = item.get("answer_file_name") or "KOJA-Assignment-Answer.pdf"
         ok, error = send_email_with_attachment(recipient_email, subject, message, r.content, filename, "application/pdf")
         if ok:
-            db_update("assignments", {"id": assignment_id}, {"status": "answer_sent"})
+            _, status_error = db_update("assignments", {"id": assignment_id}, {"status": "answer_sent"})
             log_activity("assignment_answer_email_sent", f"Assignment {item.get('tracking_code') or assignment_id} answer PDF emailed to {recipient_email}.")
-            flash(f"Answer PDF sent successfully to {recipient_email}.", "success")
+            if status_error:
+                flash(f"Answer PDF sent to {recipient_email}, but the status could not be saved: {status_error}", "warning")
+            else:
+                flash(f"Answer PDF sent successfully to {recipient_email}.", "success")
         else:
             flash(f"Email could not be sent: {error}", "danger")
     except Exception as exc:
@@ -9854,7 +10247,7 @@ def global_business_payouts(business_id):
 @login_required
 def koja_business():
     uid=(current_user() or {}).get('id'); businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
-    return render_page('KOJA Business',r'''<div class="hero"><h1> KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a>{% for b in businesses %}<a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">{{ b.name }}</a>{% endfor %}</div></div><div class="grid"><div class="card"><h3>POS</h3><p>Record sales and issue receipts.</p></div><div class="card"><h3>Inventory</h3><p>Products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Income, expenses and profit/loss.</p></div><div class="card"><h3>CRM</h3><p>Customers and suppliers.</p></div><div class="card"><h3>Payroll</h3><p>Employees and payroll records.</p></div><div class="card"><h3>Online Store</h3><p>Connect your business catalogue to KOJA Market.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>''',businesses=businesses)
+    return render_page('KOJA Business',r'''<div class="hero"><h1> KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a>{% for b in businesses %}<a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">{{ b.name }}</a>{% endfor %}</div></div><div class="grid"><div class="card"><h3>POS</h3><p>Record sales and issue receipts.</p></div><div class="card"><h3>Inventory</h3><p>Products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Income, expenses and profit/loss.</p></div><div class="card"><h3>CRM</h3><p>Customers and suppliers.</p></div><div class="card"><h3>Payroll</h3><p>Employees and payroll records.</p></div><div class="card"><h3>Online Store</h3><p>Connect your business catalogue to KOJA Market.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>{% if can_live %}<div class="card"><h3>KOJA Live</h3><p>You are an approved KOJA Live partner. Add streams and manage the ones you added.</p><div class="actions"><a class="btn" href="{{ url_for('media_live_add') }}">Add live stream</a><a class="btn secondary" href="{{ url_for('media_live_manage') }}">Manage my streams</a></div></div>{% endif %}''',businesses=businesses,can_live=_media_live_can_publish(current_user()))
 
 @app.route('/business/new',methods=['GET','POST'])
 @login_required
@@ -13024,6 +13417,7 @@ def media_live():
     rows=db_select('koja_media_live_streams',{'is_public':'eq.true'},order='created_at.desc',limit=300) or []
     # Only channels a browser can play are listed: RTMP/RTSP/MKV/FLV/MPEG-TS sources are hidden.
     rows=[r for r in rows if not is_source_only_url(r.get('stream_url'))]
+    featured_all=rows[0] if rows else None  # newest visible stream plays in the hero
     for r in rows:
         r['_provider']=clean(r.get('provider')) or detect_live_provider(r.get('stream_url'))
         r['_category']=media_live_category(r.get('category'))
@@ -13032,7 +13426,8 @@ def media_live():
         rows=[r for r in rows if r['_category']==active]
     sections=[(c,[r for r in rows if r['_category']==c]) for c in MEDIA_LIVE_CATEGORIES]
     sections=[(c,items) for c,items in sections if items]
-    featured=sections[0][1][0] if sections else None
+    # Hero follows the chosen category; otherwise it is the newest stream overall.
+    featured=(rows[0] if rows else None) if active in MEDIA_LIVE_CATEGORIES else featured_all
     suggested=[r for r in rows if not featured or str(r.get('id'))!=str(featured.get('id'))][:40]
     return render_page('KOJA Live',r'''<style>
 .live-home{background:#05070b;color:#f7f9fc;min-height:calc(100vh - 110px);padding-bottom:35px}.live-head{padding:28px 20px;background:linear-gradient(135deg,#07101b,#101722);border-bottom:1px solid rgba(255,255,255,.08)}.live-head h1{margin:0 0 7px;font-size:clamp(28px,5vw,48px)}.live-hero-play{position:relative;width:100%;max-width:none;aspect-ratio:16/9;max-height:calc(100vh - 110px);background:#000;border-radius:0;overflow:hidden;margin:0;box-shadow:none}.live-hero-play iframe{min-height:0}footer{display:none!important}.live-home{min-height:100vh}.live-hero-play iframe{width:100%;height:100%;border:0;display:block}.live-row-block{padding:4px 0 10px}.live-row-block h2{padding:0 20px;font-size:20px;margin:16px 0 4px}[hidden]{display:none!important}.live-home h1,.live-home h2,.live-home h3,.live-home .live-card h3{color:#f7f9fc}.live-home .live-cat{padding:0 20px;margin:18px 0 0;font-size:20px;background:#05070b}.live-head p{color:#aeb9c8}.live-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:15px;padding:20px}.live-card{background:#0b1119;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;text-decoration:none;color:#fff}.live-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#111923}.live-placeholder{width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#0c1622,#111923);display:grid;place-items:center;font-weight:800;letter-spacing:.12em}.live-card-info{padding:12px}.live-badge{display:inline-block;background:#e50914;border-radius:999px;padding:4px 7px;font-size:10px;font-weight:800}.live-provider{font-size:11px;color:#8f9caf;margin-top:7px}.live-netrow{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;scroll-padding:0 20px;padding:6px 20px 18px;scrollbar-width:none}.live-netrow::-webkit-scrollbar{display:none}.live-netcard{flex:0 0 min(70vw,280px);aspect-ratio:16/9;scroll-snap-align:start;position:relative;border-radius:8px;overflow:hidden;background:#111923;color:#fff;text-decoration:none;transition:transform .25s ease,box-shadow .25s ease}@media(min-width:900px){.live-netcard{flex-basis:320px}}.live-netcard:hover,.live-netcard:focus-visible{transform:scale(1.06);z-index:2;box-shadow:0 12px 32px rgba(0,0,0,.65);outline:none}.live-netcard img,.live-netcover{width:100%;height:100%;object-fit:cover;display:block}.live-netcover{display:grid;place-items:center;background:linear-gradient(135deg,#0c1622,#1b2a3d);padding:10px;box-sizing:border-box;text-align:center;font-weight:800;font-size:16px}.live-netcard .live-netlive{position:absolute;top:8px;left:8px;background:#e50914;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:800;letter-spacing:.04em}.live-netshade{position:absolute;left:0;right:0;bottom:0;padding:34px 12px 10px;background:linear-gradient(transparent,rgba(0,0,0,.92))}.live-netshade h3{margin:0;font-size:15px;line-height:1.25;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.live-netmeta{font-size:11px;color:#c9d2de;margin-top:2px}.live-placeholder span{padding:10px;text-align:center;font-size:15px;line-height:1.25;letter-spacing:0}.live-vlist .live-placeholder span{font-size:12px;padding:6px}.koja-unmute{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:12;display:none;border:0;background:rgba(0,0,0,.72);color:#fff;border-radius:999px;padding:12px 18px;font-weight:700;cursor:pointer}.koja-unmute.show{display:block}.live-vlist{display:flex;flex-direction:column;gap:10px;padding:0 20px 10px}.live-vlist .live-card{display:flex;align-items:center;gap:12px;padding:8px}.live-vlist .live-card img,.live-vlist .live-placeholder{width:150px;min-width:150px;aspect-ratio:16/9;border-radius:8px}.live-vlist .live-card-info{padding:0;min-width:0}.live-vlist .live-card-info h3{margin:6px 0 2px;font-size:16px;overflow:hidden;text-overflow:ellipsis}@media(max-width:520px){.live-vlist .live-card img,.live-vlist .live-placeholder{width:110px;min-width:110px}}
