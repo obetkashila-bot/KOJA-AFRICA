@@ -3207,7 +3207,7 @@ def assignments():
 <a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>
 <a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}"> Read Question</a>
 {% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}
-{% if item.get("answer_approval_status") == "approved" and (item.get("answer_file_path") or item.get("answer")) %}{% if item.get("_paid") or can_answer %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% elif item.get("answer_price") %}<form method="post" action="{{ url_for('assignment_answer_buy',assignment_id=item.get('id')) }}" class="actions"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="network"><option value="MTN">MTN</option><option value="Airtel">Airtel</option></select><input name="phone" placeholder="Mobile money number" maxlength="20"><button class="btn success" type="submit">Pay K{{ item.get("answer_price")|int }} to download answer</button></form>{% else %}<span class="small">Answer ready. Price not set yet.</span>{% endif %}{% endif %}
+{% if item.get("answer_approval_status") == "approved" and (item.get("answer_file_path") or item.get("answer")) %}{% if item.get("_paid") or can_answer %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% elif item.get("answer_price") %}<form method="post" action="{{ url_for('assignment_answer_buy',assignment_id=item.get('id')) }}" class="actions"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="network" required>{% for o in assignment_pay_options(item.get("answer_price")) %}<option value="{{ o.value }}">{{ o.country }} · {{ o.label }} · {{ o.currency }} {{ o.amount }}</option>{% endfor %}</select><input name="phone" placeholder="Mobile money number" maxlength="20"><button class="btn success" type="submit">Pay K{{ item.get("answer_price")|int }} and download answer</button></form>{% else %}<span class="small">Answer ready. Price not set yet.</span>{% endif %}{% endif %}
 </div>
 {% else %}<p>No assignments found for this account.</p>{% endfor %}
 </div>
@@ -3469,30 +3469,102 @@ def _parse_ts(value):
 def _assignment_pending_rows(assignment_id, buyer_id):
     return db_select("koja_assignment_payments", {"assignment_id": str(assignment_id), "buyer_id": str(buyer_id), "status": "pending"}, order="created_at.desc", limit=10) or []
 
-def _assignment_checkout(user, item, price, network, phone):
+# Countries and networks for assignment answer payments. Each uses a Flutterwave mobile-money charge type
+# verified on Flutterwave's regional pages. Rwanda, Tanzania and DR Congo are not listed until their network values are confirmed.
+ASSIGNMENT_PAYMENT_COUNTRIES = {
+    "ZM": {"name": "Zambia", "currency": "ZMW", "charge_type": "mobile_money_zambia", "send_network": True,
+           "networks": {"MTN": "MTN", "AIRTEL": "Airtel", "ZAMTEL": "Zamtel"}},
+    "GH": {"name": "Ghana", "currency": "GHS", "charge_type": "mobile_money_ghana", "send_network": True,
+           "networks": {"MTN": "MTN"}},
+    "UG": {"name": "Uganda", "currency": "UGX", "charge_type": "mobile_money_uganda", "send_network": True,
+           "networks": {"MTN": "MTN", "AIRTEL": "Airtel"}},
+    "KE": {"name": "Kenya", "currency": "KES", "charge_type": "mpesa", "send_network": False,
+           "networks": {"MPESA": "M-Pesa"}},
+    "SN": {"name": "Senegal", "currency": "XOF", "charge_type": "mobile_money_franco", "send_network": True,
+           "networks": {"ORANGEMONEY": "Orange Money", "WAVE": "Wave"}},
+    "CM": {"name": "Cameroon", "currency": "XAF", "charge_type": "mobile_money_franco", "send_network": True,
+           "networks": {"MTN": "MTN", "ORANGEMONEY": "Orange Money"}},
+    "CI": {"name": "Côte d'Ivoire", "currency": "XOF", "charge_type": "mobile_money_franco", "send_network": True,
+           "networks": {"MTN": "MTN", "ORANGEMONEY": "Orange Money", "MOOV": "Moov", "WAVE": "Wave"}},
+}
+
+def _assignment_fx_rates():
+    """Units of each local currency per 1 ZMW, from KOJA_ASSIGNMENT_FX_RATES (JSON, e.g. {"GHS": 2.1}).
+    A currency without a rate is not offered, so nothing is priced on a guess."""
+    rates = {"ZMW": 1.0}
+    raw = os.getenv("KOJA_ASSIGNMENT_FX_RATES", "").strip()
+    if raw:
+        try:
+            data = json.loads(raw) or {}
+        except Exception:
+            logger.error("KOJA_ASSIGNMENT_FX_RATES is not valid JSON; only Zambia is offered")
+            data = {}
+        for code, value in (data.items() if isinstance(data, dict) else []):
+            try:
+                if float(value) > 0:
+                    rates[str(code).upper()] = float(value)
+            except Exception:
+                pass
+    return rates
+
+def _assignment_local_amount(price_zmw, currency, rates=None):
+    rate = (rates or _assignment_fx_rates()).get(currency)
+    if not rate:
+        return None
+    decimals = 0 if currency in ("UGX", "XOF", "XAF") else 2
+    amount = round(float(price_zmw) * rate, decimals)
+    return amount if amount > 0 else None
+
+def _assignment_pay_options(price_zmw):
+    """Country and network choices for paying an answer, each with the amount it charges."""
+    try:
+        price = float(price_zmw)
+    except Exception:
+        return []
+    rates = _assignment_fx_rates()
+    options = []
+    for code, spec in ASSIGNMENT_PAYMENT_COUNTRIES.items():
+        amount = _assignment_local_amount(price, spec["currency"], rates)
+        if amount is None:
+            continue
+        for net, label in spec["networks"].items():
+            options.append({"value": code + ":" + net, "country": spec["name"], "label": label,
+                            "currency": spec["currency"], "amount": amount})
+    return options
+
+app.jinja_env.globals["assignment_pay_options"] = _assignment_pay_options
+
+def _assignment_checkout(user, item, price, choice, phone):
     if not FLW_SECRET_KEY:
         return None, "Payments are not configured."
     email = clean(user.get("email")).lower()
     if not email:
         return None, "Your account needs an email address before payment."
-    if network not in ("MTN", "AIRTEL", "ZAMTEL") or not phone:
-        return None, "Select MTN, Airtel or Zamtel and enter the mobile-money number."
+    country, _sep, network = clean(choice).upper().partition(":")
+    spec = ASSIGNMENT_PAYMENT_COUNTRIES.get(country)
+    if not spec or network not in spec["networks"] or not phone:
+        return None, "Choose a country and network, and enter the mobile-money number."
+    currency = spec["currency"]
+    amount = _assignment_local_amount(price, currency)
+    if amount is None:
+        return None, "Payments in " + currency + " are not available right now."
     assignment_id = str(item.get("id"))
     buyer_id = str(user.get("id"))
     now = datetime.now(timezone.utc)
     # One active checkout per student per answer. Reuse a live one; close stale or different-price ones.
     for row in _assignment_pending_rows(assignment_id, buyer_id):
         expires = _parse_ts(row.get("expires_at"))
-        same_price = abs(_money2(row.get("amount")) - _money2(price)) < 0.01
-        if row.get("checkout_url") and expires and expires > now and same_price:
+        same_charge = abs(_money2(row.get("amount")) - amount) < 0.01 and str(row.get("currency") or "").upper() == currency
+        if row.get("checkout_url") and expires and expires > now and same_charge:
             return row.get("checkout_url"), None
         db_update("koja_assignment_payments", {"id": row.get("id"), "status": "pending"}, {"status": "expired"})
     tx_ref = "KOJA-ANS-" + uuid.uuid4().hex[:24]
     expires_at = (now + timedelta(minutes=ASSIGNMENT_CHECKOUT_MINUTES)).isoformat()
     _, err = db_insert("koja_assignment_payments", {
         "assignment_id": assignment_id, "buyer_id": buyer_id, "answerer_id": item.get("answerer_id"),
-        "amount": price, "admin_fee": ASSIGNMENT_ADMIN_FEE, "answerer_amount": price - ASSIGNMENT_ADMIN_FEE,
-        "currency": ASSIGNMENT_CURRENCY, "network": network, "tx_ref": tx_ref, "status": "pending",
+        "amount": amount, "amount_zmw": price, "country": country, "admin_fee": ASSIGNMENT_ADMIN_FEE,
+        "answerer_amount": price - ASSIGNMENT_ADMIN_FEE,
+        "currency": currency, "network": network, "tx_ref": tx_ref, "status": "pending",
         "expires_at": expires_at, "created_at": now.isoformat(),
     })
     if err:
@@ -3502,13 +3574,15 @@ def _assignment_checkout(user, item, price, network, phone):
                 return row.get("checkout_url"), None
         return None, "A payment for this answer is already starting. Please try again in a moment."
     payload = {
-        "tx_ref": tx_ref, "amount": price, "currency": ASSIGNMENT_CURRENCY, "email": email,
-        "fullname": first_nonempty(user.get("name"), user.get("full_name"), email), "phone_number": phone, "network": network,
+        "tx_ref": tx_ref, "amount": amount, "currency": currency, "email": email,
+        "fullname": first_nonempty(user.get("name"), user.get("full_name"), email), "phone_number": phone,
         "redirect_url": url_for("assignment_payment_callback", _external=True),
         "meta": {"koja_assignment_id": assignment_id},
     }
+    if spec["send_network"]:
+        payload["network"] = network
     try:
-        r = _HTTP.post(FLW_BASE_URL + "/charges?type=mobile_money_zambia",
+        r = _HTTP.post(FLW_BASE_URL + "/charges?type=" + spec["charge_type"],
                        headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json", "Accept": "application/json"},
                        json=payload, timeout=30)
         body = json_or_empty(r)
@@ -3532,8 +3606,7 @@ def assignment_answer_buy(assignment_id):
     if not can_access_assignment(item, user) or user.get("is_admin"):
         abort(403)
     if _assignment_answer_paid(item, user):
-        flash("You have already paid for this answer.", "success")
-        return redirect(url_for("assignments"))
+        return redirect(url_for("assignment_file", assignment_id=assignment_id, kind="answer"))
     if not assignment_answer_released(item) or not item.get("answer_file_path"):
         flash("This answer is not ready yet. Admin has to approve it first.", "warning")
         return redirect(url_for("assignments"))
@@ -3541,9 +3614,9 @@ def assignment_answer_buy(assignment_id):
     if price is None:
         flash("The answerer has not set a price for this answer yet.", "warning")
         return redirect(url_for("assignments"))
-    network = clean(request.form.get("network")).upper()
+    choice = clean(request.form.get("network"))
     phone = clean(request.form.get("phone"))
-    redirect_url, error = _assignment_checkout(user, item, price, network, phone)
+    redirect_url, error = _assignment_checkout(user, item, price, choice, phone)
     if error:
         flash(error, "danger")
         return redirect(url_for("assignments"))
@@ -3616,8 +3689,7 @@ def assignment_payment_callback():
         return redirect(url_for("assignments"))
     status = str(payment.get("status") or "").lower()
     if status == "paid":
-        flash("Already paid. You can download the answer.", "success")
-        return redirect(url_for("assignments"))
+        return redirect(url_for("assignment_file", assignment_id=payment.get("assignment_id"), kind="answer"))
     if status == "refund_review":
         flash("Payment received. You already have access to this answer, so this extra charge has been flagged for KOJA to review.", "info")
         return redirect(url_for("assignments"))
@@ -3628,7 +3700,8 @@ def assignment_payment_callback():
             if str(current.get("status") or "").lower() == "refund_review":
                 flash("Payment received. You already have access to this answer, so this extra charge has been flagged for KOJA to review.", "info")
             else:
-                flash("Payment received. You can download the answer now.", "success")
+                flash("Payment received. Your download is starting.", "success")
+            return redirect(url_for("assignment_file", assignment_id=payment.get("assignment_id"), kind="answer"))
         else:
             flash("Payment received but could not be recorded. Contact KOJA support.", "danger")
     else:
@@ -3645,7 +3718,7 @@ def admin_assignment_payments():
     return render_page("Assignment payments", r"""
 <div class="hero"><h1>Assignment payments</h1><p>KOJA fee: K{{ fees }} from {{ payments|length }} paid download(s). Answerers received K{{ earnings }}.</p></div>
 <div class="card"><table><tr><th>Paid</th><th>Assignment</th><th>Amount</th><th>KOJA fee</th><th>Answerer</th><th>Reference</th></tr>
-{% for p in payments %}<tr><td>{{ p.paid_at or p.created_at }}</td><td>{{ p.assignment_id }}</td><td>K{{ p.amount }}</td><td>K{{ p.admin_fee }}</td><td>K{{ p.answerer_amount }}</td><td>{{ p.tx_ref }}</td></tr>{% else %}<tr><td colspan="6">No paid downloads yet.</td></tr>{% endfor %}</table></div>
+{% for p in payments %}<tr><td>{{ p.paid_at or p.created_at }}</td><td>{{ p.assignment_id }}</td><td>{{ p.currency or 'ZMW' }} {{ p.amount }}{% if p.amount_zmw %} (K{{ p.amount_zmw }}){% endif %}</td><td>K{{ p.admin_fee }}</td><td>K{{ p.answerer_amount }}</td><td>{{ p.tx_ref }}</td></tr>{% else %}<tr><td colspan="6">No paid downloads yet.</td></tr>{% endfor %}</table></div>
 <div class="card"><h2>Refund review ({{ reviews|length }})</h2><p>Second successful charges for answers the student had already unlocked. No K2 fee or answerer earnings are recorded for these. Check and refund manually.</p>
 <table><tr><th>Paid</th><th>Assignment</th><th>Student</th><th>Amount</th><th>Reference</th><th>Reason</th></tr>
 {% for p in reviews %}<tr><td>{{ p.paid_at }}</td><td>{{ p.assignment_id }}</td><td>{{ p.buyer_id }}</td><td>K{{ p.amount }}</td><td>{{ p.tx_ref }}</td><td>{{ p.review_reason }}</td></tr>{% else %}<tr><td colspan="6">Nothing to review.</td></tr>{% endfor %}</table></div>""",
