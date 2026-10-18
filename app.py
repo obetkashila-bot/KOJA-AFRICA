@@ -97,7 +97,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
-RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:")
+RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:")
 
 def _rate_limited(key, limit, window=60):
     # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
@@ -879,7 +879,7 @@ def enforce_csrf():
     if request.path == "/api/professional/presence":
         return None
     # Flutterwave server-to-server webhook is authenticated by its signature, not browser CSRF.
-    if request.path == "/webhook/flutterwave":
+    if request.path in ("/webhook/flutterwave", "/webhook/whatsapp"):
         return None
 
     # KOJA Connect WebRTC signaling: keep login + call-participant authorization
@@ -1228,7 +1228,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></div></footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a> · <a href="{{ url_for('complaint_new') }}">Send a complaint</a></div></footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1556,7 +1556,9 @@ def register():
             logger.error("Account created but terms acceptance could not be recorded: %s", terms_error)
             flash("Account was created, but your Terms acceptance could not be recorded. Please contact support before continuing.", "danger")
             return redirect(url_for("login"))
+        _set_messaging_consent(created_user.get("id"), request.form.get("sms_opt_in") == "1", request.form.get("whatsapp_opt_in") == "1")
         login_user(created_user)
+        _bg(send_welcome_message, dict(created_user))
         log_activity("registration","New KOJA account registered and Terms accepted.")
         flash("Account created successfully.","success")
         return redirect(url_for("dashboard"))
@@ -1577,6 +1579,8 @@ def register():
 </select>
 <label>Password</label><input name="password" type="password" minlength="6" required>
 <label style="display:flex;align-items:flex-start;gap:10px;margin:14px 0;line-height:1.45"><input type="checkbox" name="terms_agreed" value="1" required style="width:auto;margin:3px 0 0"> <span>I agree to the <a href="{{ url_for('public_terms') }}" target="_blank" rel="noopener">KOJA AFRICA Terms &amp; Conditions</a> and applicable laws and regulations.</span></label>
+<label style="display:flex;align-items:flex-start;gap:10px;margin:10px 0;line-height:1.45"><input type="checkbox" name="sms_opt_in" value="1" style="width:auto;margin:3px 0 0"> <span>Send me KOJA messages by SMS (optional)</span></label>
+<label style="display:flex;align-items:flex-start;gap:10px;margin:10px 0;line-height:1.45"><input type="checkbox" name="whatsapp_opt_in" value="1" style="width:auto;margin:3px 0 0"> <span>Send me KOJA messages on WhatsApp (optional)</span></label>
 <button type="submit">Create Account</button>
 </form>
 <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
@@ -3707,6 +3711,467 @@ def assignment_payment_callback():
     else:
         flash("Payment is still pending or was not completed.", "info")
     return redirect(url_for("assignments"))
+
+# ============================================================
+# KOJA welcome messages: one in-app message and, if enabled, one email per user.
+# Free channels only: no SMS or WhatsApp is sent from here.
+# ============================================================
+KOJA_PUBLIC_URL = os.getenv("KOJA_PUBLIC_URL", "https://koja-africa.onrender.com/").strip()
+WELCOME_TITLE = "Welcome to KOJA AFRICA"
+WELCOME_ROLE_TEXT = {
+    "student": "As a student: Upload assignments and questions, access answers in PDF format, connect with tutors for live tutoring, and learn with other people.",
+    "teacher": "As a teacher or professional: Share your knowledge, help users answer questions, offer tutoring or professional services, and earn money through eligible paid services.",
+    "doctor": "As a doctor: Share your professional knowledge, help users with questions, and offer relevant professional services, with earnings through eligible paid services.",
+    "driver": "As a driver: Explore delivery opportunities and earn from deliveries you accept and complete.",
+}
+
+def _welcome_body(user):
+    full = clean(user.get("full_name") or user.get("name"))
+    first = full.split()[0] if full else "there"
+    role = str(user.get("role") or "student").lower()
+    role_line = WELCOME_ROLE_TEXT.get(role, WELCOME_ROLE_TEXT["student"])
+    return (
+        f"Hello {first}, welcome to KOJA AFRICA.\n\n"
+        "Thank you for registering on KOJA, a platform that connects students, teachers, professionals, businesses and service providers.\n\n"
+        f"{role_line}\n\n"
+        "As a business owner: Register your business, showcase your products or services, connect with customers and explore sales opportunities.\n\n"
+        f"Get started: visit {KOJA_PUBLIC_URL} and sign in with your account. Explore the services available to you and complete your profile.\n\n"
+        f"Need help or want to report a problem? Send a complaint at {KOJA_PUBLIC_URL.rstrip('/')}/complaints/new\n\n"
+        "KOJA AFRICA is growing, and your participation matters. Start exploring today and invite others who could benefit.\n\n"
+        "KOJA AFRICA — Knowledge, Questions and Answers."
+    )
+
+def _welcome_row(uid):
+    return first_row("koja_welcome_messages", {"user_id": str(uid)})
+
+def send_welcome_message(user):
+    """Create this user's welcome once. A repeat call returns the existing row and sends nothing.
+
+    Channels: in-app always; email when enabled; SMS and WhatsApp only when the user opted in,
+    has a valid phone number, and the provider is configured.
+    """
+    uid = str((user or {}).get("id") or "")
+    if not uid:
+        return None
+    existing = _welcome_row(uid)
+    if existing:
+        return existing
+    email = clean(user.get("email")).lower()
+    row, err = db_insert("koja_welcome_messages", {
+        "user_id": uid, "email": email or None, "in_app_status": "queued", "email_status": "queued",
+        "created_at": utc_now(), "updated_at": utc_now(),
+    })
+    if err or not row:
+        return _welcome_row(uid)  # another request created it first
+    body = _welcome_body(user)
+    first = (clean(user.get("full_name") or user.get("name")).split() or ["there"])[0]
+    in_status = "skipped"
+    if _notification_allowed(uid, "system"):
+        _, ierr = db_insert("koja_notifications", {
+            "user_id": uid, "notification_type": "welcome", "title": WELCOME_TITLE, "body": body,
+            "related_id": None, "is_read": False, "created_at": utc_now(),
+        })
+        in_status = "failed" if ierr else "sent"
+    errors = []
+    email_status = "no_email"
+    if email:
+        if not email_configured():
+            email_status = "not_configured"
+        elif not _notification_channel_on(uid, "email"):
+            email_status = "opted_out"
+        else:
+            ok, msg = send_plain_email(email, WELCOME_TITLE, body)
+            email_status = "sent" if ok else "failed"
+            if not ok:
+                errors.append(str(msg or "email failed")[:200])
+    consent = _messaging_consent(uid)
+    sms_status = wa_status = "no_phone"
+    sms_ref = wa_ref = None
+    if _e164(user.get("phone")):
+        if not consent.get("sms_opt_in"):
+            sms_status = "opted_out"
+        elif not _sms_configured():
+            sms_status = "not_configured"
+        else:
+            ok, sms_ref, sms_err = send_sms_message(user.get("phone"), f"Welcome to KOJA AFRICA, {first}. Get started at {KOJA_PUBLIC_URL}")
+            sms_status = "sent" if ok else "failed"
+            if sms_err:
+                errors.append("SMS: " + str(sms_err)[:200])
+        if not consent.get("whatsapp_opt_in"):
+            wa_status = "opted_out"
+        elif not _whatsapp_configured():
+            wa_status = "not_configured"
+        else:
+            ok, wa_ref, wa_err = send_whatsapp_template(user.get("phone"), os.getenv("WHATSAPP_WELCOME_TEMPLATE", "").strip(), [first],
+                                                        os.getenv("WHATSAPP_TEMPLATE_LANG", "en").strip() or "en")
+            wa_status = "sent" if ok else "failed"
+            if wa_err:
+                errors.append("WhatsApp: " + str(wa_err)[:200])
+    db_update("koja_welcome_messages", {"user_id": uid}, {
+        "in_app_status": in_status, "email_status": email_status,
+        "sms_status": sms_status, "sms_ref": sms_ref, "whatsapp_status": wa_status, "whatsapp_ref": wa_ref,
+        "error": "; ".join(errors)[:300] or None, "sent_at": utc_now(), "updated_at": utc_now(),
+    })
+    return _welcome_row(uid)
+
+def _mask_email(value):
+    value = clean(value)
+    if "@" not in value:
+        return value or "-"
+    local, domain = value.split("@", 1)
+    return (local[:2] + "***") + "@" + domain
+
+@app.route("/admin/welcome-messages")
+@admin_required
+def admin_welcome_messages():
+    rows = db_select("koja_welcome_messages", {}, order="created_at.desc", limit=5000) or []
+    users = db_select("profiles", {"is_active": True}, limit=5000) or []
+    not_yet = max(0, len(users) - len(rows))
+    def count(field, value):
+        return sum(1 for r in rows if str(r.get(field) or "") == value)
+    return render_page("Welcome messages", r"""
+<div class="hero"><h1>Welcome messages</h1><p>One in-app message per user, plus email, SMS and WhatsApp where the user opted in and the provider is set up.</p></div>
+<div class="grid">
+  <div class="card"><h3>Welcomed</h3><h2>{{ rows|length }}</h2></div>
+  <div class="card"><h3>Not yet welcomed</h3><h2>{{ not_yet }}</h2></div>
+  <div class="card"><h3>In-app sent</h3><h2>{{ in_sent }}</h2><p class="small">Failed: {{ in_failed }}</p></div>
+  <div class="card"><h3>Email sent</h3><h2>{{ em_sent }}</h2><p class="small">Failed: {{ em_failed }} · Opted out: {{ em_opt }} · No email: {{ em_none }} · Not configured: {{ em_cfg }}</p></div>
+  <div class="card"><h3>SMS</h3><h2>{{ sms_sent }}</h2><p class="small">Failed: {{ sms_failed }} · Opted out: {{ sms_opt }} · No phone: {{ sms_none }} · Not configured: {{ sms_cfg }}</p><p class="small">Configured: {{ "yes" if sms_ok else "no" }}</p></div>
+  <div class="card"><h3>WhatsApp</h3><h2>{{ wa_sent }}</h2><p class="small">Delivered: {{ wa_delivered }} · Read: {{ wa_read }} · Failed: {{ wa_failed }} · Opted out: {{ wa_opt }} · Not configured: {{ wa_cfg }}</p><p class="small">Configured: {{ "yes" if wa_ok else "no" }}</p></div>
+</div>
+<div class="card"><h2>Send to users not yet welcomed</h2>
+<p>Sends to up to the number you set, skipping anyone already welcomed and anyone sharing an email address with someone already welcomed.</p>
+<form method="post" action="{{ url_for('admin_welcome_messages_send') }}" class="actions"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>How many now<input name="limit" type="number" min="1" max="500" value="200"></label><button class="btn success" type="submit">Send welcome messages</button></form></div>
+<div class="card"><h2>Latest</h2><table><tr><th>Created</th><th>Email</th><th>In-app</th><th>Email status</th><th>Error</th></tr>
+{% for r in rows[:100] %}<tr><td>{{ r.created_at }}</td><td>{{ mask(r.email) }}</td><td>{{ r.in_app_status }}</td><td>{{ r.email_status }}</td><td>{{ r.error or '' }}</td></tr>{% else %}<tr><td colspan="5">No welcome messages yet.</td></tr>{% endfor %}</table></div>""",
+        rows=rows, not_yet=not_yet, in_sent=count("in_app_status", "sent"), in_failed=count("in_app_status", "failed"),
+        em_sent=count("email_status", "sent"), em_failed=count("email_status", "failed"), em_opt=count("email_status", "opted_out"),
+        em_none=count("email_status", "no_email"), em_cfg=count("email_status", "not_configured"), mask=_mask_email,
+        sms_sent=count("sms_status", "sent"), sms_failed=count("sms_status", "failed"), sms_opt=count("sms_status", "opted_out"),
+        sms_none=count("sms_status", "no_phone"), sms_cfg=count("sms_status", "not_configured"), sms_ok=_sms_configured(),
+        wa_sent=count("whatsapp_status", "sent"), wa_delivered=count("whatsapp_status", "delivered"), wa_read=count("whatsapp_status", "read"),
+        wa_failed=count("whatsapp_status", "failed"), wa_opt=count("whatsapp_status", "opted_out"), wa_cfg=count("whatsapp_status", "not_configured"),
+        wa_ok=_whatsapp_configured())
+
+@app.route("/admin/welcome-messages/send", methods=["POST"])
+@admin_required
+def admin_welcome_messages_send():
+    try:
+        limit = min(max(int(request.form.get("limit") or 200), 1), 500)
+    except Exception:
+        limit = 200
+    rows = db_select("koja_welcome_messages", {}, limit=100000) or []
+    done_users = {str(r.get("user_id")) for r in rows}
+    done_emails = {clean(r.get("email")).lower() for r in rows if r.get("email")}
+    users = db_select("profiles", {"is_active": True}, order="created_at.asc", limit=5000) or []
+    sent = 0
+    for u in users:
+        if sent >= limit:
+            break
+        uid = str(u.get("id") or "")
+        email = clean(u.get("email")).lower()
+        if not uid or uid in done_users or (email and email in done_emails):
+            continue
+        send_welcome_message(u)
+        done_users.add(uid)
+        if email:
+            done_emails.add(email)
+        sent += 1
+    flash(f"Welcome messages processed for {sent} user(s).", "success")
+    return redirect(url_for("admin_welcome_messages"))
+
+# ============================================================
+# Messaging channels: SMS (Africa's Talking) and WhatsApp (Meta Cloud API).
+# Used only for users who opted in. Nothing is sent unless the provider is configured.
+# ============================================================
+WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v20.0").strip() or "v20.0"
+
+def _sms_configured():
+    return bool(os.getenv("AT_USERNAME", "").strip() and os.getenv("AT_API_KEY", "").strip())
+
+def _whatsapp_configured():
+    return bool(os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip() and os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+                and os.getenv("WHATSAPP_WELCOME_TEMPLATE", "").strip())
+
+def _e164(phone, default_cc="260"):
+    """Normalise a phone number to +digits. Local numbers starting with 0 use the default country code (Zambia)."""
+    raw = re.sub(r"[^\d+]", "", clean(phone))
+    if not raw:
+        return None
+    if raw.startswith("+"):
+        digits = raw[1:]
+    elif raw.startswith("00"):
+        digits = raw[2:]
+    elif raw.startswith("0"):
+        digits = default_cc + raw[1:]
+    else:
+        digits = raw
+    if not digits.isdigit() or not (8 <= len(digits) <= 15):
+        return None
+    return "+" + digits
+
+def send_sms_message(phone, message):
+    """Returns (ok, provider_message_id, error)."""
+    to = _e164(phone)
+    if not to:
+        return False, None, "Invalid phone number."
+    if not _sms_configured():
+        return False, None, "SMS is not configured."
+    try:
+        rr = _HTTP.post("https://api.africastalking.com/version1/messaging",
+                        headers={"apiKey": os.getenv("AT_API_KEY", "").strip(), "Accept": "application/json"},
+                        data={"username": os.getenv("AT_USERNAME", "").strip(), "to": to, "message": message,
+                              "from": os.getenv("AT_SENDER_ID", "KOJA").strip()}, timeout=20)
+        body = json_or_empty(rr)
+        recipients = (((body or {}).get("SMSMessageData") or {}).get("Recipients") or [])
+        if rr.ok and recipients:
+            first = recipients[0]
+            # Africa's Talking: 100 Processed, 101 Sent, 102 Queued are accepted.
+            ok = str(first.get("statusCode")) in ("100", "101", "102")
+            return ok, str(first.get("messageId") or "") or None, None if ok else str(first.get("status") or "rejected")[:300]
+        return False, None, f"SMS provider returned HTTP {rr.status_code}."
+    except Exception as exc:
+        logger.exception("SMS send failed")
+        return False, None, str(exc)[:300]
+
+def send_whatsapp_template(phone, template, params, lang="en"):
+    """Business-initiated WhatsApp messages must use a pre-approved template. Returns (ok, message_id, error)."""
+    to = _e164(phone)
+    if not to:
+        return False, None, "Invalid phone number."
+    token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+    phone_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+    if not (token and phone_id and template):
+        return False, None, "WhatsApp is not configured."
+    payload = {"messaging_product": "whatsapp", "to": to.lstrip("+"), "type": "template",
+               "template": {"name": template, "language": {"code": lang},
+                            "components": [{"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}]}}
+    try:
+        r = _HTTP.post(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_id}/messages",
+                       headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, json=payload, timeout=20)
+        body = json_or_empty(r)
+        messages = (body or {}).get("messages") or []
+        if r.ok and messages:
+            return True, str(messages[0].get("id") or "") or None, None
+        err = (((body or {}).get("error") or {}).get("message")) or f"WhatsApp returned HTTP {r.status_code}."
+        return False, None, str(err)[:300]
+    except Exception as exc:
+        logger.exception("WhatsApp send failed")
+        return False, None, str(exc)[:300]
+
+def _messaging_consent(uid):
+    return first_row("koja_messaging_consent", {"user_id": str(uid)}) or {}
+
+def _set_messaging_consent(uid, sms, whatsapp):
+    payload = {"sms_opt_in": bool(sms), "whatsapp_opt_in": bool(whatsapp), "updated_at": utc_now()}
+    if _messaging_consent(uid):
+        db_update("koja_messaging_consent", {"user_id": str(uid)}, payload)
+    else:
+        db_insert("koja_messaging_consent", dict(payload, user_id=str(uid)))
+
+@app.route("/account/messages", methods=["GET", "POST"])
+@login_required
+def account_messages():
+    user = current_user()
+    uid = str(user.get("id"))
+    if request.method == "POST":
+        _set_messaging_consent(uid, request.form.get("sms") == "1", request.form.get("whatsapp") == "1")
+        flash("Your message preferences are saved.", "success")
+        return redirect(url_for("account_messages"))
+    consent = _messaging_consent(uid)
+    return render_page("Message preferences", r"""
+<div class="hero"><h1>Message preferences</h1><p>KOJA sends SMS and WhatsApp messages only when you choose to receive them.</p></div>
+<div class="card"><form method="post">
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<p>{% if phone %}Phone on your account: <strong>{{ phone }}</strong>{% else %}Add a phone number to your profile to receive SMS or WhatsApp messages.{% endif %}</p>
+<label style="display:flex;gap:10px;align-items:flex-start"><input type="checkbox" name="sms" value="1" {% if consent.sms_opt_in %}checked{% endif %} style="width:auto;margin-top:3px"> <span>Send me KOJA messages by SMS</span></label>
+<label style="display:flex;gap:10px;align-items:flex-start;margin-top:10px"><input type="checkbox" name="whatsapp" value="1" {% if consent.whatsapp_opt_in %}checked{% endif %} style="width:auto;margin-top:3px"> <span>Send me KOJA messages on WhatsApp</span></label>
+<p class="small">You can change this at any time. In-app messages and complaint replies are always shown in your KOJA inbox.</p>
+<button class="btn" type="submit">Save preferences</button></form></div>""",
+        consent=consent, phone=user.get("phone"))
+
+# ---- WhatsApp status webhook (Meta). Verified with the app secret; fails closed when it is not set. ----
+@app.route("/webhook/whatsapp", methods=["GET", "POST"])
+def whatsapp_webhook():
+    if request.method == "GET":
+        token = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
+        given = request.args.get("hub.verify_token", "")
+        if token and request.args.get("hub.mode") == "subscribe" and hmac.compare_digest(given, token):
+            return request.args.get("hub.challenge", ""), 200
+        return "forbidden", 403
+    secret = os.getenv("WHATSAPP_APP_SECRET", "").strip()
+    if not secret:
+        return jsonify({"status": "disabled"}), 503
+    raw = request.get_data(cache=True) or b""
+    expected = "sha256=" + hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, request.headers.get("X-Hub-Signature-256", "")):
+        logger.warning("WhatsApp webhook rejected: invalid signature")
+        return jsonify({"status": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    for entry in payload.get("entry", []) or []:
+        for change in entry.get("changes", []) or []:
+            for st in (change.get("value") or {}).get("statuses", []) or []:
+                mid = str(st.get("id") or "")
+                status = str(st.get("status") or "")
+                if not mid or status not in ("sent", "delivered", "read", "failed"):
+                    continue
+                errors = st.get("errors") or []
+                error = str((errors[0] or {}).get("title") or "") if errors else None
+                for row in db_select("koja_welcome_messages", {"whatsapp_ref": mid}, limit=5) or []:
+                    db_update("koja_welcome_messages", {"user_id": str(row.get("user_id"))},
+                              {"whatsapp_status": status, "updated_at": utc_now(), **({"error": error} if error else {})})
+    return jsonify({"status": "ok"}), 200
+
+# ============================================================
+# Complaints
+# ============================================================
+COMPLAINT_CATEGORIES = [("service", "Service or provider"), ("payment", "Payment or refund"), ("delivery", "Delivery"),
+                        ("content", "Content or answer quality"), ("account", "Account or privacy"),
+                        ("safety", "Safety or abuse"), ("other", "Other")]
+COMPLAINT_STATUSES = ("open", "in_review", "resolved", "closed")
+
+def _complaint_reference():
+    return "KC-" + uuid.uuid4().hex[:8].upper()
+
+@app.route("/complaints/new", methods=["GET", "POST"])
+def complaint_new():
+    user = current_user()
+    if request.method == "POST":
+        if request.form.get("website"):  # honeypot: humans never fill this hidden field
+            return redirect(url_for("home"))
+        if _rate_limited("complaint:" + (request.remote_addr or "unknown"), 5, 3600):
+            return "Too many complaints from this connection. Please try again later.", 429
+        category = clean(request.form.get("category"))
+        category = category if category in dict(COMPLAINT_CATEGORIES) else "other"
+        subject = clean(request.form.get("subject"))[:160]
+        message = clean(request.form.get("message"))[:4000]
+        name = clean(request.form.get("name")) or clean((user or {}).get("full_name"))
+        email = clean(request.form.get("email")).lower() or clean((user or {}).get("email")).lower()
+        phone = clean(request.form.get("phone")) or clean((user or {}).get("phone"))
+        related = clean(request.form.get("related_url"))[:500]
+        if not subject or len(message) < 10:
+            flash("Please give a short subject and describe the problem in at least 10 characters.", "warning")
+            return redirect(url_for("complaint_new"))
+        if not user and not (email or phone):
+            flash("Please give an email address or phone number so KOJA can reply.", "warning")
+            return redirect(url_for("complaint_new"))
+        reference = _complaint_reference()
+        row, err = db_insert("koja_complaints", {
+            "reference": reference, "user_id": str((user or {}).get("id")) if user else None,
+            "name": name or None, "email": email or None, "phone": phone or None, "category": category,
+            "subject": subject, "message": message, "related_url": related or None, "status": "open",
+            "created_at": utc_now(), "updated_at": utc_now(),
+        })
+        if err or not row:
+            logger.error("Complaint could not be saved: %s", err)
+            flash("Your complaint could not be saved. Please try again.", "danger")
+            return redirect(url_for("complaint_new"))
+        if email and email_configured():
+            send_plain_email(email, f"KOJA complaint received ({reference})",
+                             f"Thank you for contacting KOJA AFRICA. We received your complaint, reference {reference}. "
+                             "We will reply here or in your KOJA inbox.")
+        return render_page("Complaint received", r"""
+<div class="hero"><h1>Thank you</h1><p>We received your complaint.</p></div>
+<div class="card"><p>Your reference number is <strong>{{ reference }}</strong>. Keep it for your records.</p>
+<p>{% if user %}You can follow it under <a href="{{ url_for('complaints_mine') }}">My complaints</a>.{% else %}We will reply to the email address or phone number you gave.{% endif %}</p>
+<a class="btn secondary" href="{{ url_for('home') }}">Back to KOJA</a></div>""", reference=reference, user=user)
+    return render_page("Send a complaint", r"""
+<div class="hero"><h1>Send a complaint</h1><p>Tell us what went wrong. A KOJA team member reviews every complaint.</p></div>
+<div class="card"><form method="post" action="{{ url_for('complaint_new') }}">
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<div style="position:absolute;left:-9999px" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>
+<label>Category</label><select name="category">{% for value, label in categories %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select>
+<label>Subject</label><input name="subject" maxlength="160" required value="">
+<label>What happened?</label><textarea name="message" rows="6" maxlength="4000" required placeholder="Give dates, names of services or products and what you expected."></textarea>
+<label>Link or reference (optional)</label><input name="related_url" maxlength="500" placeholder="Page address or order / assignment reference">
+{% if not user %}<label>Your name (optional)</label><input name="name" maxlength="120">
+<label>Email address</label><input name="email" type="email" maxlength="160">
+<label>Phone number</label><input name="phone" maxlength="30" inputmode="tel"><p class="small">Give an email or phone number so we can reply.</p>{% else %}<p class="small">We will reply in your KOJA inbox and by email if you have one on your account.</p>{% endif %}
+<button class="btn" type="submit">Send complaint</button></form></div>""", categories=COMPLAINT_CATEGORIES, user=user)
+
+@app.route("/complaints")
+@login_required
+def complaints_mine():
+    user = current_user()
+    rows = db_select("koja_complaints", {"user_id": str(user.get("id"))}, order="created_at.desc", limit=200) or []
+    return render_page("My complaints", r"""
+<div class="hero"><h1>My complaints</h1><p>Complaints you have sent to KOJA and the replies.</p></div>
+<div class="card"><p><a class="btn" href="{{ url_for('complaint_new') }}">Send a new complaint</a> <a class="btn secondary" href="{{ url_for('account_messages') }}">Message preferences</a></p>
+<table><tr><th>Reference</th><th>Subject</th><th>Status</th><th>Sent</th></tr>
+{% for c in rows %}<tr><td><a href="{{ url_for('complaint_view', complaint_id=c.id) }}">{{ c.reference }}</a></td><td>{{ c.subject }}</td><td>{{ c.status }}</td><td>{{ c.created_at }}</td></tr>{% else %}<tr><td colspan="4">You have not sent any complaints.</td></tr>{% endfor %}</table></div>""", rows=rows)
+
+@app.route("/complaints/<complaint_id>")
+@login_required
+def complaint_view(complaint_id):
+    user = current_user()
+    row = first_row("koja_complaints", {"id": complaint_id})
+    if not row or not (user.get("is_admin") or str(row.get("user_id")) == str(user.get("id"))):
+        abort(404)
+    return render_page("Complaint " + str(row.get("reference")), r"""
+<div class="hero"><h1>{{ c.subject }}</h1><p>Reference {{ c.reference }} · {{ c.status }}</p></div>
+<div class="card"><p class="small">{{ c.category }} · sent {{ c.created_at }}</p><p style="white-space:pre-wrap">{{ c.message }}</p>
+{% if c.related_url %}<p class="small">Link or reference: {{ c.related_url }}</p>{% endif %}</div>
+<div class="card"><h2>KOJA reply</h2>{% if c.admin_response %}<p style="white-space:pre-wrap">{{ c.admin_response }}</p><p class="small">{{ c.responded_at }}</p>{% else %}<p>No reply yet.</p>{% endif %}</div>""", c=row)
+
+def _notify_complaint_reply(row, response, status):
+    """In-app reply for the complainant, plus email when they gave one. Never SMS, to protect the budget."""
+    uid = row.get("user_id")
+    if uid:
+        db_insert("koja_notifications", {"user_id": str(uid), "notification_type": "complaint",
+                  "title": f"Reply to complaint {row.get('reference')}", "body": response[:900],
+                  "related_id": str(row.get("id")), "is_read": False, "created_at": utc_now()})
+    email = clean(row.get("email") or ((first_row("profiles", {"id": str(uid)}) or {}).get("email") if uid else "")).lower()
+    if email and email_configured() and (not uid or _notification_channel_on(str(uid), "email")):
+        send_plain_email(email, f"KOJA reply to complaint {row.get('reference')}",
+                         f"Status: {status}\n\n{response}\n\nSee your KOJA inbox for more detail.")
+
+@app.route("/admin/complaints")
+@admin_required
+def admin_complaints():
+    status = clean(request.args.get("status"))
+    filters = {"status": status} if status in COMPLAINT_STATUSES else {}
+    rows = db_select("koja_complaints", filters, order="created_at.desc", limit=300) or []
+    counts = {s: len(db_select("koja_complaints", {"status": s}, limit=5000) or []) for s in COMPLAINT_STATUSES}
+    return render_page("Complaints", r"""
+<div class="hero"><h1>Complaints</h1><p>Open {{ counts.open }} · In review {{ counts.in_review }} · Resolved {{ counts.resolved }} · Closed {{ counts.closed }}</p></div>
+<div class="card"><p><a class="btn secondary" href="{{ url_for('admin_complaints') }}">All</a>{% for s in statuses %} <a class="btn secondary" href="{{ url_for('admin_complaints', status=s) }}">{{ s }}</a>{% endfor %}</p>
+<table><tr><th>Reference</th><th>Subject</th><th>Category</th><th>Status</th><th>Sent</th><th></th></tr>
+{% for c in rows %}<tr><td>{{ c.reference }}</td><td>{{ c.subject }}</td><td>{{ c.category }}</td><td>{{ c.status }}</td><td>{{ c.created_at }}</td><td><a href="{{ url_for('admin_complaint', complaint_id=c.id) }}">Open</a></td></tr>{% else %}<tr><td colspan="6">No complaints.</td></tr>{% endfor %}</table></div>""",
+        rows=rows, counts=counts, statuses=COMPLAINT_STATUSES)
+
+@app.route("/admin/complaints/<complaint_id>", methods=["GET", "POST"])
+@admin_required
+def admin_complaint(complaint_id):
+    row = first_row("koja_complaints", {"id": complaint_id})
+    if not row:
+        abort(404)
+    admin = current_user()
+    if request.method == "POST":
+        status = clean(request.form.get("status"))
+        if status not in COMPLAINT_STATUSES:
+            flash("Choose a valid status.", "warning")
+            return redirect(url_for("admin_complaint", complaint_id=complaint_id))
+        response = clean(request.form.get("response"))[:4000]
+        changes = {"status": status, "updated_at": utc_now()}
+        replied = bool(response) and response != (row.get("admin_response") or "")
+        if replied:
+            changes.update({"admin_response": response, "responded_by": str(admin.get("id")), "responded_at": utc_now()})
+        db_update("koja_complaints", {"id": complaint_id}, changes)
+        if replied:
+            _notify_complaint_reply(row, response, status)
+        flash("Complaint updated.", "success")
+        return redirect(url_for("admin_complaint", complaint_id=complaint_id))
+    return render_page("Complaint " + str(row.get("reference")), r"""
+<div class="hero"><h1>{{ c.subject }}</h1><p>{{ c.reference }} · {{ c.category }} · {{ c.status }}</p></div>
+<div class="card"><p style="white-space:pre-wrap">{{ c.message }}</p>
+<p class="small">From: {{ c.name or 'Not given' }} · {{ c.email or 'no email' }} · {{ c.phone or 'no phone' }} · account: {{ c.user_id or 'guest' }}</p>
+{% if c.related_url %}<p class="small">Link or reference: {{ c.related_url }}</p>{% endif %}</div>
+<div class="card"><h2>Reply and status</h2><form method="post">
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<label>Status</label><select name="status">{% for s in statuses %}<option value="{{ s }}" {% if s == c.status %}selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+<label>Reply to the complainant</label><textarea name="response" rows="6" maxlength="4000">{{ c.admin_response or '' }}</textarea>
+<p class="small">A new reply is sent to their KOJA inbox, and by email if they gave one.</p>
+<button class="btn" type="submit">Save</button></form></div>""", c=row, statuses=COMPLAINT_STATUSES)
 
 @app.route("/admin/assignment-payments")
 @admin_required
@@ -7809,7 +8274,7 @@ def admin():
 <a class="btn" href="{{ url_for('media_live_partners') }}">KOJA Live partners</a>
 <a class="btn success" href="{{ url_for('media_live_add') }}">Add live stream</a>
 <a class="btn" href="{{ url_for('admin_assignment_answerers') }}">Assignment answerers</a>
-<a class="btn" href="{{ url_for('admin_assignment_payments') }}">Assignment payments</a>
+<a class="btn" href="{{ url_for('admin_assignment_payments') }}">Assignment payments</a><a class="btn" href="{{ url_for('admin_welcome_messages') }}">Welcome messages</a><a class="btn" href="{{ url_for('admin_complaints') }}">Complaints</a>
 <a class="btn" href="{{ url_for('admin_drivers') }}">Drivers</a>
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
