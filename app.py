@@ -8386,6 +8386,8 @@ def admin_assignment_answer(assignment_id):
 <div class="card"><h3>Assigned answerer</h3><p class="small">Current answerer: {{ item.get("answerer_id") or "none" }}</p><form method="post" action="{{ url_for('admin_assign_answerer', assignment_id=item.get('id')) }}"><label>Answerer email or user ID (must be approved)</label><input name="answerer" required><button class="btn" type="submit">Assign answerer</button></form></div><div class="card"><h3> Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="submitted" {% if item.get('status')=='submitted' %}selected{% endif %}>Submitted</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="completed" {% if item.get('status')=='completed' %}selected{% endif %}>Completed</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
 <div class="card"><form method="post" enctype="multipart/form-data">
 <label>Written Answer / User Message</label><textarea name="answer" placeholder="Write the answer or explanation for the user...">{{ item.get("answer") or "" }}</textarea>
+<label>Price for this answer (whole kwacha, more than K{{ fee }})</label><input name="answer_price" type="number" min="{{ fee + 1 }}" step="1" value="{{ item.get("answer_price")|int if item.get("answer_price") else "" }}">
+<p class="small">Leave blank to keep the current price. The answerer normally sets this.</p>
 <label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
 <p class="small">Upload the final PDF answer here. Maximum {{ max_upload_mb }} MB.</p>
 <button type="submit">Save Answer & PDF</button>
@@ -8400,7 +8402,7 @@ def admin_assignment_answer(assignment_id):
 </form>
 {% elif item.get("answer_file_path") %}<p>Answer PDF is uploaded, but it must be <strong>approved</strong> in the Approval Centre before it can be emailed.</p>{% else %}<p>Upload and save an answer PDF first.</p>{% endif %}
 </div>
-""", item=item, recipient_name=(recipient or {}).get("full_name") or (recipient or {}).get("name") or "User", recipient_email=recipient_email, max_upload_mb=MAX_UPLOAD_MB,
+""", item=item, recipient_name=(recipient or {}).get("full_name") or (recipient or {}).get("name") or "User", recipient_email=recipient_email, max_upload_mb=MAX_UPLOAD_MB, fee=ASSIGNMENT_ADMIN_FEE,
                     default_message="\n".join([
                         "Hello %s," % ((recipient or {}).get("full_name") or (recipient or {}).get("name") or "User"),
                         "",
