@@ -1644,12 +1644,603 @@ async function activateEngine(engine,button){const box=document.getElementById('
 # HOME / HEALTH
 # ============================================================
 
+
+QUEST_QUESTIONS = [
+ {"subject": "Sports", "q": "Which country has won the most FIFA World Cup titles?", "options": ["Germany", "Argentina", "Brazil", "Italy"], "answer": 2},
+ {"subject": "Sports", "q": "How many players from one team are on a basketball court at the same time?", "options": ["4", "5", "6", "7"], "answer": 1},
+ {"subject": "Sports", "q": "How many players does a football (soccer) team have on the pitch?", "options": ["9", "10", "11", "12"], "answer": 2},
+ {"subject": "Sports", "q": "How many balls make up one over in cricket?", "options": ["4", "5", "6", "8"], "answer": 2},
+ {"subject": "Sports", "q": "What sport uses a shuttlecock?", "options": ["Tennis", "Badminton", "Squash", "Table tennis"], "answer": 1},
+ {"subject": "Sports", "q": "What is the nickname of the Zambia national football team?", "options": ["The Eagles", "The Chipolopolo", "The Lions", "The Warriors"], "answer": 1},
+ {"subject": "Sports", "q": "How many rings are on the Olympic flag?", "options": ["4", "5", "6", "7"], "answer": 1},
+ {"subject": "Maths", "q": "What is 15% of 200?", "options": ["20", "25", "30", "35"], "answer": 2},
+ {"subject": "Maths", "q": "What is 12 × 12?", "options": ["124", "134", "144", "154"], "answer": 2},
+ {"subject": "Maths", "q": "What is the square root of 81?", "options": ["7", "8", "9", "10"], "answer": 2},
+ {"subject": "Maths", "q": "What is the area of a rectangle that is 5 m by 8 m?", "options": ["13 m²", "26 m²", "40 m²", "45 m²"], "answer": 2},
+ {"subject": "Maths", "q": "Which is the next prime number after 7?", "options": ["8", "9", "10", "11"], "answer": 3},
+ {"subject": "Science", "q": "What is the chemical formula for water?", "options": ["CO2", "H2O", "NaCl", "O2"], "answer": 1},
+ {"subject": "Science", "q": "Which planet is closest to the Sun?", "options": ["Venus", "Earth", "Mercury", "Mars"], "answer": 2},
+ {"subject": "Science", "q": "What gas do plants take in for photosynthesis?", "options": ["Oxygen", "Nitrogen", "Carbon dioxide", "Hydrogen"], "answer": 2},
+ {"subject": "Science", "q": "How many chambers does a healthy human heart have?", "options": ["2", "3", "4", "5"], "answer": 2},
+ {"subject": "Science", "q": "At sea level, at what temperature in °C does water boil?", "options": ["90", "100", "110", "212"], "answer": 1},
+ {"subject": "English", "q": "What is the plural of 'child'?", "options": ["Childs", "Childes", "Children", "Childrens"], "answer": 2},
+ {"subject": "English", "q": "What is the opposite of 'ancient'?", "options": ["Old", "Modern", "Historic", "Past"], "answer": 1},
+ {"subject": "Health", "q": "Which vitamin does the skin make when it is exposed to sunlight?", "options": ["Vitamin C", "Vitamin D", "Vitamin K", "Vitamin B12"], "answer": 1},
+ {"subject": "Health", "q": "What is a normal resting heart rate for an adult, in beats per minute?", "options": ["30 to 40", "60 to 100", "120 to 140", "150 to 170"], "answer": 1},
+ {"subject": "Road safety", "q": "What colour is a stop sign?", "options": ["Blue", "Yellow", "Red", "Green"], "answer": 2},
+ {"subject": "Road safety", "q": "Should passengers in the back seat wear a seatbelt?", "options": ["No, only the driver", "Only on highways", "Yes, always", "Only children"], "answer": 2},
+ {"subject": "Business", "q": "What is profit?", "options": ["Money you borrow", "Income minus costs", "Total sales only", "Money in the bank"], "answer": 1},
+]
+
+def _quest_today():
+    """Five questions for today. The same five for everyone on the same day."""
+    day = datetime.now(timezone.utc).date()
+    n = len(QUEST_QUESTIONS)
+    start = (day.toordinal() * 5) % n
+    return [QUEST_QUESTIONS[(start + i) % n] for i in range(min(5, n))]
+
+
+# ============================================================
+# KOJA FOOTBALL: live two-player matches (rooms stored in koja_football_rooms / koja_football_players)
+# The host's browser runs the match. Guests send their moves; the host publishes the match state.
+# ============================================================
+FOOTBALL_TEAMS = [
+    {"name": "Lusaka Lions", "color": "#1d4ed8"},
+    {"name": "Copperbelt Comets", "color": "#dc2626"},
+    {"name": "Victoria Falls Eagles", "color": "#15803d"},
+    {"name": "Kafue Stars", "color": "#eab308"},
+    {"name": "Ndola Strikers", "color": "#7c3aed"},
+    {"name": "Livingstone Rangers", "color": "#0891b2"},
+    {"name": "Chilanga Blaze", "color": "#ea580c"},
+    {"name": "Mongu Warriors", "color": "#111827"},
+]
+FOOTBALL_TEAM_NAMES = [t["name"] for t in FOOTBALL_TEAMS]
+FOOTBALL_MATCH_SECONDS = 120
+
+def _fb_code():
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(6))
+
+def _fb_room_for_user(code, user_id):
+    """Returns (room, my_player, players). my_player is None when the caller is not in the room."""
+    room = first_row("koja_football_rooms", {"code": str(code or "").upper()})
+    if not room:
+        return None, None, []
+    players = db_select("koja_football_players", {"room_id": str(room["id"])}, limit=2) or []
+    mine = next((p for p in players if str(p.get("user_id")) == str(user_id)), None)
+    return room, mine, players
+
+def _fb_public_room(room, players, mine):
+    return {
+        "code": room.get("code"), "status": room.get("status"), "score_home": room.get("score_home") or 0,
+        "score_away": room.get("score_away") or 0, "state": room.get("state") or {}, "video_room": room.get("video_room"),
+        "is_host": str(room.get("host_id")) == str((mine or {}).get("user_id")),
+        "you": {"slot": (mine or {}).get("slot")},
+        "players": [{"slot": p.get("slot"), "name": p.get("name"), "team_name": p.get("team_name"), "input": p.get("input") or {}} for p in players],
+    }
+
+@app.route("/football/create", methods=["POST"])
+@login_required
+def football_create():
+    user = current_user() or {}
+    uid = str(user.get("id"))
+    data = request.get_json(silent=True) or request.form
+    team = clean(data.get("team"))
+    if team not in FOOTBALL_TEAM_NAMES:
+        return jsonify({"error": "Choose a team."}), 400
+    now = utc_now()
+    room = None
+    for _ in range(5):
+        room, err = db_insert("koja_football_rooms", {"code": _fb_code(), "host_id": uid, "status": "lobby", "state": {}, "created_at": now, "updated_at": now})
+        if room and not err:
+            break
+    if not room:
+        return jsonify({"error": "Could not create a match. Try again."}), 500
+    _, err = db_insert("koja_football_players", {"room_id": room["id"], "user_id": uid, "name": clean(user.get("full_name") or user.get("name") or user.get("email"))[:40] or "Player", "slot": "home", "team_name": team, "input": {}, "joined_at": now})
+    if err:
+        db_update("koja_football_rooms", {"id": room["id"]}, {"status": "finished"})
+        return jsonify({"error": "Could not join the match."}), 500
+    return jsonify({"code": room["code"], "slot": "home"})
+
+@app.route("/football/<code>/join", methods=["POST"])
+@login_required
+def football_join(code):
+    user = current_user() or {}
+    uid = str(user.get("id"))
+    data = request.get_json(silent=True) or request.form
+    team = clean(data.get("team"))
+    room, mine, players = _fb_room_for_user(code, uid)
+    if not room:
+        return jsonify({"error": "Match not found."}), 404
+    if mine:
+        return jsonify({"code": room["code"], "slot": mine.get("slot")})
+    if room.get("status") != "lobby":
+        return jsonify({"error": "This match has already started."}), 409
+    if len(players) >= 2:
+        return jsonify({"error": "This match is full."}), 409
+    if team not in FOOTBALL_TEAM_NAMES:
+        return jsonify({"error": "Choose a team."}), 400
+    if any(clean(p.get("team_name")) == team for p in players):
+        return jsonify({"error": "That team is already taken. Choose another."}), 409
+    _, err = db_insert("koja_football_players", {"room_id": room["id"], "user_id": uid, "name": clean(user.get("full_name") or user.get("name") or user.get("email"))[:40] or "Player", "slot": "away", "team_name": team, "input": {}, "joined_at": utc_now()})
+    if err:
+        return jsonify({"error": "Could not join the match."}), 409
+    return jsonify({"code": room["code"], "slot": "away"})
+
+@app.route("/football/<code>/state")
+@login_required
+def football_state(code):
+    uid = str((current_user() or {}).get("id"))
+    room, mine, players = _fb_room_for_user(code, uid)
+    if not room or not mine:
+        return jsonify({"error": "Not in this match."}), 403
+    return jsonify(_fb_public_room(room, players, mine))
+
+@app.route("/football/<code>/input", methods=["POST"])
+@login_required
+def football_input(code):
+    uid = str((current_user() or {}).get("id"))
+    room, mine, _players = _fb_room_for_user(code, uid)
+    if not room or not mine:
+        return jsonify({"error": "Not in this match."}), 403
+    if room.get("status") != "playing":
+        return jsonify({"ok": False})
+    data = request.get_json(silent=True) or {}
+    dx = max(-1.0, min(1.0, float(data.get("dx") or 0)))
+    dy = max(-1.0, min(1.0, float(data.get("dy") or 0)))
+    kick = bool(data.get("kick"))
+    db_update("koja_football_players", {"room_id": room["id"], "user_id": uid}, {"input": {"dx": dx, "dy": dy, "kick": kick, "t": utc_now()}})
+    return jsonify({"ok": True})
+
+@app.route("/football/<code>/sync", methods=["POST"])
+@login_required
+def football_sync(code):
+    uid = str((current_user() or {}).get("id"))
+    room, mine, _players = _fb_room_for_user(code, uid)
+    if not room or not mine:
+        return jsonify({"error": "Not in this match."}), 403
+    if str(room.get("host_id")) != uid:
+        return jsonify({"error": "Only the host can update the match."}), 403
+    data = request.get_json(silent=True) or {}
+    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+    if len(json.dumps(state)) > 20000:
+        return jsonify({"error": "Match state too large."}), 400
+    status = data.get("status") if data.get("status") in ("playing", "finished") else room.get("status")
+    try:
+        sh = max(0, min(99, int(data.get("score_home", room.get("score_home") or 0))))
+        sa = max(0, min(99, int(data.get("score_away", room.get("score_away") or 0))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Bad score."}), 400
+    db_update("koja_football_rooms", {"id": room["id"]}, {"state": state, "status": status, "score_home": sh, "score_away": sa, "updated_at": utc_now()})
+    return jsonify({"ok": True})
+
+@app.route("/football/<code>/start", methods=["POST"])
+@login_required
+def football_start(code):
+    uid = str((current_user() or {}).get("id"))
+    room, mine, players = _fb_room_for_user(code, uid)
+    if not room or not mine:
+        return jsonify({"error": "Not in this match."}), 403
+    if str(room.get("host_id")) != uid:
+        return jsonify({"error": "Only the host can start the match."}), 403
+    if room.get("status") != "lobby":
+        return jsonify({"ok": True})
+    db_update("koja_football_rooms", {"id": room["id"]}, {"status": "playing", "state": {}, "score_home": 0, "score_away": 0, "updated_at": utc_now()})
+    return jsonify({"ok": True})
+
+@app.route("/football/<code>/video-token")
+@login_required
+def football_video_token(code):
+    user = current_user() or {}
+    room, mine, _players = _fb_room_for_user(code, str(user.get("id")))
+    if not room or not mine:
+        return jsonify({"error": "Not in this match."}), 403
+    video_room = "football-" + str(room.get("code")).lower()
+    try:
+        token = _livekit_token(video_room, str(user.get("id")), user.get("full_name") or user.get("email") or "KOJA Player", can_publish=True)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"token": token, "url": _livekit_server_url(), "room": video_room})
+
+@app.route("/football")
+@login_required
+def football_page():
+    return render_page("KOJA Football", r"""
+<div class="hero"><h2>KOJA Football</h2><p>Play a live football match with a friend. Pick a team, share your match code, and play.</p></div>
+<div id="fbLobbyCard" class="card">
+  <div id="fbStart">
+    <h3>Start a match</h3>
+    <label>Your team</label>
+    <select id="fbTeamNew">{% for t in teams %}<option value="{{ t.name }}">{{ t.name }}</option>{% endfor %}</select>
+    <button class="btn" type="button" id="fbCreate">Create match</button>
+    <hr>
+    <h3>Join a match</h3>
+    <label>Match code</label><input id="fbCode" maxlength="6" placeholder="e.g. K7P2QD" style="text-transform:uppercase">
+    <label>Your team</label>
+    <select id="fbTeamJoin">{% for t in teams %}<option value="{{ t.name }}">{{ t.name }}</option>{% endfor %}</select>
+    <button class="btn secondary" type="button" id="fbJoin">Join match</button>
+  </div>
+  <div id="fbWaiting" style="display:none">
+    <h3>Match code: <span id="fbShownCode" style="letter-spacing:.15em"></span></h3>
+    <p class="small">Share this code with your friend. They enter it under "Join a match".</p>
+    <div id="fbSlots"></div>
+    <button class="btn" type="button" id="fbStartMatch" style="display:none">Start match</button>
+    <p class="small" id="fbLobbyMsg"></p>
+  </div>
+</div>
+<div id="fbGame" class="card" style="display:none">
+  <div class="small" id="fbHud"></div>
+  <canvas id="fbCanvas" width="800" height="500" style="width:100%;height:auto;border-radius:12px;background:#166534"></canvas>
+  <div id="fbTouch" style="display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap">
+    <button class="btn secondary" type="button" data-dir="left">◀</button>
+    <button class="btn secondary" type="button" data-dir="up">▲</button>
+    <button class="btn secondary" type="button" data-dir="down">▼</button>
+    <button class="btn secondary" type="button" data-dir="right">▶</button>
+    <button class="btn" type="button" data-dir="kick">Kick</button>
+  </div>
+  <p class="small">Keyboard: arrow keys or WASD to move, Space or K to kick.</p>
+  <div style="margin-top:12px">
+    <button class="btn secondary" type="button" id="fbShare">Share my screen (live video)</button>
+    <p class="small" id="fbVideoMsg"></p>
+    <div id="fbVideos" style="display:grid;gap:8px"></div>
+  </div>
+</div>
+<div id="fbResult" class="card" style="display:none"></div>
+<script>
+(function(){
+  var TEAMS = {{ teams|tojson }};
+  var W = 800, H = 500, SPEED = 230, KICK = 520, MATCH = {{ match_seconds }}, GOAL_HALF = 60, R_BALL = 8;
+  var st = {code:null, isHost:false, slot:null, mode:'lobby', room:null, sim:null, scoreHome:0, scoreAway:0, dr:null, keys:{}, touch:{dx:0,dy:0,kick:false}, inFlight:false, lvl:null};
+  function $(id){return document.getElementById(id);}
+  function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+  function colorOf(name){for(var i=0;i<TEAMS.length;i++){if(TEAMS[i].name===name)return TEAMS[i].color;}return '#64748b';}
+  function api(path, opt){
+    opt = opt || {};
+    return fetch(path, {method: opt.method || 'GET', headers: {'Content-Type':'application/json'}, body: opt.body ? JSON.stringify(opt.body) : undefined})
+      .then(function(r){ return r.json().catch(function(){return {};}).then(function(d){ if(!r.ok) throw new Error(d.error || 'Something went wrong.'); return d; }); });
+  }
+  function msg(id, text){ var e=$(id); if(e) e.textContent = text || ''; }
+  function show(id, on){ var e=$(id); if(e) e.style.display = on ? '' : 'none'; }
+
+  // ---- lobby ----
+  function codeFrom(){ return ($('fbCode').value || '').trim().toUpperCase(); }
+  $('fbCreate').onclick = function(){
+    api('/football/create', {method:'POST', body:{team: $('fbTeamNew').value}})
+      .then(function(d){ st.code = d.code; st.slot = d.slot; st.isHost = true; enterLobby(); })
+      .catch(function(e){ msg('fbLobbyMsg', e.message); });
+  };
+  $('fbJoin').onclick = function(){
+    var c = codeFrom(); if(!c){ msg('fbLobbyMsg','Enter the match code.'); return; }
+    api('/football/'+encodeURIComponent(c)+'/join', {method:'POST', body:{team: $('fbTeamJoin').value}})
+      .then(function(d){ st.code = d.code; st.slot = d.slot; st.isHost = false; enterLobby(); })
+      .catch(function(e){ msg('fbLobbyMsg', e.message); });
+  };
+  function enterLobby(){
+    show('fbStart', false); show('fbWaiting', true);
+    $('fbShownCode').textContent = st.code;
+    startPolling();
+  }
+  $('fbStartMatch').onclick = function(){
+    api('/football/'+encodeURIComponent(st.code)+'/start', {method:'POST', body:{}})
+      .catch(function(e){ msg('fbLobbyMsg', e.message); });
+  };
+  function renderLobby(room){
+    var box = $('fbSlots'); box.innerHTML = '';
+    ['home','away'].forEach(function(slot){
+      var p = (room.players || []).filter(function(x){return x.slot===slot;})[0];
+      var d = document.createElement('p');
+      d.textContent = (slot==='home' ? 'Home: ' : 'Away: ') + (p ? (p.team_name + ' · ' + p.name) : 'waiting for a player (a computer player will play this side)');
+      if(p){ d.style.color = colorOf(p.team_name); d.style.fontWeight = '700'; }
+      box.appendChild(d);
+    });
+    show('fbStartMatch', st.isHost);
+    msg('fbLobbyMsg', st.isHost ? 'You are the host. Start when you are ready.' : 'Waiting for the host to start the match.');
+  }
+
+  // ---- input ----
+  function localInput(){
+    var dx = (st.keys.left?-1:0) + (st.keys.right?1:0) + st.touch.dx;
+    var dy = (st.keys.up?-1:0) + (st.keys.down?1:0) + st.touch.dy;
+    dx = clamp(dx,-1,1); dy = clamp(dy,-1,1);
+    if(dx && dy){ dx *= 0.7071; dy *= 0.7071; }
+    return {dx: dx, dy: dy, kick: !!(st.keys.kick || st.touch.kick)};
+  }
+  function remoteInput(side){
+    if(!st.room) return null;
+    var p = (st.room.players || []).filter(function(x){return x.slot===side;})[0];
+    return p ? (p.input || {}) : null;
+  }
+  function readInput(side){
+    if(st.isHost && st.slot===side) return localInput();
+    if(!st.isHost && st.slot===side) return localInput();
+    var r = remoteInput(side);
+    if(r && typeof r.dx === 'number') return {dx: r.dx, dy: r.dy, kick: !!r.kick};
+    return aiInput(side);
+  }
+  function aiInput(side){
+    var p = st.sim[side], b = st.sim.ball;
+    var vx = b.x - p.x, vy = b.y - p.y, len = Math.hypot(vx, vy);
+    if(len < 6) return {dx:0, dy:0, kick:false};
+    return {dx: vx/len, dy: vy/len, kick: len < 40};
+  }
+
+  // ---- match simulation (run by the host) ----
+  function inGoal(y){ return y > H/2 - GOAL_HALF && y < H/2 + GOAL_HALF; }
+  function kickoff(){
+    st.sim.ball = {x: W/2, y: H/2, vx: 0, vy: 0};
+    st.sim.home = {x: 200, y: H/2, cool: 0, fx: 1, fy: 0};
+    st.sim.away = {x: 600, y: H/2, cool: 0, fx: -1, fy: 0};
+  }
+  function goal(scorer){
+    if(scorer === 'home') st.scoreHome++; else st.scoreAway++;
+    kickoff();
+  }
+  function moveBall(dt){
+    var b = st.sim.ball;
+    b.x += b.vx*dt; b.y += b.vy*dt;
+    var f = Math.pow(0.985, dt*30); b.vx *= f; b.vy *= f;
+    if(b.y < R_BALL){ b.y = R_BALL; b.vy = Math.abs(b.vy)*0.7; }
+    if(b.y > H-R_BALL){ b.y = H-R_BALL; b.vy = -Math.abs(b.vy)*0.7; }
+    if(b.x < R_BALL){ if(inGoal(b.y)){ goal('away'); return; } b.x = R_BALL; b.vx = Math.abs(b.vx)*0.7; }
+    if(b.x > W-R_BALL){ if(inGoal(b.y)){ goal('home'); return; } b.x = W-R_BALL; b.vx = -Math.abs(b.vx)*0.7; }
+  }
+  function simStep(dt){
+    var s = st.sim;
+    ['home','away'].forEach(function(side){
+      var p = s[side], i = readInput(side);
+      p.x = clamp(p.x + i.dx*SPEED*dt, 16, W-16);
+      p.y = clamp(p.y + i.dy*SPEED*dt, 16, H-16);
+      if(i.dx || i.dy){ p.fx = i.dx; p.fy = i.dy; }
+      p.cool = Math.max(0, (p.cool||0) - dt);
+      var b = s.ball, d = Math.hypot(b.x-p.x, b.y-p.y);
+      if(i.kick && p.cool <= 0 && d < 40){
+        var fx = p.fx || 0, fy = p.fy || 0, len = Math.hypot(fx, fy);
+        if(!len){ fx = (side==='home') ? 1 : -1; fy = 0; len = 1; }
+        b.vx = fx/len*KICK; b.vy = fy/len*KICK; p.cool = 0.4;
+      } else if(d < 26 && (i.dx || i.dy)){
+        b.vx = i.dx*SPEED*0.9; b.vy = i.dy*SPEED*0.9;
+      }
+    });
+    moveBall(dt);
+    s.t = Math.max(0, s.t - dt);
+  }
+
+  // ---- drawing ----
+  var cv = $('fbCanvas'), ctx = cv.getContext('2d');
+  function drawField(){
+    ctx.fillStyle = '#166534'; ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 3;
+    ctx.strokeRect(6,6,W-12,H-12);
+    ctx.beginPath(); ctx.moveTo(W/2,6); ctx.lineTo(W/2,H-6); ctx.stroke();
+    ctx.beginPath(); ctx.arc(W/2,H/2,60,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, H/2-GOAL_HALF, 8, GOAL_HALF*2);
+    ctx.fillRect(W-8, H/2-GOAL_HALF, 8, GOAL_HALF*2);
+  }
+  function drawPlayer(p, color, label){
+    ctx.beginPath(); ctx.arc(p.x,p.y,16,0,Math.PI*2); ctx.fillStyle = color; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+    ctx.fillStyle = '#ffffff'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, p.x, p.y);
+  }
+  function lerpTo(cur, target){
+    if(!cur) return {x: target.x, y: target.y};
+    return {x: cur.x + (target.x-cur.x)*0.35, y: cur.y + (target.y-cur.y)*0.35};
+  }
+  function viewState(){
+    if(st.isHost && st.sim) return st.sim;
+    var rs = st.room && st.room.state;
+    if(!rs || !rs.ball) return null;
+    if(!st.dr) st.dr = {};
+    st.dr.ball = lerpTo(st.dr.ball, rs.ball);
+    st.dr.home = lerpTo(st.dr.home, rs.home || {x:200,y:H/2});
+    st.dr.away = lerpTo(st.dr.away, rs.away || {x:600,y:H/2});
+    return {ball: st.dr.ball, home: st.dr.home, away: st.dr.away, t: rs.t};
+  }
+  function homeTeam(){ var p=(st.room&&st.room.players||[]).filter(function(x){return x.slot==='home';})[0]; return p ? p : null; }
+  function awayTeam(){ var p=(st.room&&st.room.players||[]).filter(function(x){return x.slot==='away';})[0]; return p ? p : null; }
+  function draw(){
+    drawField();
+    var v = viewState();
+    var h = homeTeam(), a = awayTeam();
+    var hc = h ? colorOf(h.team_name) : '#1d4ed8', ac = a ? colorOf(a.team_name) : '#dc2626';
+    if(v){
+      drawPlayer(v.home, hc, 'H');
+      drawPlayer(v.away, ac, 'A');
+      ctx.beginPath(); ctx.arc(v.ball.x, v.ball.y, R_BALL, 0, Math.PI*2); ctx.fillStyle = '#ffffff'; ctx.fill();
+    }
+    var sh = st.isHost ? st.scoreHome : ((st.room && st.room.score_home) || 0);
+    var sa = st.isHost ? st.scoreAway : ((st.room && st.room.score_away) || 0);
+    var t = v ? Math.ceil(v.t || 0) : 0;
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(W/2-150, 8, 300, 34);
+    ctx.fillStyle = '#ffffff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText((h?h.team_name:'Home') + '  ' + sh + ' - ' + sa + '  ' + (a?a.team_name:'Computer'), W/2, 25);
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(W/2-40, H-36, 80, 26);
+    ctx.fillStyle = '#ffffff'; ctx.fillText(Math.floor(t/60) + ':' + String(t%60).padStart(2,'0'), W/2, H-23);
+    $('fbHud').textContent = (h?h.team_name:'Home') + ' vs ' + (a?a.team_name:'Computer') + ' · match code ' + st.code;
+  }
+  function loop(){ if(st.mode === 'play'){ draw(); } requestAnimationFrame(loop); }
+  requestAnimationFrame(loop);
+
+  // ---- match flow ----
+  function enterPlay(){
+    if(st.mode === 'play') return;
+    st.mode = 'play';
+    show('fbLobbyCard', false); show('fbGame', true); show('fbResult', false);
+    st.scoreHome = 0; st.scoreAway = 0;
+    if(st.isHost){
+      st.sim = {ball:{x:W/2,y:H/2,vx:0,vy:0}, home:{x:200,y:H/2,cool:0,fx:1,fy:0}, away:{x:600,y:H/2,cool:0,fx:-1,fy:0}, t: MATCH};
+    }
+  }
+  function showResult(){
+    if(st.mode === 'done') return;
+    st.mode = 'done';
+    show('fbGame', false);
+    var r = $('fbResult'); r.style.display = '';
+    var sh = (st.room && st.room.score_home) || 0, sa = (st.room && st.room.score_away) || 0;
+    var win = sh === sa ? 'It is a draw.' : (sh > sa ? 'Home team wins!' : 'Away team wins!');
+    r.innerHTML = '';
+    var h = document.createElement('h3'); h.textContent = 'Full time: ' + sh + ' - ' + sa; r.appendChild(h);
+    var p = document.createElement('p'); p.textContent = win; r.appendChild(p);
+    var b = document.createElement('a'); b.className = 'btn'; b.href = '/football'; b.textContent = 'Play another match'; r.appendChild(b);
+  }
+  function tick(){
+    if(st.inFlight || !st.code) return;
+    st.inFlight = true;
+    api('/football/'+encodeURIComponent(st.code)+'/state').then(function(d){
+      st.room = d; st.isHost = !!d.is_host; st.slot = (d.you && d.you.slot) || st.slot;
+      if(st.mode === 'lobby') renderLobby(d);
+      if(d.status === 'playing'){ enterPlay(); }
+      if(d.status === 'finished'){ showResult(); }
+      if(st.mode === 'play' && st.isHost && st.sim && d.status === 'playing'){
+        var fin = st.sim.t <= 0;
+        return api('/football/'+encodeURIComponent(st.code)+'/sync', {method:'POST', body:{state: {ball: st.sim.ball, home: st.sim.home, away: st.sim.away, t: st.sim.t}, score_home: st.scoreHome, score_away: st.scoreAway, status: fin ? 'finished' : 'playing'}});
+      }
+      if(st.mode === 'play' && !st.isHost){
+        return api('/football/'+encodeURIComponent(st.code)+'/input', {method:'POST', body: localInput()});
+      }
+    }).catch(function(e){ msg('fbLobbyMsg', e.message); }).then(function(){ st.inFlight = false; });
+  }
+  function startPolling(){
+    setInterval(function(){
+      if(st.mode === 'play' && st.isHost && st.sim){ simStep(1/10); }
+    }, 100);
+    setInterval(tick, 120);
+  }
+
+  // ---- keyboard and touch ----
+  var KEY = {arrowleft:'left', a:'left', arrowright:'right', d:'right', arrowup:'up', w:'up', arrowdown:'down', s:'down', ' ':'kick', space:'kick', k:'kick', enter:'kick'};
+  function keyName(e){ var k = (e.key||'').toLowerCase(); return k; }
+  window.addEventListener('keydown', function(e){ var n = KEY[keyName(e)]; if(n){ st.keys[n] = true; if(['arrowleft','arrowright','arrowup','arrowdown',' '].indexOf(keyName(e))>=0) e.preventDefault(); } });
+  window.addEventListener('keyup', function(e){ var n = KEY[keyName(e)]; if(n){ st.keys[n] = false; } });
+  document.querySelectorAll('#fbTouch button').forEach(function(b){
+    var d = b.getAttribute('data-dir');
+    function down(ev){ ev.preventDefault();
+      if(d==='left') st.touch.dx = -1; else if(d==='right') st.touch.dx = 1;
+      else if(d==='up') st.touch.dy = -1; else if(d==='down') st.touch.dy = 1; else st.touch.kick = true; }
+    function up(){ st.touch.dx = 0; st.touch.dy = 0; st.touch.kick = false; }
+    b.addEventListener('pointerdown', down); b.addEventListener('pointerup', up); b.addEventListener('pointerleave', up); b.addEventListener('pointercancel', up);
+  });
+
+  // ---- live screen share (LiveKit) ----
+  function loadLiveKit(){
+    if(window.LivekitClient) return Promise.resolve(window.LivekitClient);
+    return new Promise(function(res, rej){
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js';
+      s.onload = function(){ res(window.LivekitClient); }; s.onerror = function(){ rej(new Error('Could not load live video.')); };
+      document.head.appendChild(s);
+    });
+  }
+  $('fbShare').onclick = function(){
+    if(!st.code){ return; }
+    msg('fbVideoMsg', 'Connecting…');
+    api('/football/'+encodeURIComponent(st.code)+'/video-token')
+      .then(function(d){ return loadLiveKit().then(function(LK){ return {LK:LK, d:d}; }); })
+      .then(function(x){
+        var room = new x.LK.Room();
+        room.on(x.LK.RoomEvent.TrackSubscribed, function(track){
+          if(track.kind === 'video'){ var el = track.attach(); el.style.width = '100%'; el.style.borderRadius = '10px'; $('fbVideos').appendChild(el); }
+        });
+        return room.connect(x.d.url, x.d.token).then(function(){ return room.localParticipant.setScreenShareEnabled(true); })
+          .then(function(){ msg('fbVideoMsg', 'Your screen is shared live.'); });
+      })
+      .catch(function(e){ msg('fbVideoMsg', e.message || 'Live video is not available right now.'); });
+  };
+})();
+</script>
+""", teams=FOOTBALL_TEAMS, match_seconds=FOOTBALL_MATCH_SECONDS)
+
+@app.route("/games")
+def games():
+    todays = _quest_today()
+    return render_page("KOJA Quest", r"""
+<div class="hero"><h2>KOJA Quest</h2><p>Today's 5-question challenge: sports, academics, health and more. Come back every day to keep your streak.</p><div class="actions"><a class="btn secondary" href="{{ url_for('football_page') }}">Play live football</a></div></div>
+<div class="card" id="questBox">
+  <div class="small" id="qProgress"></div>
+  <h3 id="qText"></h3>
+  <div id="qOpts"></div>
+  <p class="small" id="qFeedback"></p>
+  <button class="btn" id="qNext" type="button" style="display:none">Next</button>
+</div>
+<div class="card" id="qResult" style="display:none"></div>
+<div class="card"><strong>Points:</strong> <span id="qPoints">0</span> &nbsp;·&nbsp; <strong>Streak:</strong> <span id="qStreak">0</span> day(s)
+<p class="small">Points and streak are saved on this device.</p></div>
+<script>
+(function(){
+  var QS = {{ todays|tojson }};
+  var KEY = 'koja_quest_v1';
+  function day(offset){var d=new Date(Date.now()+offset*86400000);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+  var today = day(0), yesterday = day(-1);
+  var state = {points:0, streak:0, last:null, done:{}};
+  try { var saved = JSON.parse(localStorage.getItem(KEY) || 'null'); if (saved) state = Object.assign(state, saved); } catch(e) {}
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e) {} }
+  function show(){ document.getElementById('qPoints').textContent = state.points; document.getElementById('qStreak').textContent = state.streak; }
+  function el(id){ return document.getElementById(id); }
+  function finishedView(){
+    el('questBox').style.display = 'none';
+    var r = state.done[today];
+    var text = 'I scored ' + r.score + '/' + QS.length + ' on KOJA Quest today!';
+    var box = el('qResult');
+    box.style.display = 'block';
+    box.innerHTML = '';
+    var h = document.createElement('h3'); h.textContent = 'Today\'s challenge is complete'; box.appendChild(h);
+    var p = document.createElement('p'); p.textContent = 'You scored ' + r.score + ' out of ' + QS.length + '. Come back tomorrow for a new challenge.'; box.appendChild(p);
+    var b = document.createElement('button'); b.className = 'btn secondary'; b.type = 'button'; b.textContent = 'Share my score';
+    b.onclick = function(){ if (navigator.share) { navigator.share({text: text}).catch(function(){}); } else if (navigator.clipboard) { navigator.clipboard.writeText(text); b.textContent = 'Copied'; } };
+    box.appendChild(b);
+  }
+  var idx = 0, score = 0;
+  function render(){
+    var q = QS[idx];
+    el('qProgress').textContent = 'Question ' + (idx + 1) + ' of ' + QS.length + ' · ' + q.subject;
+    el('qText').textContent = q.q;
+    el('qFeedback').textContent = '';
+    el('qNext').style.display = 'none';
+    var opts = el('qOpts'); opts.innerHTML = '';
+    q.options.forEach(function(o, i){
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn secondary'; b.style.display = 'block'; b.style.width = '100%'; b.style.margin = '6px 0';
+      b.textContent = o;
+      b.onclick = function(){ answer(i); };
+      opts.appendChild(b);
+    });
+  }
+  function answer(i){
+    var q = QS[idx];
+    var btns = el('qOpts').querySelectorAll('button');
+    btns.forEach(function(b){ b.disabled = true; });
+    if (i === q.answer) { score++; state.points += 10; el('qFeedback').textContent = 'Correct! +10 points'; btns[i].classList.remove('secondary'); }
+    else { el('qFeedback').textContent = 'Not quite. The answer is: ' + q.options[q.answer]; btns[q.answer].classList.remove('secondary'); }
+    show();
+    var next = el('qNext');
+    next.style.display = 'inline-flex';
+    next.textContent = (idx + 1 < QS.length) ? 'Next' : 'See my score';
+  }
+  el('qNext').onclick = function(){
+    if (idx + 1 < QS.length) { idx++; render(); return; }
+    if (score === QS.length) state.points += 20;
+    if (state.last === yesterday) state.streak += 1; else if (state.last !== today) state.streak = 1;
+    state.last = today;
+    state.done[today] = {score: score};
+    save(); show(); finishedView();
+  };
+  show();
+  if (state.done[today]) { finishedView(); }
+  else { render(); }
+  window.addEventListener('pagehide', save);
+})();
+</script>
+""", todays=todays)
+
 @app.route("/")
 def home():
     return render_page("KOJA AFRICA", r"""
 <div class="hero">
 <h1>KOJA AFRICA</h1>
 <p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
+<div class="actions"><a class="btn" href="{{ url_for('games') }}">Play today's challenge</a></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('football_page') }}">Play live football</a></div>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
