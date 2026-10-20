@@ -985,7 +985,7 @@ def enforce_csrf():
 
 BASE_HTML = r"""
 <!doctype html>
-<html lang="en" data-koja-theme="system">
+<html lang="en" data-koja-theme="system" data-wp="{{ wallpaper|default(1) }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
@@ -1039,11 +1039,12 @@ BASE_HTML = r"""
 })();
 </script>
 <script>
+(function(){try{var w=localStorage.getItem("koja_wallpaper");if(w&&/^(10|[1-9]|custom)$/.test(w))document.documentElement.dataset.wp=w;}catch(e){}})();
 (function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="black"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";}catch(e){}})();
 </script>
 <style>
 *{box-sizing:border-box}
-:root{color-scheme:light;--on-accent:#ffffff;--bg:#ffffff;--surface:#ffffff;--surface-2:#f2f2f2;--text:#000000;--muted:#5c5c5c;--border:#d9d9d9;--nav:#000000;--nav-2:#1a1a1a;--accent:#000000;--accent-2:#2b2b2b;--gold:#000000;--success:#15803d;--danger:#b42318;--warn:#b45309;--focus:#000000;--radius:14px;--shadow:0 1px 2px rgba(15,23,42,.05),0 6px 20px rgba(15,23,42,.06);--shadow-hover:0 2px 4px rgba(15,23,42,.06),0 12px 28px rgba(15,23,42,.10)}
+:root{color-scheme:light;--on-accent:#ffffff;--koja-custom-wp:none;--bg:#ffffff;--surface:#ffffff;--surface-2:#f2f2f2;--text:#000000;--muted:#5c5c5c;--border:#d9d9d9;--nav:#000000;--nav-2:#1a1a1a;--accent:#000000;--accent-2:#2b2b2b;--gold:#000000;--success:#15803d;--danger:#b42318;--warn:#b45309;--focus:#000000;--radius:14px;--shadow:0 1px 2px rgba(15,23,42,.05),0 6px 20px rgba(15,23,42,.06);--shadow-hover:0 2px 4px rgba(15,23,42,.06),0 12px 28px rgba(15,23,42,.10)}
 html[data-koja-theme="dark"],html[data-koja-theme="black"]{color-scheme:dark;--on-accent:#000000;--bg:#0d0d0d;--surface:#171717;--surface-2:#202020;--text:#f2f2f2;--muted:#a3a3a3;--border:#333333;--nav:#000000;--nav-2:#111111;--accent:#ffffff;--accent-2:#e6e6e6;--gold:#ffffff;--success:#4ade80;--danger:#fca5a5;--warn:#fcd34d;--focus:#ffffff;--shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.30);--shadow-hover:0 2px 6px rgba(0,0,0,.4),0 14px 32px rgba(0,0,0,.42)}
 html[data-koja-theme="black"]{color-scheme:dark;--on-accent:#000000;--bg:#000000;--surface:#0a0a0a;--surface-2:#141414;--text:#f2f2f2;--muted:#a3a3a3;--border:#262626;--nav:#000000;--nav-2:#0a0a0a;--accent:#ffffff;--accent-2:#e6e6e6;--gold:#ffffff;--success:#4ade80;--danger:#fca5a5;--warn:#fcd34d;--focus:#ffffff;--shadow:none;--shadow-hover:0 0 0 1px #3a3a3a}
 @media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--on-accent:#000000;--bg:#0d0d0d;--surface:#171717;--surface-2:#202020;--text:#f2f2f2;--muted:#a3a3a3;--border:#333333;--nav:#000000;--nav-2:#111111;--accent:#ffffff;--accent-2:#e6e6e6;--gold:#ffffff;--success:#4ade80;--danger:#fca5a5;--warn:#fcd34d;--focus:#ffffff;--shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.30);--shadow-hover:0 2px 6px rgba(0,0,0,.4),0 14px 32px rgba(0,0,0,.42)}}
@@ -1107,6 +1108,23 @@ button:disabled,.btn[disabled]{opacity:.55;cursor:not-allowed;transform:none;box
 .btn.secondary{background:var(--surface-2);color:var(--text);border:1px solid var(--border);box-shadow:none}
 .btn.secondary:hover{background:var(--surface);border-color:var(--accent)}
 button,.btn{border-radius:999px;padding:10px 18px}
+button:active,.btn:active{transform:scale(.97)}
+button.is-busy,.btn.is-busy{pointer-events:none;opacity:.85}
+.btn.is-busy .btn-ico{opacity:0}
+button.is-busy::after,.btn.is-busy::after{content:"";display:inline-block;width:15px;height:15px;margin-left:8px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:kojaSpin .7s linear infinite;vertical-align:middle}
+@media (prefers-reduced-motion:reduce){button.is-busy::after,.btn.is-busy::after{animation-duration:2.4s}}
+html[data-wp="1"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%230b3a8c'/%3E%3Cstop offset='.55' stop-color='%231566d6'/%3E%3Cstop offset='1' stop-color='%230a2f78'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%232aa7ff' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%237fe9ff' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%232aa7ff' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 180 C 300 60, 600 80, 800 260 S 1250 520, 1700 300'/%3E%3Cpath d='M-50 380 C 250 260, 520 300, 700 420 S 1100 560, 1700 380' stroke-width='5'/%3E%3Cpath d='M900 -40 C 1100 150, 1250 120, 1700 40' stroke-width='4'/%3E%3Cpath d='M1000 620 C 1150 420, 1400 430, 1700 200' stroke-width='3'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#0b3a8c;color:#fff;border:0}
+html[data-wp="2"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23053b3d'/%3E%3Cstop offset='.55' stop-color='%230f7b93'/%3E%3Cstop offset='1' stop-color='%23042a2c'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%2319a7b8' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%239ff5e8' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%2319a7b8' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 420 C 200 200, 480 520, 780 300 S 1200 60, 1700 220'/%3E%3Cpath d='M-50 120 C 350 260, 620 40, 900 180 S 1350 380, 1700 120' stroke-width='5'/%3E%3Cpath d='M300 640 C 520 460, 700 560, 1000 400' stroke-width='4'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#053b3d;color:#fff;border:0}
+html[data-wp="3"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232a0b5c'/%3E%3Cstop offset='.55' stop-color='%236a3fd6'/%3E%3Cstop offset='1' stop-color='%231b0740'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%239b6bff' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%23e1c8ff' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%239b6bff' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M1700 -40 C 1400 120, 1200 60, 900 220 S 300 520, -50 380'/%3E%3Cpath d='M1700 260 C 1350 360, 1150 260, 800 420 S 300 620, -50 560' stroke-width='5'/%3E%3Cpath d='M600 -40 C 700 160, 900 240, 1100 160' stroke-width='4'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#2a0b5c;color:#fff;border:0}
+html[data-wp="4"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233a0c12'/%3E%3Cstop offset='.55' stop-color='%23c2412d'/%3E%3Cstop offset='1' stop-color='%23241015'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%23f2b84b' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%23ffd8a8' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%23f2b84b' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 300 C 400 120, 700 480, 1000 300 S 1450 120, 1700 320'/%3E%3Cpath d='M-50 500 C 350 360, 650 620, 1000 460 S 1450 300, 1700 480' stroke-width='5'/%3E%3Cpath d='M-50 100 C 400 40, 700 140, 1000 60' stroke-width='4'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#3a0c12;color:#fff;border:0}
+html[data-wp="5"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%230a2a16'/%3E%3Cstop offset='.55' stop-color='%231f7a4a'/%3E%3Cstop offset='1' stop-color='%23071c10'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%234ade80' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%23b8f5c8' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%234ade80' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 240 C 260 420, 520 60, 820 240 S 1260 480, 1700 260'/%3E%3Cpath d='M-50 480 C 300 340, 600 560, 900 420 S 1300 240, 1700 440' stroke-width='5'/%3E%3Cpath d='M1100 -40 C 1200 180, 1400 260, 1700 160' stroke-width='4'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#0a2a16;color:#fff;border:0}
+html[data-wp="6"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23050b1a'/%3E%3Cstop offset='.55' stop-color='%231b2f5c'/%3E%3Cstop offset='1' stop-color='%2303060f'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%235b7fd1' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%239fb8e8' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%235b7fd1' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 90 C 420 260, 760 -40, 1100 200 S 1500 420, 1700 180'/%3E%3Cpath d='M-50 560 C 380 380, 720 660, 1060 500 S 1480 340, 1700 540' stroke-width='5'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#050b1a;color:#fff;border:0}
+html[data-wp="7"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233d0a1f'/%3E%3Cstop offset='.55' stop-color='%23d6456f'/%3E%3Cstop offset='1' stop-color='%232a0716'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%23ff7aa2' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%23ffc2d6' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%23ff7aa2' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 330 C 330 150, 640 500, 940 320 S 1380 110, 1700 300'/%3E%3Cpath d='M-50 170 C 300 360, 660 40, 980 210 S 1400 430, 1700 200' stroke-width='5'/%3E%3Cpath d='M500 640 C 680 470, 860 520, 1200 420' stroke-width='4'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#3d0a1f;color:#fff;border:0}
+html[data-wp="8"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%231d2630'/%3E%3Cstop offset='.55' stop-color='%234f6b84'/%3E%3Cstop offset='1' stop-color='%2311171f'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%238fb3d6' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%23d6e4f0' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%238fb3d6' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 200 C 360 80, 700 320, 1000 180 S 1400 60, 1700 200'/%3E%3Cpath d='M-50 420 C 260 300, 640 520, 960 380 S 1380 280, 1700 400' stroke-width='5'/%3E%3Cpath d='M1200 640 C 1300 460, 1500 420, 1700 360' stroke-width='4'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#1d2630;color:#fff;border:0}
+html[data-wp="9"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233d2400'/%3E%3Cstop offset='.55' stop-color='%23d98a1a'/%3E%3Cstop offset='1' stop-color='%232a1900'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%23ffc857' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%23fff0c2' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%23ffc857' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 140 C 500 340, 800 -20, 1150 230 S 1500 480, 1700 260'/%3E%3Cpath d='M-50 400 C 420 220, 760 560, 1100 380 S 1450 180, 1700 380' stroke-width='5'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#3d2400;color:#fff;border:0}
+html[data-wp="10"] .hero{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 600' preserveAspectRatio='xMidYMid slice'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2304242b'/%3E%3Cstop offset='.55' stop-color='%231a6b5e'/%3E%3Cstop offset='1' stop-color='%230a1a3a'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%234a7dff' stop-opacity='0'/%3E%3Cstop offset='.5' stop-color='%237bffd0' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%234a7dff' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='3'/%3E%3C/filter%3E%3C/defs%3E%3Crect width='1600' height='600' fill='url%28%23g%29'/%3E%3Cg fill='none' stroke='url%28%23r%29' stroke-width='6' filter='url%28%23b%29'%3E%3Cpath d='M-50 260 C 280 60, 620 460, 960 260 S 1380 60, 1700 280'/%3E%3Cpath d='M-50 40 C 400 200, 700 120, 1000 260 S 1400 400, 1700 60' stroke-width='5'/%3E%3Cpath d='M-50 540 C 350 430, 700 600, 1060 480 S 1450 560, 1700 500' stroke-width='4'/%3E%3C/g%3E%3C/svg%3E") center/cover no-repeat,#04242b;color:#fff;border:0}
+html[data-wp] .hero h1,html[data-wp] .hero p{color:#fff}
+html[data-wp="custom"] .hero{background:var(--koja-custom-wp) center/cover no-repeat,#0b3a8c;color:#fff;border:0}
 .btn-ico{display:inline-grid;place-items:center;width:22px;height:22px;flex:0 0 22px;border-radius:50%;background:rgba(255,255,255,.22);font-size:13px;line-height:1;font-weight:700}
 .btn.secondary .btn-ico{background:var(--border)}
 
@@ -1397,6 +1415,64 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',decorate);else decorate();
 })();
 </script>
+<script>
+(function(){
+  function db(){return new Promise(function(res,rej){var r=indexedDB.open('koja-prefs',1);r.onupgradeneeded=function(){r.result.createObjectStore('kv');};r.onsuccess=function(){res(r.result);};r.onerror=function(){rej(r.error);};});}
+  function tx(mode,fn){return db().then(function(d){return new Promise(function(res,rej){var t=d.transaction('kv',mode);var q=fn(t.objectStore('kv'));t.oncomplete=function(){res(q&&q.result!==undefined?q.result:null);};t.onerror=function(){rej(t.error);};});});}
+  function compress(file){return new Promise(function(res,rej){
+    if(!file||!/^image\//.test(file.type))return rej(new Error('Please choose an image file.'));
+    if(file.size>25*1024*1024)return rej(new Error('That image is too large. Choose one under 25 MB.'));
+    var url=URL.createObjectURL(file);var img=new Image();
+    img.onload=function(){var m=Math.min(1,1600/Math.max(img.naturalWidth,img.naturalHeight));var c=document.createElement('canvas');c.width=Math.round(img.naturalWidth*m);c.height=Math.round(img.naturalHeight*m);c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);res(c.toDataURL('image/jpeg',0.82));};
+    img.onerror=function(){URL.revokeObjectURL(url);rej(new Error('Could not read that image.'));};
+    img.src=url;});}
+  function apply(dataUrl){document.documentElement.style.setProperty('--koja-custom-wp','url("'+dataUrl+'")');document.documentElement.dataset.wp='custom';}
+  window.kojaWp={
+    compress:compress,
+    get:function(){return tx('readonly',function(st){return st.get('wallpaper');}).catch(function(){return null;});},
+    put:function(v){return tx('readwrite',function(st){return st.put(v,'wallpaper');});},
+    del:function(){return tx('readwrite',function(st){return st.delete('wallpaper');});},
+    apply:apply
+  };
+  try{if(localStorage.getItem('koja_wallpaper')==='custom'){window.kojaWp.get().then(function(v){if(v)apply(v);});}}catch(e){}
+})();
+</script>
+<script>
+(function(){
+  var lastTap=null,lastAt=0,timers=new WeakMap();
+  function busy(el){
+    if(!el||el.classList.contains('is-busy'))return;
+    el.classList.add('is-busy');el.setAttribute('aria-busy','true');
+    timers.set(el,setTimeout(function(){unbusy(el);},30000));
+  }
+  function unbusy(el){
+    if(!el)return;
+    el.classList.remove('is-busy');el.removeAttribute('aria-busy');
+    var t=timers.get(el);if(t){clearTimeout(t);timers.delete(el);}
+  }
+  document.addEventListener('click',function(e){
+    var b=e.target&&e.target.closest?e.target.closest('button,a.btn'):null;
+    if(!b)return;
+    lastTap=b;lastAt=Date.now();
+    if(b.tagName==='A'&&b.getAttribute('href')&&b.getAttribute('href').charAt(0)!=='#')busy(b);
+  },true);
+  document.addEventListener('submit',function(e){
+    var b=e.submitter||(e.target.querySelector&&e.target.querySelector('button[type=submit],button:not([type]),.btn'));
+    if(b)busy(b);
+  },true);
+  var _fetch=window.fetch;
+  if(_fetch){
+    window.fetch=function(){
+      var b=(Date.now()-lastAt<1500)?lastTap:null;
+      if(b)busy(b);
+      var p=_fetch.apply(this,arguments);
+      if(b)p.then(function(){unbusy(b);},function(){unbusy(b);});
+      return p;
+    };
+  }
+  window.addEventListener('pageshow',function(){document.querySelectorAll('.is-busy').forEach(unbusy);});
+})();
+</script>
 </body>
 </html>
 """
@@ -1406,6 +1482,7 @@ def render_page(title, body_template, **context):
     body = render_template_string(body_template, **context)
     prefs = session.get("koja_settings", {}) or {}
     theme = prefs.get("theme", "system") if prefs.get("theme") in ("system", "light", "dark", "black") else "system"
+    wp = (sum(ord(ch) for ch in str(title or "KOJA")) % 10) + 1
     descriptions = {
         "KOJA AFRICA": "KOJA AFRICA — research, assignments, documents, professional services and delivery services.",
         "Research": "KOJA AFRICA Research Engine — search web information, scholarly literature and KOJA documents and create structured research notes and citations.",
@@ -1463,7 +1540,7 @@ def render_page(title, body_template, **context):
         graph.insert(0, website)
         seo_jsonld = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False)
 
-    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, meta_description=descriptions.get(title, "KOJA AFRICA — research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
+    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, wallpaper=wp, meta_description=descriptions.get(title, "KOJA AFRICA — research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
 
 # ============================================================
 # USER SETTINGS
@@ -1546,6 +1623,7 @@ def settings():
 <div class="grid">
 <div class="card"><h3>Account</h3><p><strong>Name:</strong> {{ user.name or "KOJA User" }}</p><p><strong>Email:</strong> {{ user.email or "Not provided" }}</p><p><strong>Role:</strong> {{ user.role or "student" }}</p><p class="small">KOJA Identity protects account identity, verification and security across connected services.</p><button class="btn secondary" type="button" onclick="activateEngine('identity',this)">Activate KOJA Identity</button></div>
 <div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option><option value="black" {% if prefs.theme == 'black' %}selected{% endif %}>Black</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form><form method="post" style="margin-top:6px"><input type="hidden" name="action" value="reset"><button class="btn secondary" type="submit">Reset to defaults</button></form></div>
+<div class="card"><h3>Wallpaper</h3><p class="small">Each page has its own wallpaper by default. Choose one to use everywhere on this device. Wallpapers and photos are saved on this device only.</p><select id="kojaWallpaper" onchange="kojaSetWallpaper(this.value)"><option value="auto">Automatic (different per page)</option><option value="1">Wallpaper 1</option><option value="2">Wallpaper 2</option><option value="3">Wallpaper 3</option><option value="4">Wallpaper 4</option><option value="5">Wallpaper 5</option><option value="6">Wallpaper 6</option><option value="7">Wallpaper 7</option><option value="8">Wallpaper 8</option><option value="9">Wallpaper 9</option><option value="10">Wallpaper 10</option><option value="custom">My photo</option></select><div style="margin-top:12px"><label>Use a photo from your phone or library</label><input type="file" id="kojaWpFile" accept="image/*" onchange="kojaUploadWallpaper(this)" style="padding:8px"><p class="small" id="kojaWpMsg"></p><button class="btn secondary" type="button" onclick="kojaRemoveWallpaper()">Remove my photo</button></div><script>(function(){var s=document.getElementById("kojaWallpaper");try{var w=localStorage.getItem("koja_wallpaper");s.value=(w&&/^(10|[1-9]|custom)$/.test(w))?w:"auto";}catch(e){}})();function kojaMsg(t){var m=document.getElementById("kojaWpMsg");if(m)m.textContent=t;}function kojaSetWallpaper(v){if(v==="custom"){window.kojaWp.get().then(function(d){if(!d){kojaMsg("Upload a photo first.");document.getElementById("kojaWallpaper").value="auto";return;}try{localStorage.setItem("koja_wallpaper","custom");}catch(e){}location.reload();});return;}try{if(v==="auto"){localStorage.removeItem("koja_wallpaper");}else{localStorage.setItem("koja_wallpaper",v);}}catch(e){}location.reload();}function kojaUploadWallpaper(input){var f=input.files&&input.files[0];if(!f)return;kojaMsg("Saving photo…");window.kojaWp.compress(f).then(function(d){return window.kojaWp.put(d);}).then(function(){try{localStorage.setItem("koja_wallpaper","custom");}catch(e){}location.reload();}).catch(function(e){kojaMsg((e&&e.message)||"Could not save the photo on this device.");});}function kojaRemoveWallpaper(){window.kojaWp.del().then(function(){try{localStorage.removeItem("koja_wallpaper");}catch(e){}location.reload();}).catch(function(){kojaMsg("Could not remove the photo.");});}</script></div>
 <div class="card"><h3>Notifications</h3><p>Choose which updates you receive and how: in the app, push, email or SMS.</p><a class="btn" href="{{ url_for('notification_settings') }}">Notification settings</a></div>
 <div class="card"><h3>Privacy and your data</h3><p>Read how KOJA uses your data, or request deletion of your account and data.</p><div class="actions"><a class="btn secondary" href="{{ url_for('public_privacy') }}">Privacy Policy</a><a class="btn secondary" href="{{ url_for('public_data_deletion') }}">Data deletion</a></div></div>
 <div class="card"><h3>KOJA Intelligence</h3><p>Shared intelligence for AI, Business, Market, payments and logistics. Settings access is recorded as a platform event.</p><button class="btn" type="button" onclick="activateEngine('intelligence',this)">Connect Intelligence</button></div>
@@ -15232,7 +15310,7 @@ def koja_admin_go_live():
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
 KOJA_NEXUS_AFRICA_NOW_VERSION = "3.1-schema-safe-global-news-jobs"
-KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "60")))
+KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(300, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "900")))
 KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS = max(30, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS", "30")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(4, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "8")), 20))
@@ -15259,15 +15337,12 @@ _KOJA_AFRICA_NOW_FEEDS = [
     ("BBC Latin America", "https://feeds.bbci.co.uk/news/world/latin_america/rss.xml", "world_news"),
     ("BBC Australia", "https://feeds.bbci.co.uk/news/world/australia/rss.xml", "world_news"),
     # Official vacancies
-    ("African Development Bank Vacancies", "https://www.afdb.org/en/vacancies/directeur/news-and-events/about-us/careers/current-vacancies/rss", "jobs"),
     ("UN Careers", "https://careers.un.org/jobfeed?isPage=true&language=en", "jobs"),
 ]
 _KOJA_AFRICA_NOW_JOB_PAGES = [
     ("FreshTalent Africa", "https://jobs.freshtalent.africa/jobs", "Algeria;Angola;Benin;Botswana;Burkina Faso;Burundi;Cabo Verde;Cameroon;Central African Republic;Chad;Comoros;DR Congo;Democratic Republic of the Congo;Republic of Congo;Republic of the Congo;Côte d’Ivoire;Djibouti;Egypt;Equatorial Guinea;Eritrea;Eswatini;Ethiopia;Gabon;Gambia;Ghana;Guinea;Guinea-Bissau;Kenya;Lesotho;Liberia;Libya;Madagascar;Malawi;Mali;Mauritania;Mauritius;Morocco;Mozambique;Namibia;Niger;Nigeria;Rwanda;São Tomé and Príncipe;Senegal;Seychelles;Sierra Leone;Somalia;South Africa;South Sudan;Sudan;Tanzania;Togo;Tunisia;Uganda;Zambia;Zimbabwe;Africa"),
     ("AfriCareers", "https://jobs.africareers.net/jobs", "Uganda;Kenya;Rwanda;Tanzania;South Africa;Nigeria;Ghana;Africa"),
     ("ZambiaJobsToday", "https://www.zambiajobstoday.com/jobs", "Zambia"),
-    ("African Development Bank Current Vacancies", "https://www.afdb.org/en/about-us/careers/current-vacancies", "Africa"),
-    ("African Development Bank Consultants", "https://www.afdb.org/en/about-us/careers/current-vacancies/consultants", "Africa"),
 ]
 
 _AFRICA_COUNTRY_NAMES = [
@@ -15702,7 +15777,6 @@ def _africa_now_emergency_fetch(limit=20):
         ("BBC Africa", "https://www.bbc.com/news/world/africa", "africa_news", "html"),
         ("BBC World", "https://www.bbc.com/news", "world_news", "html"),
         ("UN Careers", "https://careers.un.org/jobfeed?isPage=true&language=en", "jobs", "feed"),
-        ("African Development Bank Vacancies", "https://www.afdb.org/en/vacancies/directeur/news-and-events/about-us/careers/current-vacancies/rss", "jobs", "feed"),
     ]
     collected = []
     status = {}
@@ -15794,20 +15868,25 @@ def _africa_now_refresh(force=False):
             return {"ok": False, "reason": "no_items", "sources": source_status}
 
         fetched_at = utc_now()
-        inserted = 0
+        # One bulk insert for all stories (was one database call per story).
+        # job_deadline and job_type are derived at read time by /api/nexus/jobs,
+        # so they must not be required columns for ingestion.
+        rows_out = []
         for item in collected:
-            # Keep the collector compatible with the existing Supabase table schema.
-            # job_deadline and job_type are derived at read time by /api/nexus/jobs,
-            # so they must not be required columns for ingestion.
             payload = {k: item.get(k) for k in (
                 "source_key","title","url","source_name","category","country",
                 "published_at","score","image_url","video_url","media_type",
                 "is_live","summary"
             )}
             payload.update({"fetched_at": fetched_at, "is_active": True})
-            _, err = db_insert("koja_nexus_africa_now", payload, returning="minimal")
-            if not err:
-                inserted += 1
+            rows_out.append(payload)
+        inserted = 0
+        if rows_out:
+            _, err = db_insert("koja_nexus_africa_now", rows_out, returning="minimal")
+            if err:
+                logger.warning("Africa Now bulk insert failed: %s", str(err)[:300])
+            else:
+                inserted = len(rows_out)
 
         # Only replace the old cache after a complete successful write. This prevents a
         # temporary Supabase/feed failure from leaving AFRICA NOW empty.
@@ -19656,8 +19735,14 @@ def ac_teacher_dashboard():
 @login_required
 def ac_classes():
     classes = [c for c in _ac_rows("koja_academic_classes", {"status": "open"}, order="scheduled_date.asc", limit=100)]
+    class_ids = [str(c["id"]) for c in classes if c.get("id")]
+    taken = {}
+    if class_ids:
+        for e in _ac_rows("koja_academic_enrollments", {"class_id": "in.(" + ",".join(class_ids) + ")"}, limit=5000):
+            key = str(e.get("class_id"))
+            taken[key] = taken.get(key, 0) + 1
     for c in classes:
-        c["_seats"] = max(0, int(c.get("capacity") or 0) - len(_ac_rows("koja_academic_enrollments", {"class_id": c["id"]}, limit=500)))
+        c["_seats"] = max(0, int(c.get("capacity") or 0) - taken.get(str(c.get("id")), 0))
     return _ac_page("Group classes", r'''
 <div class="hero"><h2>Live group classes</h2></div>
 {% for c in classes %}<div class="card"><h3>{{ c.title }}</h3><p>{{ c.subject }} · {{ c.scheduled_date }} {{ c.start_time }} · {{ c.duration_minutes }} min</p>
