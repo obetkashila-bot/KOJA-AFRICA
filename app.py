@@ -1110,6 +1110,31 @@ button:disabled,.btn[disabled]{opacity:.55;cursor:not-allowed;transform:none;box
 button,.btn{border-radius:999px;padding:10px 18px}
 button:active,.btn:active{transform:scale(.97)}
 button.is-busy,.btn.is-busy{pointer-events:none;opacity:.85}
+#fbCanvas{width:100%;height:auto;border-radius:12px;background:#166534;display:block}
+.fb-top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.fb-pad{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-top:10px}
+.fb-dpad{display:grid;grid-template-columns:repeat(3,56px);grid-template-rows:repeat(3,56px);gap:6px}
+.fb-dpad button{width:56px;height:56px;border-radius:50%;padding:0;font-size:20px;user-select:none;touch-action:none}
+.fb-dpad button[data-dir=up]{grid-column:2;grid-row:1}
+.fb-dpad button[data-dir=left]{grid-column:1;grid-row:2}
+.fb-dpad button[data-dir=right]{grid-column:3;grid-row:2}
+.fb-dpad button[data-dir=down]{grid-column:2;grid-row:3}
+.fb-kick{width:96px;height:96px;border-radius:50%;font-size:18px;user-select:none;touch-action:none}
+.fb-rotate{display:none}
+@media (orientation:portrait) and (pointer:coarse){
+  body.fb-playing .fb-rotate{display:flex;position:fixed;inset:0;z-index:9500;align-items:center;justify-content:center;background:#0b1220;color:#fff;text-align:center;padding:24px}
+  body.fb-playing #fbGame{display:none !important}
+}
+@media (orientation:landscape) and (pointer:coarse){
+  body.fb-playing #fbGame{position:fixed;inset:0;margin:0;border-radius:0;z-index:9000;display:flex !important;flex-direction:column;background:#0b1220;padding:6px 10px;overflow:hidden}
+  body.fb-playing .fb-top{margin:0}
+  body.fb-playing .fb-extra{display:none}
+  body.fb-playing #fbCanvas{flex:1 1 auto;min-height:0;width:auto;height:auto;max-width:100%;max-height:calc(100vh - 150px);object-fit:contain;align-self:center}
+  body.fb-playing .fb-pad{margin:4px 0 0;flex:0 0 auto}
+  body.fb-playing .fb-dpad{grid-template-columns:repeat(3,50px);grid-template-rows:repeat(3,50px)}
+  body.fb-playing .fb-dpad button{width:50px;height:50px}
+  body.fb-playing .fb-kick{width:84px;height:84px}
+}
 .btn.is-busy .btn-ico{opacity:0}
 button.is-busy::after,.btn.is-busy::after{content:"";display:inline-block;width:15px;height:15px;margin-left:8px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:kojaSpin .7s linear infinite;vertical-align:middle}
 @media (prefers-reduced-motion:reduce){button.is-busy::after,.btn.is-busy::after{animation-duration:2.4s}}
@@ -1453,7 +1478,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
   document.addEventListener('click',function(e){
     var b=e.target&&e.target.closest?e.target.closest('button,a.btn'):null;
     if(!b)return;
-    lastTap=b;lastAt=Date.now();
+    if(!b.closest('#fbTouch')){lastTap=b;lastAt=Date.now();}
     if(b.tagName==='A'&&b.getAttribute('href')&&b.getAttribute('href').charAt(0)!=='#')busy(b);
   },true);
   document.addEventListener('submit',function(e){
@@ -1740,7 +1765,33 @@ def football_create():
     if err:
         db_update("koja_football_rooms", {"id": room["id"]}, {"status": "finished"})
         return jsonify({"error": "Could not join the match."}), 500
-    return jsonify({"code": room["code"], "slot": "home"})
+    if bool(data.get("vs_computer")):
+        # Solo match: the computer plays the away side and the match starts straight away.
+        db_update("koja_football_rooms", {"id": room["id"]}, {"status": "playing", "updated_at": utc_now()})
+        return jsonify({"code": room["code"], "slot": "home", "status": "playing", "vs_computer": True})
+    return jsonify({"code": room["code"], "slot": "home", "status": "lobby"})
+
+@app.route("/football/open")
+@login_required
+def football_open():
+    """Matches that a real player opened and that are still waiting for an opponent (last 30 minutes)."""
+    uid = str((current_user() or {}).get("id"))
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    rooms = db_select("koja_football_rooms", {"status": "lobby"}, order="created_at.desc", limit=50) or []
+    out = []
+    for r in rooms:
+        created = _parse_ts(r.get("created_at"))
+        if not created or created < cutoff:
+            continue
+        if str(r.get("host_id")) == uid:
+            continue
+        players = db_select("koja_football_players", {"room_id": str(r.get("id"))}, limit=2) or []
+        if len(players) != 1 or any(str(p.get("user_id")) == uid for p in players):
+            continue
+        home = players[0]
+        out.append({"code": r.get("code"), "host_name": home.get("name") or "Player",
+                    "team_name": home.get("team_name"), "created_at": r.get("created_at")})
+    return jsonify({"matches": out[:20]})
 
 @app.route("/football/<code>/join", methods=["POST"])
 @login_required
@@ -1849,10 +1900,21 @@ def football_page():
 <div class="hero"><h2>KOJA Football</h2><p>Play a live football match with a friend. Pick a team, share your match code, and play.</p></div>
 <div id="fbLobbyCard" class="card">
   <div id="fbStart">
-    <h3>Start a match</h3>
+    <h3>Play alone</h3>
+    <label>Your team</label>
+    <select id="fbTeamSolo">{% for t in teams %}<option value="{{ t.name }}">{{ t.name }}</option>{% endfor %}</select>
+    <button class="btn" type="button" id="fbSolo">Play against the computer</button>
+    <hr>
+    <h3>Start a match for a friend</h3>
     <label>Your team</label>
     <select id="fbTeamNew">{% for t in teams %}<option value="{{ t.name }}">{{ t.name }}</option>{% endfor %}</select>
     <button class="btn" type="button" id="fbCreate">Create match</button>
+    <hr>
+    <h3>Real players waiting</h3>
+    <p class="small">Matches opened by other players that still need an opponent.</p>
+    <button class="btn secondary" type="button" id="fbQuick">Find a real opponent</button>
+    <div id="fbOpen" style="margin-top:10px"></div>
+    <p class="small" id="fbOpenMsg"></p>
     <hr>
     <h3>Join a match</h3>
     <label>Match code</label><input id="fbCode" maxlength="6" placeholder="e.g. K7P2QD" style="text-transform:uppercase">
@@ -1868,18 +1930,22 @@ def football_page():
     <p class="small" id="fbLobbyMsg"></p>
   </div>
 </div>
+<div id="fbRotate" class="fb-rotate"><p>Turn your phone sideways to play.</p></div>
 <div id="fbGame" class="card" style="display:none">
-  <div class="small" id="fbHud"></div>
-  <canvas id="fbCanvas" width="800" height="500" style="width:100%;height:auto;border-radius:12px;background:#166534"></canvas>
-  <div id="fbTouch" style="display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap">
-    <button class="btn secondary" type="button" data-dir="left">◀</button>
-    <button class="btn secondary" type="button" data-dir="up">▲</button>
-    <button class="btn secondary" type="button" data-dir="down">▼</button>
-    <button class="btn secondary" type="button" data-dir="right">▶</button>
-    <button class="btn" type="button" data-dir="kick">Kick</button>
+  <div class="fb-top"><div class="small" id="fbHud"></div><a class="btn secondary fb-exit" href="/football">Leave</a></div>
+  <canvas id="fbCanvas" width="800" height="500"></canvas>
+  <div id="fbTouch" class="fb-pad">
+    <div class="fb-dpad">
+      <button type="button" data-dir="up">▲</button>
+      <button type="button" data-dir="left">◀</button>
+      <span></span>
+      <button type="button" data-dir="right">▶</button>
+      <button type="button" data-dir="down">▼</button>
+    </div>
+    <button type="button" data-dir="kick" class="fb-kick">Kick</button>
   </div>
-  <p class="small">Keyboard: arrow keys or WASD to move, Space or K to kick.</p>
-  <div style="margin-top:12px">
+  <div class="fb-extra">
+    <p class="small">Keyboard: arrow keys or WASD to move, Space or K to kick.</p>
     <button class="btn secondary" type="button" id="fbShare">Share my screen (live video)</button>
     <p class="small" id="fbVideoMsg"></p>
     <div id="fbVideos" style="display:grid;gap:8px"></div>
@@ -1908,6 +1974,41 @@ def football_page():
     api('/football/create', {method:'POST', body:{team: $('fbTeamNew').value}})
       .then(function(d){ st.code = d.code; st.slot = d.slot; st.isHost = true; enterLobby(); })
       .catch(function(e){ msg('fbLobbyMsg', e.message); });
+  };
+  $('fbSolo').onclick = function(){
+    api('/football/create', {method:'POST', body:{team: $('fbTeamSolo').value, vs_computer: true}})
+      .then(function(d){ st.code = d.code; st.slot = d.slot; st.isHost = true; show('fbStart', false); show('fbWaiting', false); startPolling(); })
+      .catch(function(e){ msg('fbLobbyMsg', e.message); });
+  };
+  function loadOpen(){
+    return api('/football/open').then(function(d){
+      var box = $('fbOpen'); box.innerHTML = '';
+      if(!d.matches || !d.matches.length){ msg('fbOpenMsg', 'No real players are waiting right now. Try again in a moment, or play against the computer.'); return []; }
+      msg('fbOpenMsg', '');
+      d.matches.forEach(function(m){
+        var row = document.createElement('div'); row.className = 'card'; row.style.margin = '6px 0';
+        var t = document.createElement('p'); t.textContent = m.host_name + ' (' + m.team_name + ') · code ' + m.code; row.appendChild(t);
+        var b = document.createElement('button'); b.className = 'btn secondary'; b.type = 'button'; b.textContent = 'Join this match';
+        b.onclick = function(){ joinWith(m.code, pickTeamFor(m.team_name)); };
+        row.appendChild(b); box.appendChild(row);
+      });
+      return d.matches;
+    }).catch(function(e){ msg('fbOpenMsg', e.message); return []; });
+  }
+  function pickTeamFor(homeTeam){
+    for(var i=0;i<TEAMS.length;i++){ if(TEAMS[i].name !== homeTeam) return TEAMS[i].name; }
+    return TEAMS[0].name;
+  }
+  function joinWith(code, team){
+    api('/football/'+encodeURIComponent(code)+'/join', {method:'POST', body:{team: team}})
+      .then(function(d){ st.code = d.code; st.slot = d.slot; st.isHost = false; enterLobby(); })
+      .catch(function(e){ msg('fbLobbyMsg', e.message); });
+  }
+  $('fbQuick').onclick = function(){
+    loadOpen().then(function(list){
+      if(!list.length) return;
+      joinWith(list[0].code, pickTeamFor(list[0].team_name));
+    });
   };
   $('fbJoin').onclick = function(){
     var c = codeFrom(); if(!c){ msg('fbLobbyMsg','Enter the match code.'); return; }
@@ -2067,6 +2168,8 @@ def football_page():
     if(st.mode === 'play') return;
     st.mode = 'play';
     show('fbLobbyCard', false); show('fbGame', true); show('fbResult', false);
+    document.body.classList.add('fb-playing');
+    try { if(screen.orientation && screen.orientation.lock){ screen.orientation.lock('landscape').catch(function(){}); } } catch(e) {}
     st.scoreHome = 0; st.scoreAway = 0;
     if(st.isHost){
       st.sim = {ball:{x:W/2,y:H/2,vx:0,vy:0}, home:{x:200,y:H/2,cool:0,fx:1,fy:0}, away:{x:600,y:H/2,cool:0,fx:-1,fy:0}, t: MATCH};
@@ -2076,6 +2179,7 @@ def football_page():
     if(st.mode === 'done') return;
     st.mode = 'done';
     show('fbGame', false);
+    document.body.classList.remove('fb-playing');
     var r = $('fbResult'); r.style.display = '';
     var sh = (st.room && st.room.score_home) || 0, sa = (st.room && st.room.score_away) || 0;
     var win = sh === sa ? 'It is a draw.' : (sh > sa ? 'Home team wins!' : 'Away team wins!');
