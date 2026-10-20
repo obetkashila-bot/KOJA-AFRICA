@@ -3907,9 +3907,12 @@ def services():
 .service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:13px}.service-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:0 3px 14px rgba(0,0,0,.05);transition:.2s}.service-card:hover{transform:translateY(-2px);box-shadow:0 9px 24px rgba(0,0,0,.09)}
 .service-card h4{margin:0 0 6px}
 .service-card,.service-card.global,.service-card.trade,.service-card.engine{background:transparent;border:0;border-left:0;box-shadow:none;border-radius:0;padding:10px 4px}
-.service-card:hover{transform:none;box-shadow:none}.service-card p{color:var(--muted);font-size:13px;margin:0 0 13px}.service-links{display:flex;gap:7px;flex-wrap:wrap}.service-links .btn{font-size:13px;padding:8px 10px}
-.service-card.global{border-left:4px solid var(--text)}.service-card.trade{border-left:4px solid #c23b3b}.service-card.engine{border-left:4px solid var(--muted)}.service-flow{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.service-flow span{border:1px solid var(--border);border-radius:999px;padding:7px 10px;background:var(--surface);font-size:12px}.service-flow b{color:var(--muted)}
-@media(max-width:760px){.service-grid{grid-template-columns:1fr}.service-card{padding:14px}.service-links .btn{width:auto}.service-flow{align-items:stretch}.service-flow span{flex:1;min-width:130px;text-align:center}}
+.service-card:hover{transform:none;box-shadow:none}
+.card,.stat,.driver-card{border:0;box-shadow:none}
+.service-flow span{border:0;box-shadow:none}
+.alert{border-left:0}.service-card p{color:var(--muted);font-size:13px;margin:0 0 13px}.service-links{display:flex;gap:7px;flex-wrap:wrap}.service-links .btn{font-size:13px;padding:8px 10px}
+.service-flow{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.service-flow span{border:0;box-shadow:none;background:transparent;border-radius:999px;padding:4px 6px;font-size:12px}.service-flow b{color:var(--muted)}
+@media(max-width:760px){.service-grid{grid-template-columns:1fr}.service-card{padding:10px 4px}.service-links .btn{width:auto}.service-flow{align-items:stretch}.service-flow span{flex:1;min-width:130px;text-align:center}}
 </style>
 <div class="hero koja-services-intro"><div><h2>KOJA Services</h2><p>One connected service center for learning, AI, professional work, commerce, global business, trade, logistics and communication.</p></div><span class="service-badge">KOJA GLOBAL ECOSYSTEM</span></div>
 
