@@ -61,7 +61,6 @@ except Exception:
 
 # ============================================================
 # KOJA AFRICA
-# Knowledge • Questions • Answers
 #
 # Complete single-file Flask application
 # Flask + Supabase REST + Supabase Storage
@@ -160,7 +159,7 @@ HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 APP_NAME = "KOJA AFRICA"
 APP_VERSION = os.getenv("KOJA_APP_VERSION", "2026.10.05-MUSIC-V3")
 TERMS_VERSION = "2026-10-01-v1"
-APP_TAGLINE = "Knowledge • Questions • Answers"
+APP_TAGLINE = ""
 MAX_UPLOAD_MB = 15
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
@@ -990,7 +989,7 @@ BASE_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
+<meta name="description" content="{{ meta_description or 'KOJA AFRICA — research, assignments, documents, professional services and delivery services.' }}">
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
@@ -1001,10 +1000,10 @@ BASE_HTML = r"""
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta property="og:description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
+<meta property="og:description" content="{{ meta_description or 'KOJA AFRICA — research, assignments, documents, professional services and delivery services.' }}">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta name="twitter:description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
+<meta name="twitter:description" content="{{ meta_description or 'KOJA AFRICA — research, assignments, documents, professional services and delivery services.' }}">
 <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
 <meta name="author" content="KOJA AFRICA">
 <meta name="application-name" content="KOJA AFRICA">
@@ -1316,7 +1315,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a> · <a href="{{ url_for('complaint_new') }}">Send a complaint</a></div></footer>
+<footer><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a> · <a href="{{ url_for('complaint_new') }}">Send a complaint</a></div></footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1408,7 +1407,7 @@ def render_page(title, body_template, **context):
     prefs = session.get("koja_settings", {}) or {}
     theme = prefs.get("theme", "system") if prefs.get("theme") in ("system", "light", "dark", "black") else "system"
     descriptions = {
-        "KOJA AFRICA": "KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.",
+        "KOJA AFRICA": "KOJA AFRICA — research, assignments, documents, professional services and delivery services.",
         "Research": "KOJA AFRICA Research Engine — search web information, scholarly literature and KOJA documents and create structured research notes and citations.",
         "Assignments": "KOJA AFRICA assignments — ask questions, upload assignments and access academic resources.",
         "Documents": "KOJA AFRICA documents and research resources for learning and academic work.",
@@ -1422,7 +1421,7 @@ def render_page(title, body_template, **context):
     seo_jsonld = ""
     if request.path in public_paths:
         page_title = title or "KOJA AFRICA"
-        page_description = descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services.")
+        page_description = descriptions.get(title, "KOJA AFRICA — research, academic resources, professional services and delivery services.")
         graph = [
             {
                 "@type": "Organization",
@@ -1464,7 +1463,7 @@ def render_page(title, body_template, **context):
         graph.insert(0, website)
         seo_jsonld = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False)
 
-    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, meta_description=descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
+    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, meta_description=descriptions.get(title, "KOJA AFRICA — research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
 
 # ============================================================
 # USER SETTINGS
@@ -1572,7 +1571,6 @@ def home():
     return render_page("KOJA AFRICA", r"""
 <div class="hero">
 <h1>KOJA AFRICA</h1>
-<p>Knowledge • Questions • Answers</p>
 <p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
 {% if not user %}
 <div class="actions">
@@ -3862,7 +3860,7 @@ def _welcome_body(user):
         f"Get started: visit {KOJA_PUBLIC_URL} and sign in with your account. Explore the services available to you and complete your profile.\n\n"
         f"Need help or want to report a problem? Send a complaint at {KOJA_PUBLIC_URL.rstrip('/')}/complaints/new\n\n"
         "KOJA AFRICA is growing, and your participation matters. Start exploring today and invite others who could benefit.\n\n"
-        "KOJA AFRICA — Knowledge, Questions and Answers."
+        "KOJA AFRICA."
     )
 
 def _welcome_row(uid):
