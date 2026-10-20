@@ -1107,6 +1107,10 @@ button:active,.btn:active{transform:translateY(0)}
 button:disabled,.btn[disabled]{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
 .btn.secondary{background:var(--surface-2);color:var(--text);border:1px solid var(--border);box-shadow:none}
 .btn.secondary:hover{background:var(--surface);border-color:var(--accent)}
+button,.btn{border-radius:999px;padding:10px 18px}
+.btn-ico{display:inline-grid;place-items:center;width:22px;height:22px;flex:0 0 22px;border-radius:50%;background:rgba(255,255,255,.22);font-size:13px;line-height:1;font-weight:700}
+.btn.secondary .btn-ico{background:var(--border)}
+
 .btn.success{background:linear-gradient(180deg,#1f9d5a,var(--success));color:#fff}
 .btn.danger{background:linear-gradient(180deg,#d13b2e,var(--danger));color:#fff}
 .btn.warning{background:linear-gradient(180deg,#c9861a,var(--warn));color:#fff}
@@ -1358,6 +1362,42 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 </script>
 {% endif %}
 
+<script>
+(function(){
+  var RULES=[
+    [/delete|remove|cancel|reject|decline|revoke|suspend|close|clear|stop|no thanks/i,'✕'],
+    [/log ?out|sign ?out/i,'⎋'],
+    [/log ?in|sign ?in|unlock/i,'→'],
+    [/download|export|receipt|pdf/i,'↓'],
+    [/upload|attach/i,'↑'],
+    [/search|find|filter/i,'⌕'],
+    [/send|message|reply|comment|write/i,'✉'],
+    [/edit|change|rename|update/i,'✎'],
+    [/refresh|reload|retry|try again/i,'⟳'],
+    [/settings|preferences/i,'⚙'],
+    [/back|previous/i,'←'],
+    [/save|confirm|approve|verify|accept|submit|done|complete|apply|enrol|enroll|book|pay|mark/i,'✓'],
+    [/add|new|create|register|sign ?up/i,'+'],
+    [/next|continue|open|view|details|more|start|join|go/i,'→']
+  ];
+  function iconFor(t){for(var i=0;i<RULES.length;i++){if(RULES[i][0].test(t))return RULES[i][1];}return '';}
+  function decorate(){
+    var els=document.querySelectorAll('button, a.btn');
+    for(var i=0;i<els.length;i++){
+      var el=els[i];
+      if(el.querySelector('.btn-ico')||el.getAttribute('data-no-icon')!==null)continue;
+      var t=(el.textContent||'').replace(/\s+/g,' ').trim();
+      if(!t||t.length>40)continue;
+      var sym=iconFor(t);
+      if(!sym)continue;
+      var b=document.createElement('span');
+      b.className='btn-ico';b.setAttribute('aria-hidden','true');b.textContent=sym;
+      el.insertBefore(b,el.firstChild);
+    }
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',decorate);else decorate();
+})();
+</script>
 </body>
 </html>
 """
