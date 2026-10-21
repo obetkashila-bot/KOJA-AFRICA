@@ -96,7 +96,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
-RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:")
+RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:")
 
 def _rate_limited(key, limit, window=60):
     # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
@@ -964,6 +964,9 @@ def enforce_csrf():
     if request.path in ("/webhook/flutterwave", "/webhook/whatsapp"):
         return None
 
+    # Scheduler-only endpoint: authenticated by RESEARCH_CRON_SECRET inside the route.
+    if request.path == "/internal/research/tick":
+        return None
     # KOJA Connect WebRTC signaling: keep login + call-participant authorization
     # below, but do not block browser ICE trickling on the page-level CSRF token.
     # These endpoints only operate on calls owned by the authenticated caller/callee.
@@ -22620,6 +22623,252 @@ def pb_delete(pid):
     db_delete("koja_proposals", {"id": pid, "user_id": uid})
     flash("Proposal deleted.", "success")
     return redirect(url_for("pb_dashboard"))
+
+
+
+# ============================================================
+# KOJA RESOURCE RESEARCH (phase 1: links and metadata only)
+# Searches open-access APIs and stores titles, authors and source links for admin review.
+# Nothing is downloaded or copied. Approved items appear on /resources.
+# Tables: koja_resource_sources, koja_discovered_resources, koja_resource_audit_logs (koja_resource_intelligence.sql)
+# ============================================================
+RES_QUERY_MIN = 3
+RES_QUERY_MAX = 120
+RES_RESULTS_PER_SOURCE = 10
+
+
+def _res_get_json(url, params):
+    r = _HTTP.get(url, params=params, timeout=20,
+                  headers={"User-Agent": "KOJA-AFRICA/1.0 (resource research; links only)"})
+    r.raise_for_status()
+    return r.json()
+
+
+def _res_openalex(query, get):
+    data = get("https://api.openalex.org/works",
+               {"search": query, "filter": "is_oa:true", "per-page": RES_RESULTS_PER_SOURCE})
+    out = []
+    for w in (data.get("results") or [])[:RES_RESULTS_PER_SOURCE]:
+        loc = w.get("primary_location") or {}
+        names = [((a or {}).get("author") or {}).get("display_name", "") for a in (w.get("authorships") or [])[:5]]
+        out.append({
+            "external_id": w.get("id") or "",
+            "title": w.get("display_name") or w.get("title") or "",
+            "authors": ", ".join(n for n in names if n),
+            "published_date": w.get("publication_date") or "",
+            "subject": ((w.get("primary_topic") or {}).get("display_name")) or "",
+            "landing_url": loc.get("landing_page_url") or w.get("doi") or "",
+            "licence": loc.get("license") or "Open access (licence not stated)",
+        })
+    return out
+
+
+def _res_gutendex(query, get):
+    data = get("https://gutendex.com/books/", {"search": query})
+    out = []
+    for b in (data.get("results") or [])[:RES_RESULTS_PER_SOURCE]:
+        names = [a.get("name", "") for a in (b.get("authors") or [])[:5]]
+        public_domain = b.get("copyright") is False
+        out.append({
+            "external_id": str(b.get("id") or ""),
+            "title": b.get("title") or "",
+            "authors": ", ".join(n for n in names if n),
+            "published_date": "",
+            "subject": ", ".join((b.get("subjects") or [])[:2]),
+            "landing_url": "https://www.gutenberg.org/ebooks/%s" % b.get("id"),
+            "licence": "Public domain in the US (Project Gutenberg)" if public_domain else "Licence not confirmed",
+        })
+    return out
+
+
+RES_CONNECTORS = {"openalex": _res_openalex, "gutendex": _res_gutendex}
+
+# Topics the system searches each day, rotating through the list. Admins can change this list in code.
+RES_AUTO_QUERIES = [
+    "education Africa", "climate adaptation Africa", "agriculture Africa", "public health Africa",
+    "entrepreneurship Africa", "renewable energy Africa", "digital economy Africa", "water and sanitation Africa",
+    "urban planning Africa", "mathematics education", "African history", "African literature",
+]
+
+
+def _res_auto_publishable(licence):
+    """Publish automatically only when the licence is clearly open (CC or public domain). Links only."""
+    text = (licence or "").lower()
+    return bool(re.search(r"\bcc[- ]?(by|0|zero)\b|public domain", text))
+
+
+def _res_clean_row(item):
+    """Keep only rows with a title, an id, and a secure link. Anything else is skipped."""
+    external_id = clean(item.get("external_id"))[:300]
+    title = clean(item.get("title"))[:300]
+    landing = clean(item.get("landing_url"))[:500]
+    if not external_id or not title or not landing.startswith("https://"):
+        return None
+    return {
+        "external_id": external_id,
+        "title": title,
+        "authors": clean(item.get("authors"))[:300] or None,
+        "published_date": clean(item.get("published_date"))[:20] or None,
+        "subject": clean(item.get("subject"))[:200] or None,
+        "landing_url": landing,
+        "licence": clean(item.get("licence"))[:200] or None,
+    }
+
+
+def _res_audit(actor_id, action, detail):
+    db_insert("koja_resource_audit_logs", {
+        "id": str(uuid.uuid4()), "actor_id": str(actor_id) if actor_id else None,
+        "action": action, "detail": detail, "created_at": utc_now(),
+    })
+
+
+def _res_run(query, get=None):
+    """Search every enabled source. One failing source does not stop the others."""
+    get = get or _res_get_json
+    q = clean(query)[:RES_QUERY_MAX]
+    if len(q) < RES_QUERY_MIN:
+        return {"error": "Enter a search of at least %d characters." % RES_QUERY_MIN}
+    summary = {"found": 0, "new": 0, "errors": []}
+    for src in db_select("koja_resource_sources", filters={"enabled": True}, limit=20) or []:
+        fn = RES_CONNECTORS.get(src.get("id"))
+        if not fn:
+            continue
+        try:
+            items = fn(q, get)
+        except Exception:
+            logger.warning("resource research: source %s failed", src.get("id"))
+            summary["errors"].append("%s could not be reached." % src.get("name"))
+            continue
+        for item in items:
+            row = _res_clean_row(item or {})
+            if not row:
+                continue
+            summary["found"] += 1
+            if first_row("koja_discovered_resources", {"source_id": src["id"], "external_id": row["external_id"]}):
+                continue
+            auto = _res_auto_publishable(row.get("licence"))
+            stamp = utc_now()
+            _r, err = db_insert("koja_discovered_resources", dict(
+                row, id=str(uuid.uuid4()), source_id=src["id"], query=q,
+                status="approved" if auto else "new", discovered_at=stamp,
+                reviewed_by=None, reviewed_at=stamp if auto else None))
+            if not err:
+                summary["new"] += 1
+                if auto:
+                    summary["published"] = summary.get("published", 0) + 1
+    _res_audit(None, "research_run", {"query": q, "found": summary["found"], "new": summary["new"],
+                                      "published": summary.get("published", 0)})
+    return summary
+
+
+@app.route("/internal/research/tick", methods=["POST"])
+def research_tick():
+    """Called by an external scheduler once a day. Needs the secret; no admin login."""
+    expected = (os.getenv("RESEARCH_CRON_SECRET") or "").strip()
+    if not expected:
+        return jsonify(ok=False, message="Scheduler secret is not configured."), 503
+    supplied = (request.headers.get("X-Research-Secret") or "").strip()
+    if not secrets.compare_digest(supplied, expected):
+        return jsonify(ok=False, message="Forbidden"), 403
+    if not RES_AUTO_QUERIES:
+        return jsonify(ok=False, message="No queries configured."), 500
+    query = RES_AUTO_QUERIES[datetime.now(timezone.utc).toordinal() % len(RES_AUTO_QUERIES)]
+    summary = _res_run(query)
+    return jsonify(ok=True, query=query, found=summary.get("found", 0), new=summary.get("new", 0),
+                   published=summary.get("published", 0), errors=summary.get("errors", []))
+
+
+@app.route("/admin/resources")
+@admin_required
+def admin_resources():
+    status = clean(request.args.get("status"))
+    if status not in ("", "new", "approved", "rejected"):
+        status = ""
+    filters = {"status": status} if status else None
+    rows = db_select("koja_discovered_resources", filters=filters, order="discovered_at.desc", limit=200) or []
+    sources = db_select("koja_resource_sources", limit=20) or []
+    return render_page("Resource research", r'''<div class="card"><h2>Resource research</h2>
+<p>The system searches on its own each day and publishes items with an open licence. Items with an unclear licence wait here. Nothing is downloaded or copied.</p>
+<form method="post" action="{{ url_for('admin_resources_run') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<input name="query" minlength="3" maxlength="120" placeholder="Search topic, e.g. climate adaptation" required><button class="btn">Run search</button></form></div>
+<div class="card"><h3>Sources</h3>{% for s in sources %}
+<form method="post" action="{{ url_for('admin_resource_source_toggle', sid=s.id) }}" style="margin:6px 0"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<strong>{{ s.name }}</strong> · {{ 'enabled' if s.enabled else 'paused' }} <span class="small">{{ s.licence_note }}</span>
+<button class="btn secondary">{{ 'Pause' if s.enabled else 'Enable' }}</button></form>{% endfor %}</div>
+<div class="card"><h3>Discovered</h3>
+<p><a href="{{ url_for('admin_resources') }}">All</a> · <a href="{{ url_for('admin_resources', status='new') }}">New</a> · <a href="{{ url_for('admin_resources', status='approved') }}">Approved</a> · <a href="{{ url_for('admin_resources', status='rejected') }}">Rejected</a></p>
+{% for r in rows %}<div class="card"><strong>{{ r.title }}</strong> <span class="small">({{ r.status }})</span>
+<div class="small">{{ r.authors or '' }} {{ r.published_date or '' }} · {{ r.subject or '' }}</div>
+<div class="small">Licence: {{ r.licence or 'not stated' }} · Source: {{ r.source_id }}</div>
+<a href="{{ r.landing_url }}" rel="noopener noreferrer" target="_blank">Open source page</a>
+{% if r.status != 'approved' %}<form method="post" action="{{ url_for('admin_resource_review', rid=r.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn" name="action" value="approve">Approve</button></form>{% endif %}
+{% if r.status != 'rejected' %}<form method="post" action="{{ url_for('admin_resource_review', rid=r.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn secondary" name="action" value="reject">Reject</button></form>{% endif %}
+</div>{% else %}<p>Nothing here yet. Run a search.</p>{% endfor %}</div>''',
+        rows=rows, sources=sources)
+
+
+@app.route("/admin/resources/run", methods=["POST"])
+@admin_required
+def admin_resources_run():
+    uid = current_user().get("id")
+    if _rate_limited("resrun:%s" % uid, 10, 3600):
+        flash("Too many searches this hour. Try again later.", "warning")
+        return redirect(url_for("admin_resources"))
+    summary = _res_run(request.form.get("query"))
+    if "error" in summary:
+        flash(summary["error"], "warning")
+    else:
+        msg = "Search finished: %d found, %d new." % (summary["found"], summary["new"])
+        if summary["errors"]:
+            msg += " " + " ".join(summary["errors"])
+        flash(msg, "success" if not summary["errors"] else "warning")
+    return redirect(url_for("admin_resources"))
+
+
+@app.route("/admin/resources/<rid>/review", methods=["POST"])
+@admin_required
+def admin_resource_review(rid):
+    action = clean(request.form.get("action"))
+    if action not in ("approve", "reject"):
+        abort(400)
+    actor = current_user().get("id")
+    if not first_row("koja_discovered_resources", {"id": rid}):
+        abort(404)
+    new_status = "approved" if action == "approve" else "rejected"
+    _rows, err = db_update("koja_discovered_resources", {"id": rid},
+                           {"status": new_status, "reviewed_by": str(actor), "reviewed_at": utc_now()})
+    if err:
+        flash("Could not save the review. Try again.", "warning")
+    else:
+        _res_audit(actor, "review_" + action, {"resource_id": rid})
+        flash("Resource %sd." % action, "success")
+    return redirect(url_for("admin_resources"))
+
+
+@app.route("/admin/resources/sources/<sid>/toggle", methods=["POST"])
+@admin_required
+def admin_resource_source_toggle(sid):
+    src = first_row("koja_resource_sources", {"id": sid})
+    if not src:
+        abort(404)
+    actor = current_user().get("id")
+    new_value = not bool(src.get("enabled"))
+    db_update("koja_resource_sources", {"id": sid}, {"enabled": new_value, "updated_at": utc_now()})
+    _res_audit(actor, "source_" + ("enabled" if new_value else "paused"), {"source_id": sid})
+    return redirect(url_for("admin_resources"))
+
+
+@app.route("/resources")
+@login_required
+def resources_library():
+    rows = db_select("koja_discovered_resources", filters={"status": "approved"}, order="discovered_at.desc", limit=200) or []
+    return render_page("KOJA Resources", r'''<div class="card"><h2>KOJA Resources</h2>
+<p>Approved links to open-access titles. Each item shows its source and licence. Files are not copied here.</p></div>
+{% for r in rows %}<div class="card"><strong>{{ r.title }}</strong>
+<div class="small">{{ r.authors or '' }} {{ r.published_date or '' }} · {{ r.subject or '' }}</div>
+<div class="small">Licence: {{ r.licence or 'not stated' }}</div>
+<a class="btn secondary" href="{{ r.landing_url }}" rel="noopener noreferrer" target="_blank">Open source page</a></div>
+{% else %}<div class="card"><p>No approved resources yet.</p></div>{% endfor %}''', rows=rows)
 
 
 
