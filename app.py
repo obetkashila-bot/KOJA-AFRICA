@@ -1363,50 +1363,146 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 {{ body|safe }}
 </div>
 <footer><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a> · <a href="{{ url_for('complaint_new') }}">Send a complaint</a></div></footer>
-<!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
+<!-- KOJA Calls: ringtone and ringback engine, available on every page. -->
+<script>
+var kojaRing=(function(){
+  var ctx=null,timer=null;
+  function ac(){try{if(!ctx)ctx=new (window.AudioContext||window.webkitAudioContext)();if(ctx.state==='suspended')ctx.resume();return ctx}catch(e){return null}}
+  function tone(f,t,d,v){var c=ac();if(!c)return;var o=c.createOscillator(),g=c.createGain();o.frequency.value=f;o.connect(g);g.connect(c.destination);g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(v,t+.02);g.gain.setValueAtTime(v,t+d-.03);g.gain.linearRampToValueAtTime(0,t+d);o.start(t);o.stop(t+d+.05)}
+  function stop(){if(timer){clearInterval(timer);timer=null}}
+  function loop(fn,ms){stop();var run=function(){var c=ac();if(c)fn(c.currentTime)};run();timer=setInterval(run,ms)}
+  return {
+    incoming:function(){loop(function(t){tone(440,t,.4,.22);tone(480,t,.4,.22);tone(440,t+.6,.4,.22);tone(480,t+.6,.4,.22)},3000)},
+    outgoing:function(){loop(function(t){tone(425,t,1,.12)},4000)},
+    stop:stop,
+    unlock:function(){ac()}
+  };
+})();
+</script>
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
-<div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
-  <div style="font-weight:800;font-size:18px" id="kojaIncomingTitle">Incoming Call</div>
-  <div class="small" id="kojaIncomingFrom" style="margin-top:4px"></div>
-  <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-    <a id="kojaIncomingAnswer" class="btn success" href="#">Answer</a>
-    <button id="kojaIncomingReject" class="btn danger" type="button">Decline</button>
+<!-- KOJA Connect incoming call: full-screen call sheet with ringtone, polls only while authenticated. -->
+<div id="kojaIncomingCall" style="display:none;position:fixed;inset:0;z-index:99999;flex-direction:column;align-items:center;justify-content:space-between;padding:56px 20px 44px;background:linear-gradient(180deg,#0b1f3a,#050a14);color:#fff;text-align:center">
+  <div>
+    <div id="kojaIncomingKind" style="font-size:14px;opacity:.8;letter-spacing:.04em">KOJA Call</div>
+    <div id="kojaIncomingAvatar" style="width:104px;height:104px;border-radius:50%;background:#1d4ed8;margin:34px auto 18px;display:flex;align-items:center;justify-content:center;font-size:44px;font-weight:700"></div>
+    <div id="kojaIncomingFrom" style="font-size:26px;font-weight:700"></div>
+    <div style="font-size:15px;opacity:.7;margin-top:8px">is calling you…</div>
+  </div>
+  <div style="display:flex;gap:64px;justify-content:center">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;font-size:13px">
+      <a id="kojaIncomingReject" href="#" role="button" aria-label="Decline" style="width:72px;height:72px;border-radius:50%;background:#ef4444;color:#fff;display:flex;align-items:center;justify-content:center;font-size:30px;text-decoration:none">✕</a>Decline</div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;font-size:13px">
+      <a id="kojaIncomingAnswer" href="#" role="button" aria-label="Accept" style="width:72px;height:72px;border-radius:50%;background:#22c55e;color:#fff;display:flex;align-items:center;justify-content:center;font-size:30px;text-decoration:none">✓</a>Accept</div>
   </div>
 </div>
 <script>
 (function(){
   const box=document.getElementById('kojaIncomingCall');
   if(!box)return;
-  let activeId=null,lastSeen=null,timer=null;
-  const title=document.getElementById('kojaIncomingTitle'),from=document.getElementById('kojaIncomingFrom'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
+  let activeId=null,timer=null,vibe=null;
+  const kind=document.getElementById('kojaIncomingKind'),from=document.getElementById('kojaIncomingFrom'),av=document.getElementById('kojaIncomingAvatar'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
+  function hide(){activeId=null;box.style.display='none';kojaRing.stop();if(vibe){clearInterval(vibe);vibe=null}}
   function show(c){
-    activeId=c.id; lastSeen=c.id;
-    title.textContent='Incoming '+(c.mode==='video'?'Video':'Voice')+' Call';
-    from.textContent='From '+(c.caller_name||'KOJA user');
+    activeId=c.id;
+    const name=c.caller_name||'KOJA user';
+    kind.textContent='Incoming '+(c.mode==='video'?'video':'voice')+' call';
+    from.textContent=name;
+    av.textContent=(name.trim().charAt(0)||'K').toUpperCase();
     answer.href='/connect/answer/'+encodeURIComponent(c.id);
-    box.style.display='block';
-    try{ if('navigator' in window && 'vibrate' in navigator) navigator.vibrate([300,150,300]); }catch(e){}
+    box.style.display='flex';
+    kojaRing.incoming();
+    try{ if(navigator.vibrate){navigator.vibrate([400,200,400]);vibe=setInterval(()=>navigator.vibrate([400,200,400]),2400);} }catch(e){}
   }
-  async function reject(){
+  answer.addEventListener('click',()=>{kojaRing.stop();if(vibe){clearInterval(vibe);vibe=null}});
+  reject.addEventListener('click',async(ev)=>{
+    ev.preventDefault();
     if(!activeId)return;
-    const id=activeId; activeId=null; box.style.display='none';
+    const id=activeId; hide();
     try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}
-  }
-  reject.onclick=reject;
+  });
   async function poll(){
     try{
       const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
       if(!r.ok)return;
       const d=await r.json(); const calls=d.calls||[];
-      if(activeId && !calls.some(c=>String(c.id)===String(activeId))){activeId=null;box.style.display='none';}
-      if(!activeId && calls.length)show(calls[0]);
+      if(activeId && !calls.some(c=>String(c.id)===String(activeId))) hide();
+      if(!activeId && calls.length) show(calls[0]);
     }catch(e){}
   }
-  poll(); timer=setInterval(poll,2500);
+  function kojaB64(s){const p='='.repeat((4-s.length%4)%4);const b=(s+p).replace(/-/g,'+').replace(/_/g,'/');const r=atob(b);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)));}
+  async function ensurePush(){
+    try{
+      if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return;
+      if(Notification.permission!=='granted')return;
+      const reg=await navigator.serviceWorker.register('/koja-sw.js');
+      let sub=await reg.pushManager.getSubscription();
+      if(!sub){
+        const k=(await (await fetch('/api/notifications/vapid-public-key',{cache:'no-store'})).text()).trim();
+        if(!k)return;
+        sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:kojaB64(k)});
+      }
+      await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub.toJSON?sub.toJSON():sub)});
+    }catch(e){}
+  }
+  ensurePush();
+  document.addEventListener('pointerdown',async function firstTap(){
+    document.removeEventListener('pointerdown',firstTap);
+    kojaRing.unlock();
+    try{ if('Notification' in window && Notification.permission==='default'){ await Notification.requestPermission(); } }catch(e){}
+    ensurePush();
+  },{passive:true});
+  poll(); timer=setInterval(poll,2000);
   window.addEventListener('beforeunload',()=>clearInterval(timer));
 })();
 </script>
 {% endif %}
+<!-- KOJA native shell bridge: only runs inside the Capacitor Android/iOS app. -->
+<script>
+(function(){
+  var C=window.Capacitor;
+  if(!C||!C.isNativePlatform||!C.isNativePlatform())return;
+  var P=C.Plugins&&C.Plugins.PushNotifications;
+  if(!P)return;
+  var platform=(C.getPlatform&&C.getPlatform())||'android';
+  P.addListener('registration',function(t){
+    fetch('/api/notifications/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t.value,platform:platform})}).catch(function(){});
+  });
+  P.addListener('pushNotificationActionPerformed',function(a){
+    var u=a&&a.notification&&a.notification.data&&a.notification.data.url;
+    if(u)location.href=u;
+  });
+  P.checkPermissions().then(function(r){return r.receive==='granted'?r:P.requestPermissions()}).then(function(r){
+    if(r&&r.receive==='granted')return P.register();
+  }).catch(function(){});
+})();
+</script>
+<!-- KOJA Median bridge: only runs inside an app built with Median. Registers the push token and opens taps. -->
+<script>
+(function(){
+  var tries=0;
+  function init(){
+    var M=window.median;
+    if(!M||!M.firebaseMessaging){
+      if(++tries<20)setTimeout(init,500);
+      return;
+    }
+    var FM=M.firebaseMessaging;
+    function save(token){
+      if(!token)return;
+      fetch('/api/notifications/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token,platform:'median'})}).catch(function(){});
+    }
+    try{ FM.register({callback:function(r){ save(r&&r.token); }}); }catch(e){}
+    try{
+      FM.notificationClicked.addListener(function(d){
+        var u=d&&(d.url||(d.data&&d.data.url)||(d.extras&&d.extras.url));
+        if(u&&u.charAt(0)==='/')location.href=u;
+      });
+    }catch(e){}
+  }
+  init();
+})();
+</script>
+
 
 <script>
 (function(){
@@ -6699,7 +6795,7 @@ async function media(){return navigator.mediaDevices.getUserMedia({audio:true,vi
 let callTimer=null;
 function tellUnavailable(){const msg='This contact is not available. The call could not reach the professional. Please check your internet connection and try again later.'; state(' '+msg); try{if('speechSynthesis' in window){speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(msg); u.lang='en-US'; speechSynthesis.speak(u)}}catch(e){}}
 function failCall(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}}); pc.close(); pc=null} if(callId){fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{}); callId=null} tellUnavailable()}
-async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{const st=e.streams[0];const v=document.getElementById('remote'),a=document.getElementById('remoteAudio');v.srcObject=st;a.srcObject=st;v.volume=1;a.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);gain.connect(dst);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);v.srcObject=boosted;a.srcObject=boosted;v.play().catch(()=>{});a.play().catch(()=>{});}catch(_){} }}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,30000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
+async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{if(window.kojaRing)kojaRing.stop();const st=e.streams[0];const v=document.getElementById('remote'),a=document.getElementById('remoteAudio');v.srcObject=st;a.srcObject=st;v.volume=1;a.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);gain.connect(dst);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);v.srcObject=boosted;a.srcObject=boosted;v.play().catch(()=>{});a.play().catch(()=>{});}catch(_){} }}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,30000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
 async function checkCall(){if(!callId)return; try{const r=await fetch('/api/professional/call/'+callId,{cache:'no-store'}); if(!r.ok)throw Error('Network error'); const d=await r.json(); if(d.call && ['ended','declined','failed'].includes(d.call.status)){failCall();return} if(d.answer && pc && !pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:d.answer}); if(callTimer)clearTimeout(callTimer); state(' Connected');} for(const c of (d.callee_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){if(!navigator.onLine)failCall()}}
 window.addEventListener('offline',()=>{if(callId)failCall()});
 async function hang(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}});pc.close();pc=null} if(callId){await fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{});callId=null} state('Call ended')}
@@ -6800,7 +6896,7 @@ def professional_answer_call(call_id):
 <div class="card"><button class="btn success" id="accept">Accept Call</button><button class="btn danger" id="decline">Decline</button><p id="state">Waiting…</p><video id="local" autoplay muted playsinline style="width:48%;background:#111;border-radius:12px;{% if call.mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:48%;background:#111;border-radius:12px;{% if call.mode=='voice' %}display:none{% endif %}"></video><audio id="audio" autoplay {% if call.mode!='voice' %}style="display:none"{% endif %}></audio></div>
 <script>
 const id={{ call.id|tojson }}, mode={{ call.mode|tojson }};let pc=null,stream=null;const state=t=>document.getElementById('state').textContent=t;
-async function accept(){try{stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{const st=e.streams[0],v=document.getElementById('remote'),a=document.getElementById('audio');v.srcObject=st;a.srcObject=st;v.volume=1;a.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);gain.connect(dst);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);v.srcObject=boosted;a.srcObject=boosted;v.play().catch(()=>{});a.play().catch(()=>{});}catch(_){} }};pc.onicecandidate=e=>{if(e.candidate)fetch('/api/professional/call/'+id+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})})};const r=await fetch('/api/professional/call/'+id);const d=await r.json();await pc.setRemoteDescription({type:'offer',sdp:d.call.offer});const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await fetch('/api/professional/call/'+id+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.sdp})});state('Connected');setInterval(async()=>{const q=await fetch('/api/professional/call/'+id);const x=await q.json();for(const c of (x.call.caller_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}},1000)}catch(e){state('Could not accept call: '+e.message)}}
+async function accept(){try{stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{if(window.kojaRing)kojaRing.stop();const st=e.streams[0],v=document.getElementById('remote'),a=document.getElementById('audio');v.srcObject=st;a.srcObject=st;v.volume=1;a.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);gain.connect(dst);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);v.srcObject=boosted;a.srcObject=boosted;v.play().catch(()=>{});a.play().catch(()=>{});}catch(_){} }};pc.onicecandidate=e=>{if(e.candidate)fetch('/api/professional/call/'+id+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})})};const r=await fetch('/api/professional/call/'+id);const d=await r.json();await pc.setRemoteDescription({type:'offer',sdp:d.call.offer});const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await fetch('/api/professional/call/'+id+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.sdp})});state('Connected');setInterval(async()=>{const q=await fetch('/api/professional/call/'+id);const x=await q.json();for(const c of (x.call.caller_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}},1000)}catch(e){state('Could not accept call: '+e.message)}}
 document.getElementById('accept').onclick=accept;document.getElementById('decline').onclick=async()=>{await fetch('/api/professional/call/'+id+'/hangup',{method:'POST'});location.href='/professional/calls'};
 </script>
 """, call=call, provider=provider)
@@ -10181,7 +10277,7 @@ def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_
     for d in db_select('koja_fcm_devices',filters={'user_id':str(uid)},limit=20):
         token=clean(d.get('token'))
         if not token: continue
-        payload={'token':token,'title':title,'body':body,'data':{'type':notification_type,'call_id':str(related_id) if related_id else '','related_id':str(related_id) if related_id else '','url':url or '/notifications','mode':'video' if notification_type=='call' and 'video' in title.lower() else ('voice' if notification_type=='call' else '')}}
+        payload={'token':token,'title':title,'body':body,'data':{'title':title,'body':body,'type':notification_type,'call_id':str(related_id) if related_id else '','related_id':str(related_id) if related_id else '','url':url or '/notifications','mode':'video' if notification_type=='call' and 'video' in title.lower() else ('voice' if notification_type=='call' else '')}}
         try:
             rr=_HTTP.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
             if rr.ok: sent+=1
@@ -10198,7 +10294,7 @@ def _send_web_push(uid,title,body,url=None,notification_type='system',related_id
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
         try:
-            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type,'related_id':str(related_id) if related_id else None,'call_id':str(related_id) if notification_type in ('call','group_call') and related_id else None}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
+            webpush(subscription_info=sub.get('subscription') or {},ttl=(60 if str(notification_type) in ('call','group_call') else 86400),data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type,'related_id':str(related_id) if related_id else None,'call_id':str(related_id) if notification_type in ('call','group_call') and related_id else None}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
         except Exception as exc:
             if '410' in str(exc) or '404' in str(exc): db_delete('koja_push_subscriptions',{'id':sub.get('id')})
     return sent
@@ -10343,7 +10439,7 @@ def api_notification_subscribe():
 
 @app.route('/koja-sw.js')
 def koja_service_worker():
-    js="self.addEventListener('push',e=>{let d=e.data?e.data.json():{};e.waitUntil(self.registration.showNotification(d.title||'KOJA',{body:d.body||'New KOJA update',icon:'/static/favicon.ico',badge:'/static/favicon.ico',data:{url:d.url||'/notifications'}}))});self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){c.navigate(e.notification.data.url||'/notifications');return c.focus()}}return clients.openWindow(e.notification.data.url||'/notifications')}))});"
+    js="self.addEventListener('push',e=>{let d=e.data?e.data.json():{};const isCall=(d.type==='call'||d.type==='group_call');e.waitUntil(self.registration.showNotification(d.title||'KOJA',{body:d.body||'New KOJA update',icon:'/static/favicon.ico',badge:'/static/favicon.ico',tag:d.call_id?('call-'+d.call_id):undefined,requireInteraction:isCall,vibrate:[400,200,400,800,400],actions:(d.type==='call')?[{action:'answer',title:'Answer'},{action:'decline',title:'Decline'}]:undefined,data:{url:d.url||'/notifications',call_id:d.call_id||null}}))});self.addEventListener('notificationclick',e=>{e.notification.close();const data=e.notification.data||{};if(e.action==='decline'&&data.call_id){e.waitUntil(fetch('/api/connect/call/reject/'+encodeURIComponent(data.call_id),{method:'POST',credentials:'same-origin'}).catch(()=>{}));return}e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){c.navigate(data.url||'/notifications');return c.focus()}}return clients.openWindow(data.url||'/notifications')}))});"
     return js,200,{'Content-Type':'application/javascript','Cache-Control':'no-cache'}
 
 @app.route('/connect')
@@ -10356,7 +10452,7 @@ def connect():
         others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=('Message deleted' if last and last[0].get('deleted_at') else (last[0].get('body') or last[0].get('message_type',''))) if last else 'No messages yet'; c['_unread']=_cx_unread(c['id'],uid,m); c['_muted']=bool(m.get('muted')); conversations.append(c)
     conversations.sort(key=lambda x:str(x.get('updated_at') or x.get('created_at') or ''),reverse=True)
-    return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn secondary" href="{{ url_for('cx_search') }}">Search</a><a class="btn secondary" href="{{ url_for('cx_status_feed') }}">Updates</a><a class="btn secondary" href="{{ url_for('cx_blocked_list') }}">Blocked</a><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong>{% if c._unread %} <span class="btn" style="padding:2px 9px;font-size:12px">{{ c._unread }}{{ '+' if c._unread>=100 }}</span>{% endif %}{% if c._muted %} <span class="small">muted</span>{% endif %}<div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
+    return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Call by number, email or ID</h3><p>Call someone with their phone number, email or KOJA account ID.</p><a class="btn" href="{{ url_for('cx_find_call') }}">Find &amp; call</a></div><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn secondary" href="{{ url_for('cx_search') }}">Search</a><a class="btn secondary" href="{{ url_for('cx_status_feed') }}">Updates</a><a class="btn secondary" href="{{ url_for('cx_blocked_list') }}">Blocked</a><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong>{% if c._unread %} <span class="btn" style="padding:2px 9px;font-size:12px">{{ c._unread }}{{ '+' if c._unread>=100 }}</span>{% endif %}{% if c._muted %} <span class="small">muted</span>{% endif %}<div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
@@ -10678,7 +10774,7 @@ async function start(){
     let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
     document.getElementById('local').srcObject=st;kojaControls(st);
     st.getTracks().forEach(t=>pc.addTrack(t,st));
-    pc.ontrack=e=>{const st=e.streams[0],v=document.getElementById('remote');v.srcObject=st;v.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);gain.connect(dst);v.srcObject=boosted;v.play().catch(()=>{});}catch(_){} }};
+    pc.ontrack=e=>{if(window.kojaRing)kojaRing.stop();const st=e.streams[0],v=document.getElementById('remote');v.srcObject=st;v.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);gain.connect(dst);v.srcObject=boosted;v.play().catch(()=>{});}catch(_){} }};
     pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
     pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState)){state.textContent='Connection failed';}};
     await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});
@@ -10697,7 +10793,7 @@ async function start(){
   }catch(e){state.textContent='Could not answer this call.';}
 }
 document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
-start();
+if(new URLSearchParams(location.search).get('decline')==='1'){fetch('/api/connect/call/reject/'+encodeURIComponent(cid),{method:'POST',headers:{'Content-Type':'application/json'}}).finally(()=>location.replace('/connect/calls'));}else{start();}
 </script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
 
 @app.route('/api/connect/call/ice/<call_id>',methods=['POST','GET'])
@@ -10832,7 +10928,7 @@ if(flip)flip.onclick=async()=>{try{const facing=(vt.getSettings().facingMode==='
 
 const unavailable='This contact is not available because the internet or network connection could not be reached.';
 function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}
-function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();}
+function fail(msg){if(window.kojaRing)kojaRing.stop();state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();}
 async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
 async function sendIce(candidate){
   try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
@@ -10858,13 +10954,13 @@ async function start(){
     let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
     document.getElementById('local').srcObject=st;kojaControls(st);
     st.getTracks().forEach(t=>pc.addTrack(t,st));
-    pc.ontrack=e=>{const st=e.streams[0],v=document.getElementById('remote');v.srcObject=st;v.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);gain.connect(dst);v.srcObject=boosted;v.play().catch(()=>{});}catch(_){} }};
+    pc.ontrack=e=>{if(window.kojaRing)kojaRing.stop();const st=e.streams[0],v=document.getElementById('remote');v.srcObject=st;v.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);gain.connect(dst);v.srcObject=boosted;v.play().catch(()=>{});}catch(_){} }};
     pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
     pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))fail();};
     let offer=await pc.createOffer();
     await pc.setLocalDescription(offer);
     await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
-    state.textContent='Ringing…';
+    state.textContent='Ringing…';if(window.kojaRing)kojaRing.outgoing();
     iceTimer=setInterval(pullIce,1000);
     timer=setInterval(async()=>{
       if(Date.now()-started>120000){fail();return;}
@@ -10896,7 +10992,7 @@ def connect_call_create():
     if _rate_limited('cxcall:%s'%uid,10,60):return jsonify(error='Too many call attempts. Please wait a moment.'),429
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
-    notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
+    notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/answer/%s'%row['id']);return jsonify(call=row)
 
 
 CX_RING_SECONDS = 60
@@ -21126,6 +21222,77 @@ def cx_search():
 {% for m in results %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat', conversation_id=m.conversation_id) }}"><strong>{{ m._who }}</strong><div>{{ m.body }}</div><div class="small">{{ m.created_at }}</div></a>
 {% else %}{% if q %}<div class="card"><p>No messages found.</p></div>{% endif %}{% endfor %}''', q=q, results=results)
 
+
+def _cx_resolve_contact(who):
+    """Find a KOJA user by account ID, email, or phone number. Returns the user row or None."""
+    who = clean(who)[:120]
+    if not who:
+        return None
+    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", who):
+        return find_user_by_id(who)
+    if "@" in who:
+        return find_user_by_email(who)
+    digits = re.sub(r"\D", "", who)
+    if len(digits) < 7:
+        return None
+    for candidate in ("+" + digits, digits):
+        rows = db_select("profiles", filters={"phone": candidate}, limit=1)
+        if rows:
+            return rows[0]
+    return None
+
+def _cx_discoverable(uid):
+    """True unless the user has turned off 'let people find me by phone or email'. No row means on."""
+    row = first_row("koja_user_settings", {"user_id": str(uid)}) or {}
+    return row.get("discoverable", True) is not False
+
+@app.route("/connect/discoverable", methods=["POST"])
+@login_required
+def cx_set_discoverable():
+    uid = str(current_user()["id"])
+    on = request.form.get("discoverable") == "on"
+    payload = {"discoverable": on, "updated_at": utc_now()}
+    if first_row("koja_user_settings", {"user_id": uid}):
+        _rows, err = db_update("koja_user_settings", {"user_id": uid}, payload)
+    else:
+        _rows, err = db_insert("koja_user_settings", dict(payload, user_id=uid))
+    if err:
+        flash("Could not save this setting. Run koja_user_settings.sql and koja_discoverable.sql first.", "warning")
+    else:
+        flash("Saved.", "success")
+    return redirect(url_for("cx_find_call"))
+
+@app.route("/connect/find-call", methods=["GET"])
+@login_required
+def cx_find_call():
+    uid = str(current_user()["id"])
+    who = clean(request.args.get("who"))[:120]
+    found = None
+    message = ""
+    if who:
+        if _rate_limited("cxfind:%s" % uid, 20, 60):
+            message = "Too many searches. Please wait a minute and try again."
+        else:
+            target = _cx_resolve_contact(who)
+            by_account_id = bool(re.fullmatch(r"[0-9a-fA-F-]{36}", who))
+            hidden = bool(target) and not by_account_id and not _cx_discoverable(target.get("id"))
+            if target and not hidden and str(target.get("id")) != uid and not _cx_blocked(uid, str(target.get("id"))):
+                found = {"id": str(target.get("id")), "name": _profile_name(target.get("id"))}
+            else:
+                # Same message for "not found", "yourself", and "blocked", so accounts cannot be probed.
+                message = "No KOJA user found for that phone number, email or account ID."
+    return _cx_page("Call someone", r'''<div class="card"><a href="{{ url_for('connect') }}">&larr; Connect</a><h2>Call someone</h2>
+<p>Enter their phone number (with country code), email address, or KOJA account ID.</p>
+<form method="get"><input name="who" value="{{ who }}" maxlength="120" placeholder="+260 97 000 0000 or name@email.com or account ID" required><button class="btn">Find</button></form></div>
+{% if message %}<div class="card"><p>{{ message }}</p></div>{% endif %}
+<div class="card"><h3>Who can find me</h3>
+<form method="post" action="{{ url_for('cx_set_discoverable') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<label><input type="checkbox" name="discoverable" value="on" {% if discoverable %}checked{% endif %} style="width:auto"> Let people find me by phone number or email</label>
+<button class="btn">Save</button></form>
+<p class="small">Turning this off stops phone and email searches for you. People with your KOJA account ID can still call you.</p></div>
+{% if found %}<div class="card"><h3>{{ found.name }}</h3>
+<a class="btn" href="{{ url_for('connect_call', user_id=found.id, mode='voice') }}">Voice call</a>
+<a class="btn secondary" href="{{ url_for('connect_call', user_id=found.id, mode='video') }}">Video call</a></div>{% endif %}''', who=who, found=found, message=message, discoverable=_cx_discoverable(uid))
 
 @app.route("/api/connect/presence", methods=["POST"])
 @login_required
