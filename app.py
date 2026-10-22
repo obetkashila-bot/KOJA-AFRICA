@@ -1246,6 +1246,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 <div class="dropdown" id="moreMenu" role="menu">
 <a role="menuitem" href="{{ url_for('questions') }}">Questions</a>
 <a role="menuitem" href="{{ url_for('assignments') }}">Assignments</a>
+{% if user %}<a role="menuitem" href="{{ url_for('pb_dashboard') }}">Proposal Builder</a>{% endif %}
 <a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
 <a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
 <a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
@@ -22691,6 +22692,35 @@ RES_AUTO_QUERIES = [
 ]
 
 
+RES_SCHEDULES = {
+    "daily": ("Every day", 1440),
+    "every_20h29m": ("Every 20 hours 29 minutes", 20 * 60 + 29),
+    "every_2_days": ("Every 2 days", 2 * 24 * 60),
+}
+
+
+def _res_settings():
+    row = first_row("koja_resource_settings", {"id": "default"}) or {}
+    minutes = row.get("interval_minutes") or 1440
+    key = next((k for k, (_, m) in RES_SCHEDULES.items() if m == minutes), "daily")
+    return {
+        "enabled": row.get("enabled", True) is not False,
+        "schedule": key,
+        "interval_minutes": RES_SCHEDULES[key][1],
+        "last_run_at": row.get("last_run_at"),
+        "run_count": int(row.get("run_count") or 0),
+    }
+
+
+def _res_save_settings(fields):
+    fields = dict(fields, updated_at=utc_now())
+    if first_row("koja_resource_settings", {"id": "default"}):
+        _rows, err = db_update("koja_resource_settings", {"id": "default"}, fields)
+    else:
+        _rows, err = db_insert("koja_resource_settings", dict(fields, id="default"))
+    return not err
+
+
 def _res_auto_publishable(licence):
     """Publish automatically only when the licence is clearly open (CC or public domain). Links only."""
     text = (licence or "").lower()
@@ -22772,8 +22802,17 @@ def research_tick():
         return jsonify(ok=False, message="Forbidden"), 403
     if not RES_AUTO_QUERIES:
         return jsonify(ok=False, message="No queries configured."), 500
-    query = RES_AUTO_QUERIES[datetime.now(timezone.utc).toordinal() % len(RES_AUTO_QUERIES)]
+    st = _res_settings()
+    now = datetime.now(timezone.utc)
+    if not st["enabled"]:
+        return jsonify(ok=True, skipped="paused")
+    last = _cx_dt(st["last_run_at"])
+    if last and now - last < timedelta(minutes=st["interval_minutes"]):
+        due_at = (last + timedelta(minutes=st["interval_minutes"])).isoformat()
+        return jsonify(ok=True, skipped="not due yet", next_run_at=due_at)
+    query = RES_AUTO_QUERIES[st["run_count"] % len(RES_AUTO_QUERIES)]
     summary = _res_run(query)
+    _res_save_settings({"last_run_at": now.isoformat(), "run_count": st["run_count"] + 1})
     return jsonify(ok=True, query=query, found=summary.get("found", 0), new=summary.get("new", 0),
                    published=summary.get("published", 0), errors=summary.get("errors", []))
 
@@ -22791,6 +22830,12 @@ def admin_resources():
 <p>The system searches on its own each day and publishes items with an open licence. Items with an unclear licence wait here. Nothing is downloaded or copied.</p>
 <form method="post" action="{{ url_for('admin_resources_run') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
 <input name="query" minlength="3" maxlength="120" placeholder="Search topic, e.g. climate adaptation" required><button class="btn">Run search</button></form></div>
+<div class="card"><h3>Schedule</h3>
+<p>Status: <strong>{{ 'running' if settings.enabled else 'paused' }}</strong> · Current: {{ schedules[settings.schedule][0] }}</p>
+<form method="post" action="{{ url_for('admin_resources_schedule') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<select name="schedule">{% for k, v in schedules.items() %}<option value="{{ k }}" {% if k == settings.schedule %}selected{% endif %}>{{ v[0] }}</option>{% endfor %}</select>
+<button class="btn">Save schedule</button></form>
+<p class="small">The daily job checks in hourly and runs a search only when this interval has passed.</p></div>
 <div class="card"><h3>Sources</h3>{% for s in sources %}
 <form method="post" action="{{ url_for('admin_resource_source_toggle', sid=s.id) }}" style="margin:6px 0"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
 <strong>{{ s.name }}</strong> · {{ 'enabled' if s.enabled else 'paused' }} <span class="small">{{ s.licence_note }}</span>
@@ -22804,7 +22849,18 @@ def admin_resources():
 {% if r.status != 'approved' %}<form method="post" action="{{ url_for('admin_resource_review', rid=r.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn" name="action" value="approve">Approve</button></form>{% endif %}
 {% if r.status != 'rejected' %}<form method="post" action="{{ url_for('admin_resource_review', rid=r.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn secondary" name="action" value="reject">Reject</button></form>{% endif %}
 </div>{% else %}<p>Nothing here yet. Run a search.</p>{% endfor %}</div>''',
-        rows=rows, sources=sources)
+        rows=rows, sources=sources, settings=_res_settings(), schedules=RES_SCHEDULES)
+
+
+@app.route("/admin/resources/schedule", methods=["POST"])
+@admin_required
+def admin_resources_schedule():
+    key = clean(request.form.get("schedule"))
+    if key not in RES_SCHEDULES:
+        abort(400)
+    ok = _res_save_settings({"interval_minutes": RES_SCHEDULES[key][1]})
+    flash("Schedule saved." if ok else "Could not save the schedule.", "success" if ok else "warning")
+    return redirect(url_for("admin_resources"))
 
 
 @app.route("/admin/resources/run", methods=["POST"])
