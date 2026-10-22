@@ -3518,6 +3518,13 @@ def make_intext(r,style,n):
     if style=="mla":return f"({short} {y})"
     return f"({short}{' et al.' if len(a)>2 else ''}, {y})"
 def make_bibliography(results,style): return [(i+1,make_reference(r,style,i+1)) for i,r in enumerate(results)]
+def _gemini_text(prompt, system_prompt, max_output_tokens=2200, timeout=20):
+    """Text reply for research notes through the shared AI helper (Groq first, then Gemini).
+    Returns '' when no provider answers, so the caller falls back to the template notes."""
+    answer, err = _ai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=timeout)
+    return answer if (answer and not err) else ""
+
+
 def research_ai_notes(query, results, style='apa'):
     if not results: return 'No sufficiently relevant evidence was retrieved for this topic.'
     bundle=[]
@@ -12248,7 +12255,7 @@ def _mono_create_checkout(user, order, network, phone):
     except Exception: logger.exception('KOJA monetization checkout error')
     return None,'Checkout could not be started.'
 
-def _finalize_monetization(order, tx):
+def _profit_old_finalize_monetization(order, tx):
     if not order or not tx: return False
     status=str(tx.get('status') or '').lower()
     if status not in ('successful','completed'): return False
@@ -13682,8 +13689,6 @@ def profit_payment_callback():
 
 
 # Extend the existing Flutterwave webhook finalizer without replacing existing services.
-_profit_old_finalize_monetization = _finalize_monetization
-
 def _finalize_monetization(order, tx):
     if order and clean(order.get('payment_reference')) and first_row('koja_profit_orders', {'payment_reference': order.get('payment_reference')}):
         return _profit_finalize_order(order, tx)
@@ -22184,7 +22189,7 @@ PB_TABLE_HEADS = {
     "cashflow_rows": ["Period", "Cash in (estimate)", "Cash out (estimate)"],
 }
 # Values stored beside the sections (not sections themselves).
-PB_EXTRA_KEYS = ("budget_currency", "cashflow_opening", "funding_amount", "logo_data")
+PB_EXTRA_KEYS = ("budget_currency", "cashflow_opening", "funding_amount", "confirmed_contributions", "logo_data")
 PB_LOGO_MAX_BYTES = 300 * 1024
 # Sections each document type uses, in order. Other sections are kept in storage but not shown for that type.
 PB_TYPE_KEYS = {
@@ -22209,13 +22214,24 @@ PB_WRITING_RULES = (
     "Do not write template instructions or square-bracket notes. "
     "Objectives must be SMART: give the measure, a proposed target labelled as a proposed target (never as achieved), and a timeframe. "
     "Budget lines (budget_framework) are an array of strings, one per line, written exactly as: Item | Unit | Quantity | Unit cost | Phase | Justification | Status. "
-    "Quantity and Unit cost are plain numbers with no currency symbols or thousands separators. Status is 'provisional' for every estimate. "
+    "Quantity and Unit cost are plain numbers with no currency symbols or thousands separators. Status is 'Estimate' for every budget line. "
     "Financial projections state their assumptions and never promise profit or a break-even date. "
     "smart_objectives is an array of strings written exactly as: Objective | Indicator | Baseline | Target (proposed) | Timeframe. "
     "Use 'Baseline not yet measured' when no baseline was given. Never give an achieved result. "
     "Leave cashflow_rows as an empty array: cash-flow figures come from the user, not from the AI."
 )
 PB_PLACEHOLDER = "Requires confirmation: not yet written."
+PB_BUDGET_STATUSES = ("Estimate", "Supplier quotation", "Actual", "Approved")
+PB_STATUS_ALIASES = {
+    "": "Estimate", "estimate": "Estimate", "estimated": "Estimate", "provisional": "Estimate",
+    "supplier quotation": "Supplier quotation", "supplier quote": "Supplier quotation", "quotation": "Supplier quotation", "quote": "Supplier quotation",
+    "actual": "Actual", "actual cost": "Actual", "actual expenditure": "Actual", "spent": "Actual",
+    "approved": "Approved", "approved budget": "Approved",
+}
+PB_PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|per ?cent\b)", re.I)
+PB_GUARANTEE_RE = re.compile(r"\b(guarantee[ds]?|guaranteed (?:outcome|result|savings?|returns?)|zero (?:errors|defects|risks?)|100\s*%\s*(?:success|accuracy|compliance)|will definitely|proven to)\b", re.I)
+PB_CLAIM_RE = re.compile(r"\b(approved by|endorsed by|has been approved|has been funded|letters? of (?:support|commitment)|already achieved|has achieved|have achieved|signed (?:by|agreement))\b", re.I)
+PB_NOT_MEASURED = ("", "not yet measured", "baseline not yet measured", "not measured", "unknown", "tbd", "n/a")
 PB_TITLE_MAX = 120
 PB_DESC_MIN = 40
 PB_DESC_MAX = 4000
@@ -22276,42 +22292,101 @@ def _pb_decimal(text):
     return d
 
 
+def _pb_norm_status(raw):
+    """Map a typed status onto the four budget statuses. Unknown text is kept as typed and flagged, never rewritten."""
+    text = str(raw or "").strip()
+    key = re.sub(r"\s+", " ", text.lower())
+    if key in PB_STATUS_ALIASES:
+        return PB_STATUS_ALIASES[key], True
+    return text, False
+
+
 def _pb_parse_budget(lines, currency="USD"):
-    """Parse budget lines. Totals are calculated here, never taken from the AI or the user."""
+    """Parse budget lines. Totals are calculated here, never taken from the AI or the user.
+    Each line is quantity x unit cost, rounded to cents. Unpriced lines are left out of the total and reported."""
     rows, warnings = [], []
     total = Decimal("0")
+    excluded = 0
     for raw in lines or []:
         text = str(raw or "").strip()
         if not text:
             continue
-        parts = [p.strip() for p in text.split("|")]
-        if len(parts) < 4:
+        split = [p.strip() for p in text.split("|")]
+        if len(split) < 4:
             rows.append({"item": text, "unit": "", "quantity": None, "unit_cost": None, "amount": None,
-                         "phase": "", "justification": "", "status": "needs costing"})
-            warnings.append("'%s' needs a quantity and a unit cost." % text[:60])
+                         "phase": "", "justification": "", "status": "needs costing", "known_status": True})
+            warnings.append("'%s' needs a quantity and a unit cost. Format: Item | Unit | Quantity | Unit cost | Phase | Justification | Status." % text[:60])
+            excluded += 1
             continue
-        parts += [""] * (7 - len(parts))
-        item, unit, qty_s, cost_s, phase, justification, status = parts[:7]
+        parts = split + [""] * (7 - len(split))
+        item, unit, qty_s, cost_s, phase, justification, status_s = parts[:7]
+        label = (item or text)[:60]
+        status, known = _pb_norm_status(status_s)
         qty, cost = _pb_decimal(qty_s), _pb_decimal(cost_s)
-        amount = None
         if qty is None or cost is None:
-            warnings.append("'%s' needs a valid quantity and unit cost (numbers only)." % (item or text)[:60])
-            status = "needs costing"
-        else:
-            amount = (qty * cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            total += amount
+            warnings.append("'%s' needs a valid quantity and unit cost (numbers of zero or more, no currency symbols). It is left out of the total until corrected." % label)
+            rows.append({"item": item, "unit": unit, "quantity": qty, "unit_cost": cost, "amount": None,
+                         "phase": phase, "justification": justification, "status": "needs costing", "known_status": known})
+            excluded += 1
+            continue
+        amount = (qty * cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if amount == 0:
+            warnings.append("'%s' has a zero amount. Check that this is intended." % label)
+        if not known:
+            warnings.append("'%s' has the status '%s', which is not recognised. Use Estimate, Supplier quotation, Actual or Approved. The amount is still counted." % (label, status[:40]))
+        total += amount
         rows.append({"item": item, "unit": unit, "quantity": qty, "unit_cost": cost, "amount": amount,
-                     "phase": phase, "justification": justification, "status": status or "provisional"})
+                     "phase": phase, "justification": justification, "status": status, "known_status": known})
+    if excluded:
+        warnings.insert(0, "%d budget line(s) are not priced. They are left out of the total until corrected." % excluded)
     return {"rows": rows, "total": total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-            "warnings": warnings, "currency": currency}
+            "warnings": warnings, "currency": currency, "excluded": excluded}
 
 
 def _pb_num(d):
     return "" if d is None else "{:,.2f}".format(d)
 
 
+def _pb_budget_flags(rows):
+    """Review flags for costs that look unusual. Figures are never changed; the user decides."""
+    priced = [r for r in rows if r.get("amount") is not None and r.get("unit_cost") is not None]
+    flags = []
+    costs = sorted(r["unit_cost"] for r in priced if r["unit_cost"] > 0)
+    if len(costs) >= 3:
+        half = len(costs) // 2
+        mid = costs[half] if len(costs) % 2 else (costs[half - 1] + costs[half]) / 2
+        for r in priced:
+            c = r["unit_cost"]
+            if c <= 0:
+                continue
+            label = (r["item"] or "Unnamed line")[:60]
+            if c >= mid * 10:
+                flags.append("'%s': the unit cost is more than ten times the median unit cost of this budget. Check that it is correct." % label)
+            elif c * 10 <= mid:
+                flags.append("'%s': the unit cost is less than a tenth of the median. Check that it is complete (for example taxes, delivery or installation)." % label)
+    total = sum((r["amount"] for r in priced), Decimal("0"))
+    if total > 0 and len(priced) >= 2:
+        for r in priced:
+            if r["amount"] * 2 > total:
+                flags.append("'%s' is more than half of the total budget. Check it, and check that the rest of the budget is complete." % (r["item"] or "Unnamed line")[:60])
+    return flags
+
+
+def _pb_status_totals(rows):
+    totals = {s: Decimal("0") for s in PB_BUDGET_STATUSES}
+    other = Decimal("0")
+    for r in rows:
+        if r.get("amount") is None:
+            continue
+        if r.get("status") in totals:
+            totals[r["status"]] += r["amount"]
+        else:
+            other += r["amount"]
+    return totals, other
+
+
 def _pb_budget_view(content):
-    """Budget ready for display: formatted amounts, phase subtotals and warnings."""
+    """Budget ready for display and export: formatted amounts, phase subtotals, status totals and review flags."""
     cur = content.get("budget_currency") or "USD"
     parsed = _pb_parse_budget(content.get("budget_framework") or [], cur)
     phases = {}
@@ -22319,15 +22394,150 @@ def _pb_budget_view(content):
         if r["amount"] is not None:
             key = r["phase"] or "Unphased"
             phases[key] = phases.get(key, Decimal("0")) + r["amount"]
+    totals, other = _pb_status_totals(parsed["rows"])
+    status_lines = [(s, _pb_num(totals[s])) for s in PB_BUDGET_STATUSES if totals[s]]
+    if other:
+        status_lines.append(("Unrecognised status", _pb_num(other)))
     return {
         "rows": [dict(r, quantity_text=_pb_num(r["quantity"]), unit_cost_text=_pb_num(r["unit_cost"]),
                       amount_text=_pb_num(r["amount"])) for r in parsed["rows"]],
+        "total": parsed["total"],
         "total_text": _pb_num(parsed["total"]),
         "currency": cur,
         "warnings": parsed["warnings"],
+        "flags": _pb_budget_flags(parsed["rows"]),
+        "excluded": parsed["excluded"],
+        "status_lines": status_lines,
         "phases": [(p, _pb_num(v)) for p, v in phases.items()],
         "count": len(parsed["rows"]),
     }
+
+
+def _pb_funding_view(content):
+    """Amount requested, reconciled with the budget total less confirmed contributions.
+    Nothing is assumed: contributions are only what the user entered."""
+    cur = content.get("budget_currency") or "USD"
+    budget = _pb_parse_budget(content.get("budget_framework") or [], cur)
+    priced = any(r["amount"] is not None for r in budget["rows"])
+    total = budget["total"] if priced else None
+    entered = _pb_decimal(content.get("funding_amount"))
+    contrib_raw = str(content.get("confirmed_contributions") or "").strip()
+    contrib = _pb_decimal(contrib_raw) if contrib_raw else Decimal("0")
+    warnings = []
+    if content.get("funding_amount") and entered is None:
+        warnings.append("The amount requested is not a valid number, so the calculated amount is shown.")
+    if contrib_raw and contrib is None:
+        warnings.append("Confirmed contributions are not a valid number, so they are treated as 0. Enter only amounts confirmed in writing.")
+    if contrib is None:
+        contrib = Decimal("0")
+    gap = total - contrib if total is not None else None
+    if gap is not None and gap < 0:
+        warnings.append("Confirmed contributions are more than the budget total. Review both figures.")
+    if entered is not None and gap is not None and entered != gap:
+        warnings.append("The amount requested (%s) differs from the budget total less confirmed contributions (%s). Explain the difference in the funding request." % (_pb_num(entered), _pb_num(gap)))
+    if entered is not None:
+        amount, source = entered, "entered"
+    elif gap is not None:
+        amount = max(gap, Decimal("0"))
+        source = "calculated: budget total less confirmed contributions" if contrib else "calculated: budget total"
+    else:
+        amount, source = Decimal("0"), "no priced budget yet"
+    return {"amount_text": _pb_num(amount), "source": source, "currency": cur, "warnings": warnings,
+            "budget_total_text": _pb_num(total) if total is not None else "",
+            "contributions_text": _pb_num(contrib), "gap_text": _pb_num(gap) if gap is not None else "",
+            "entered": entered is not None}
+
+
+def _pb_pcts(text):
+    return PB_PERCENT_RE.findall(text or "")
+
+
+def _pb_smart_checks(parts_list):
+    """Checks each structured objective. Returns (warnings, notes). Targets are never changed."""
+    warnings, notes = [], []
+    for parts in parts_list:
+        parts = (list(parts) + [""] * 5)[:5]
+        obj, ind, base, target, when = [str(p).strip() for p in parts]
+        if not any((obj, ind, base, target, when)):
+            continue
+        label = (obj or "An objective")[:60]
+        if not ind:
+            warnings.append("%s: add a measurable indicator." % label)
+        if not target:
+            warnings.append("%s: add a proposed target." % label)
+        if not when:
+            warnings.append("%s: add a timeframe." % label)
+        if base.lower() in PB_NOT_MEASURED:
+            notes.append("%s: the baseline is not yet measured. Establish it during the initial assessment before treating the target as agreed." % label)
+        obj_pct, target_pct = _pb_pcts(obj), _pb_pcts(target)
+        if obj_pct and target_pct and not ({Decimal(x) for x in obj_pct} & {Decimal(x) for x in target_pct}):
+            warnings.append("%s: the objective states %s%% but the proposed target is %s%%. Make the objective and the target agree." % (label, obj_pct[0], target_pct[0]))
+        for field in (obj, ind, target):
+            m = PB_GUARANTEE_RE.search(field)
+            if m:
+                warnings.append("%s: '%s' promises an outcome that cannot be guaranteed. Present it as a proposed target." % (label, m.group(0)))
+                break
+    return warnings, notes
+
+
+def _pb_quality(row, content):
+    """Completeness checklist and review list. Reads only; it never changes the user's text or figures."""
+    doc_type = row.get("document_type") or "business"
+    keys = _pb_type_keys(doc_type)
+    checklist, missing, review = [], [], []
+    checklist.append(("Title, document type and country", bool(row.get("title") and row.get("document_type") and row.get("country")), ""))
+    for k in keys:
+        value = content.get(k)
+        if isinstance(value, list):
+            done = any(str(x).strip() for x in value)
+        else:
+            text = str(value or "").strip()
+            done = bool(text) and text != PB_PLACEHOLDER
+        checklist.append((PB_LABELS[k], done, "" if done else "Not yet written"))
+        if not done:
+            missing.append(PB_LABELS[k])
+    budget = _pb_budget_view(content)
+    priced = any(r.get("amount") is not None for r in budget["rows"])
+    if "budget_framework" in keys:
+        checklist.append(("Itemised budget has priced lines", priced, "" if priced else "No priced lines yet"))
+        if not priced:
+            missing.append("Itemised budget with at least one priced line")
+        review.extend(budget["warnings"])
+        review.extend(budget["flags"])
+    if "funding_request" in keys or "budget_framework" in keys:
+        fund = _pb_funding_view(content)
+        checklist.append(("Funding request reconciles with the budget", priced and not fund["warnings"], ""))
+        review.extend(fund["warnings"])
+    if "smart_objectives" in keys:
+        parts = [[p.strip() for p in str(line).split("|")] for line in (content.get("smart_objectives") or [])]
+        smart_warn, smart_notes = _pb_smart_checks(parts)
+        checklist.append(("Objectives have indicator, target and timeframe", bool(parts) and not smart_warn, ""))
+        review.extend(smart_warn)
+        review.extend(smart_notes)
+    if "cashflow_rows" in keys:
+        cf = _pb_cashflow_view(content)
+        if cf["rows"]:
+            review.extend(cf["warnings"])
+            if "falls below zero" in cf["summary"]:
+                review.append(cf["summary"])
+        else:
+            review.append("No cash-flow estimates entered. Add monthly estimates if the funder asks for a projection.")
+    for k in keys:
+        value = content.get(k)
+        blob = " ".join(str(x) for x in value) if isinstance(value, list) else str(value or "")
+        hits = sorted({m.group(0).lower() for m in PB_CLAIM_RE.finditer(blob)} | {m.group(0).lower() for m in PB_GUARANTEE_RE.finditer(blob)})
+        if hits:
+            review.append("%s: check the wording (%s). State approvals, funding, partners or results only if they have actually happened, and keep targets labelled as proposed." % (PB_LABELS[k], ", ".join(hits)))
+    pending = sum(json.dumps(content.get(k) or "", ensure_ascii=False).count("Requires confirmation") for k in keys)
+    if pending:
+        review.append("%d passage(s) are marked 'Requires confirmation'. Confirm or edit them before submission." % pending)
+    if missing:
+        headline = "Not ready: %d section(s) still need content." % len(missing)
+    elif review:
+        headline = "Ready after review: %d item(s) to check." % len(review)
+    else:
+        headline = "Ready: all checks passed. Figures stay estimates unless their status says otherwise."
+    return {"checklist": checklist, "missing": missing, "review": review, "headline": headline, "ready": not missing}
 
 
 def _pb_uid():
@@ -22394,15 +22604,17 @@ def _pb_clean_extra(key, value):
     return str(value or "").strip()[:40]
 
 
-def _pb_normalise(raw):
-    """Keep only the known sections and extras, with the right types. Unknown keys are dropped."""
+def _pb_normalise(raw, extras=True):
+    """Keep only the known sections (and stored extras when extras=True), with the right types. Unknown keys are dropped.
+    AI replies are read with extras=False, so the AI can never set a funding amount, contribution, currency or logo."""
     if not isinstance(raw, dict):
         raise ValueError("reply is not a JSON object")
     out = {k: _pb_clean_section(k, raw.get(k)) for k, _ in PB_SECTIONS}
-    for k in PB_EXTRA_KEYS:
-        v = _pb_clean_extra(k, raw.get(k))
-        if v:
-            out[k] = v
+    if extras:
+        for k in PB_EXTRA_KEYS:
+            v = _pb_clean_extra(k, raw.get(k))
+            if v:
+                out[k] = v
     return out
 
 
@@ -22508,22 +22720,6 @@ def _pb_cashflow_view(content):
             "warnings": parsed["warnings"]}
 
 
-def _pb_funding_view(content):
-    """The amount requested: the user's figure if entered, otherwise the calculated budget total."""
-    cur = content.get("budget_currency") or "USD"
-    budget = _pb_parse_budget(content.get("budget_framework") or [], cur)
-    total = budget["total"] if any(r["amount"] is not None for r in budget["rows"]) else None
-    entered = _pb_decimal(content.get("funding_amount"))
-    warnings = []
-    if content.get("funding_amount") and entered is None:
-        warnings.append("The requested amount is not a valid number.")
-    if entered is not None and total is not None and entered > total:
-        warnings.append("The requested amount is more than the budget total. Explain the difference in the funding request.")
-    amount = entered if entered is not None else (total or Decimal("0"))
-    return {"amount_text": _pb_num(amount), "source": "entered" if entered is not None else "calculated from the budget",
-            "currency": cur, "warnings": warnings}
-
-
 def _pb_check_logo(file_storage):
     """Returns (data_uri, error). PNG or JPEG only, 300 KB at most, checked by file signature."""
     import base64
@@ -22618,7 +22814,7 @@ def _pb_ai(data, only=None, max_tokens=6000):
     try:
         raw = _pb_parse_reply(answer)
         if only is None:
-            return _pb_normalise(raw), ""
+            return _pb_normalise(raw, extras=False), ""
         if not isinstance(raw, dict) or only not in raw:
             raise ValueError("missing section")
         return _pb_clean_section(only, raw.get(only)), ""
@@ -22698,6 +22894,82 @@ def pb_new_suggest():
     return _pb_form_page(form, [], suggestion=sug)
 
 
+PB_LONG_SECTION_WORDS = 600
+
+
+def _pb_long_keys(doc_type):
+    """Prose sections that are drafted in the background. Structured tables are filled in by the user, not drafted."""
+    return [k for k in _pb_type_keys(doc_type) if k not in PB_TABLES]
+
+
+def _pb_long_create(pid, uid, data):
+    """Creates the long-document record and one chapter per prose section. Returns (doc_id, error)."""
+    keys = _pb_long_keys(data["document_type"])
+    if not keys:
+        return None, "this document type has no prose sections"
+    doc_id = str(uuid.uuid4())
+    stamp = utc_now()
+    doc = {"id": doc_id, "user_id": uid, "title": data["title"], "document_type": data["document_type"],
+           "country": data.get("country"), "intended_recipient": data.get("intended_recipient"),
+           "brief": data["description"], "terminology": "", "source_register": "", "include_references": False,
+           "target_unit": "chapters", "target_value": len(keys), "target_words": len(keys) * PB_LONG_SECTION_WORDS,
+           "outline_source": "proposal", "status": "drafting", "progress": 0, "proposal_id": pid,
+           "created_at": stamp, "updated_at": stamp}
+    _row, err = db_insert("koja_long_documents", doc)
+    if err:
+        return None, "the long-document record could not be created"
+    for n, key in enumerate(keys, 1):
+        _r, err = db_insert("koja_document_sections", {
+            "id": str(uuid.uuid4()), "document_id": doc_id, "user_id": uid, "position": n, "chapter_no": n, "section_no": 1,
+            "chapter_title": PB_LABELS[key], "title": PB_LABELS[key], "target_words": PB_LONG_SECTION_WORDS,
+            "body": "", "word_count": 0, "status": "pending", "attempts": 0, "last_error": "", "updated_at": stamp})
+        if err:
+            db_delete("koja_long_documents", {"id": doc_id, "user_id": uid})
+            return None, "the outline could not be saved"
+    return doc_id, ""
+
+
+def _pb_long_sync(doc):
+    """Copies drafted chapters into the proposal, only into sections that are still empty, so text the user wrote is never overwritten."""
+    try:
+        pid = doc.get("proposal_id")
+        if not pid:
+            return
+        row = first_row("koja_proposals", {"id": pid})
+        if not row:
+            return
+        content = _pb_content_of(row)
+        by_label = {label: key for key, label in PB_LABELS.items()}
+        changed = False
+        for s in _ld_sections(doc["id"]):
+            key = by_label.get(s.get("title"))
+            body = (s.get("body") or "").strip()
+            if not key or s.get("status") not in ("drafted", "approved") or not body or content.get(key):
+                continue
+            content[key] = [p.strip() for p in body.split("\n") if p.strip()] if key in PB_LIST_KEYS else body
+            changed = True
+        if changed:
+            _pb_save(pid, row["user_id"], {"content": content, "status": _pb_status(content, row.get("document_type"))})
+    except Exception:
+        logger.exception("long proposal sync failed")
+
+
+def _pb_long_for(pid):
+    """Progress of the long draft behind a proposal. Owner only; returns None for anyone else."""
+    uid = _pb_uid()
+    if not first_row("koja_proposals", {"id": pid, "user_id": uid}):
+        return None
+    doc = first_row("koja_long_documents", {"proposal_id": pid, "user_id": uid})
+    if not doc:
+        return None
+    _pb_long_sync(doc)
+    secs = _ld_sections(doc["id"])
+    done = sum(1 for s in secs if s.get("status") in ("drafted", "approved"))
+    failed = sum(1 for s in secs if s.get("status") == "failed")
+    progress = int(round(100.0 * done / len(secs))) if secs else 0
+    return {"id": doc["id"], "progress": progress, "status": doc.get("status"), "done": done, "total": len(secs), "failed": failed}
+
+
 def _pb_form_page(form, problems, suggestion=None):
     return render_page("New proposal", r'''<div class="card"><a href="{{ url_for('pb_dashboard') }}">&larr; Proposal Builder</a>
 <h2>New proposal</h2><p>Give a title and describe the project. KOJA writes a first draft that you can edit and export.</p>
@@ -22719,6 +22991,7 @@ def _pb_form_page(form, problems, suggestion=None):
 <p><button class="btn secondary" name="apply" value="starter" formaction="{{ url_for('pb_new_suggest') }}" formnovalidate>Use starter text</button></p></div>{% endif %}
 <p><button class="btn secondary" formaction="{{ url_for('pb_new_suggest') }}" formnovalidate>Suggest choices from my title</button></p>
 <label>Describe the project (at least 40 characters)</label><textarea name="description" rows="8" maxlength="4000" required>{{ form.get('description','') }}</textarea>
+<label><input type="checkbox" name="long" value="1"> Write as a long proposal: each chapter is drafted in the background and you can review each one</label>
 <button class="btn">Create draft</button>
 </form></div>''', form=form, problems=problems, types=PB_DOC_TYPES, suggestion=suggestion)
 
@@ -22755,6 +23028,12 @@ def pb_new():
     _row, err = db_insert("koja_proposals", draft)
     if err:
         return _pb_form_page(request.form, ["Could not save the proposal. Please try again."])
+    if request.form.get("long") == "1":
+        _ld_id, ld_err = _pb_long_create(pid, uid, data)
+        if _ld_id:
+            flash("Long proposal started. Chapters are drafted in the background. You can fill in the budget and objectives tables now.", "success")
+            return redirect(url_for("pb_editor", pid=pid))
+        flash("Long drafting could not start (%s). A standard draft is being written instead." % ld_err, "warning")
     content, ai_error = _pb_ai(data)
     if content is not None:
         content.setdefault("budget_currency", _pb_currency_for(data["country"]))
@@ -22767,55 +23046,85 @@ def pb_new():
 @app.route("/proposal-builder/<pid>")
 @login_required
 def pb_editor(pid):
+    long_doc = _pb_long_for(pid)  # copies drafted chapters in before the proposal is read
     row = _pb_owned(pid, _pb_uid())
     content = _pb_content_of(row)
     values = {k: ("\n".join(v) if k in PB_LIST_KEYS else v) for k, v in content.items() if k not in PB_EXTRA_KEYS}
     budget = _pb_budget_view(content)
     funding = _pb_funding_view(content)
     cashflow = _pb_cashflow_view(content)
+    quality = _pb_quality(row, content)
     return render_page("Edit proposal", r'''<div class="card"><a href="{{ url_for('pb_dashboard') }}">&larr; My proposals</a>
-<h2>{{ p.title }}</h2><div class="small">{{ types.get(p.document_type, 'Proposal') }} · {{ p.status }}</div>
-<p><a class="btn secondary" href="{{ url_for('pb_preview', pid=p.id) }}">Preview</a>
+<h2>{{ p.title }}</h2><div class="small">{{ types.get(p.document_type, 'Proposal') }} · {{ p.status }} · <span id="pb-save-note">Last saved: {{ p.updated_at }}</span></div>
+<p><a class="btn secondary" href="{{ url_for('pb_preview', pid=p.id) }}">Preview and quality report</a>
 <a class="btn secondary" href="{{ url_for('pb_export', pid=p.id, fmt='docx') }}">Word</a>
-<a class="btn secondary" href="{{ url_for('pb_export', pid=p.id, fmt='pdf') }}">PDF</a></p></div>
-<form method="post" action="{{ url_for('pb_update', pid=p.id) }}" class="card" enctype="multipart/form-data">
+<a class="btn secondary" href="{{ url_for('pb_export', pid=p.id, fmt='pdf') }}">PDF</a></p>
+<p class="small">Check the quality report below before you export. Export is always available; the report lists what still needs attention.</p></div>
+{% if long %}<div class="card"><strong>Long proposal</strong> · {{ long.progress }}% drafted ({{ long.done }} of {{ long.total }} chapters, {{ long.status }}).
+Chapters are drafted in the background and filled into the sections below. Text you have already written is kept.{% if long.failed %} {{ long.failed }} chapter(s) failed. Open the chapter manager to retry.{% endif %}
+<p><a class="btn secondary" href="{{ url_for('ld_editor', did=long.id) }}">Manage chapters</a></p></div>{% endif %}
+<div class="card"><h3>Completeness and quality</h3>
+<p><strong>{{ quality.headline }}</strong></p>
+<details><summary>Completeness checklist</summary>
+{% for label, ok, detail in quality.checklist %}<div class="small">{{ 'Done' if ok else 'To do' }}: {{ label }}{% if detail and not ok %} ({{ detail }}){% endif %}</div>{% endfor %}
+</details>
+{% if quality.review %}<h4>Review before submission</h4><ul>{% for w in quality.review %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}</div>
+<form id="pb-form" method="post" action="{{ url_for('pb_update', pid=p.id) }}" class="card" enctype="multipart/form-data">
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<datalist id="pb-status-options"><option value="Estimate"><option value="Supplier quotation"><option value="Actual"><option value="Approved"></datalist>
 <label>Title</label><input name="title" maxlength="120" value="{{ p.title }}">
 <label>Budget currency</label><select name="budget_currency">{% for c in currencies %}<option value="{{ c }}" {% if c == currency %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
-<label>Amount requested (optional)</label><input name="funding_amount" value="{{ funding_amount }}" placeholder="Leave blank to use the budget total">
-<p class="small">Currently requested: {{ funding.amount_text }} {{ funding.currency }} ({{ funding.source }})</p>
+<label>Amount requested (optional)</label><input name="funding_amount" value="{{ funding_amount }}" placeholder="Leave blank to use the budget total less contributions">
+<p class="small">Example: 150000. Enter a figure only if it differs from the calculation; the difference must then be explained in the funding request.</p>
+<p class="small">Budget total {{ funding.budget_total_text or 'not yet calculated' }} {{ funding.currency }} · less confirmed contributions {{ funding.contributions_text }} · amount requested {{ funding.amount_text }} {{ funding.currency }} ({{ funding.source }})</p>
+{% for w in funding.warnings %}<div class="alert">{{ w }}</div>{% endfor %}
+<label>Confirmed contributions from others (optional)</label><input name="confirmed_contributions" value="{{ contributions }}" placeholder="0">
+<p class="small">Enter only amounts confirmed in writing, such as a signed partner letter. Leave blank if there are none.</p>
 <label>Cash balance at the start (optional)</label><input name="cashflow_opening" value="{{ cashflow_opening }}" placeholder="0">
 <label>Organisation logo (PNG or JPEG, 300 KB maximum)</label><input type="file" name="logo" accept="image/png,image/jpeg">
 {% if has_logo %}<label><input type="checkbox" name="remove_logo" value="1"> Remove the current logo</label>{% endif %}
-<p class="small">All budget and cash-flow amounts are estimates. Replace them with supplier quotes and real figures before submission.</p>
-{% for w in budget_warnings + cashflow.warnings + funding.warnings %}<div class="alert">{{ w }}</div>{% endfor %}
+<p class="small">All budget and cash-flow amounts are estimates unless their status says otherwise. Replace them with supplier quotes and actual figures before submission.</p>
 {% for key, label in sections %}
 {% if key in table_keys %}
+{% if key == 'budget_framework' %}
+<p class="small">Enter quantity and unit cost as plain numbers (for example 3 and 1200). Status: Estimate, Supplier quotation, Actual or Approved. Only priced lines are included in the total.</p>
+{% for w in budget.warnings %}<div class="alert">{{ w }}</div>{% endfor %}
+{% endif %}
+{% if key == 'smart_objectives' %}
+<p class="small">Indicator: what you will measure. Baseline: the starting value, or "Not yet measured". Target: a proposed target, not a result. Timeframe: when it will be reached.</p>
+{% endif %}
 {% for tv in table_views if tv.key == key %}
 <label>{{ loop.index }}. {{ label }}</label>
+{% if key == 'budget_framework' %}<p class="small">Totals: {% for s, a in budget.status_lines %}{{ s }} {{ a }}{% if not loop.last %} · {% endif %}{% else %}none yet{% endfor %}. Grand total {{ budget.total_text }} {{ budget.currency }}.{% if budget.phases %} By phase: {% for ph, amt in budget.phases %}{{ ph }} {{ amt }}{% if not loop.last %} · {% endif %}{% endfor %}.{% endif %}</p>
+{% for f in budget.flags %}<div class="alert">Review: {{ f }}</div>{% endfor %}{% endif %}
 <div style="overflow-x:auto"><table><thead><tr>{% for h in tv.heads %}<th>{{ h }}</th>{% endfor %}<th></th></tr></thead>
-<tbody id="body-{{ tv.key }}">{% for row in tv.rows %}<tr>{% for c in tv.cols %}<td><input name="t_{{ tv.key }}_{{ c }}" value="{{ row[loop.index0] }}"></td>{% endfor %}<td><button type="button" class="btn secondary" onclick="pbRemove(this)">Remove</button></td></tr>{% endfor %}</tbody></table></div>
+<tbody id="body-{{ tv.key }}">{% for row in tv.rows %}<tr>{% for c in tv.cols %}<td><input name="t_{{ tv.key }}_{{ c }}" value="{{ row[loop.index0] }}"{% if c == 'status' %} list="pb-status-options"{% endif %}></td>{% endfor %}<td><button type="button" class="btn secondary" onclick="pbRemove(this)">Remove</button></td></tr>{% endfor %}</tbody></table>
 <p><button type="button" class="btn secondary" onclick="pbAdd('{{ tv.key }}')">Add row</button></p>
-<template id="tpl-{{ tv.key }}"><tr>{% for c in tv.cols %}<td><input name="t_{{ tv.key }}_{{ c }}"></td>{% endfor %}<td><button type="button" class="btn secondary" onclick="pbRemove(this)">Remove</button></td></tr></template>
+<template id="tpl-{{ tv.key }}"><tr>{% for c in tv.cols %}<td><input name="t_{{ tv.key }}_{{ c }}"{% if c == 'status' %} list="pb-status-options"{% endif %}></td>{% endfor %}<td><button type="button" class="btn secondary" onclick="pbRemove(this)">Remove</button></td></tr></template>
 {% endfor %}
+{% if key == 'cashflow_rows' %}{% for w in cashflow.warnings %}<div class="alert">{{ w }}</div>{% endfor %}<p class="small">{{ cashflow.summary }}</p>{% endif %}
 {% else %}
 <label>{{ loop.index }}. {{ label }}{% if key in lists %} <span class="small">(one item per line)</span>{% endif %}</label>
 <textarea name="s_{{ key }}" rows="{{ 3 if key in lists else 6 }}" placeholder="Write this section, or regenerate it">{{ values[key] }}</textarea>
 {% endif %}
 <button class="btn secondary" formaction="{{ url_for('pb_regenerate', pid=p.id, section=key) }}" formnovalidate>Regenerate this section</button>
 {% endfor %}
-<p><button class="btn">Save changes</button></p></form>
+<p><button class="btn">Save changes</button> <span class="small" id="pb-save-status"></span></p></form>
 <form method="post" action="{{ url_for('pb_delete', pid=p.id) }}" class="card">
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger">Delete proposal</button></form>
 <script>
 function pbAdd(k){var t=document.getElementById('tpl-'+k),b=document.getElementById('body-'+k);if(t&&b){b.appendChild(t.content.firstElementChild.cloneNode(true));}}
 function pbRemove(btn){var tr=btn.closest('tr');if(tr){tr.parentNode.removeChild(tr);}}
+(function(){try{var f=document.getElementById('pb-form'),s=document.getElementById('pb-save-status');if(!f||!s){return;}
+f.addEventListener('input',function(){s.textContent='Unsaved changes. Press Save changes to keep them.';});
+f.addEventListener('submit',function(){s.textContent='Saving…';});}catch(e){}})();
 </script>''',
         p=row, sections=_pb_type_sections(row.get("document_type")), lists=PB_LIST_KEYS, values=values,
         types=PB_DOC_TYPES, currencies=PB_CURRENCIES, currency=content.get("budget_currency") or "USD",
         table_keys=list(PB_TABLES), table_views=_pb_table_views(content, row.get("document_type")),
-        funding_amount=content.get("funding_amount", ""), cashflow_opening=content.get("cashflow_opening", ""),
-        has_logo=bool(content.get("logo_data")), budget_warnings=budget["warnings"], funding=funding, cashflow=cashflow)
+        funding_amount=content.get("funding_amount", ""), contributions=content.get("confirmed_contributions", ""),
+        cashflow_opening=content.get("cashflow_opening", ""), has_logo=bool(content.get("logo_data")),
+        budget=budget, funding=funding, cashflow=cashflow, quality=quality, long=long_doc)
 
 
 @app.route("/proposal-builder/<pid>/update", methods=["POST"])
@@ -22845,7 +23154,7 @@ def pb_update(pid):
 def pb_regenerate(pid, section):
     uid = _pb_uid()
     row = _pb_owned(pid, uid)
-    if section not in PB_LABELS:
+    if section not in _pb_type_keys(row.get("document_type")):
         abort(404)
     content = _pb_form_content(request.form, _pb_content_of(row))
     if _rate_limited("pbgen:%s" % uid, 5, 600):
@@ -22870,6 +23179,9 @@ def pb_preview(pid):
 <h1>{{ p.title }}</h1><p class="small">{{ types.get(p.document_type, 'Proposal') }}{% if p.country %} · {{ p.country }}{% endif %} · Prepared with KOJA AFRICA</p>
 <p><a class="btn" href="{{ url_for('pb_export', pid=p.id, fmt='docx') }}">Download Word</a>
 <a class="btn secondary" href="{{ url_for('pb_export', pid=p.id, fmt='pdf') }}">Download PDF</a></p></div>
+<div class="card"><h3>Pre-export quality report</h3><p><strong>{{ quality.headline }}</strong></p>
+{% if quality.missing %}<p class="small">Still missing: {{ quality.missing|join(', ') }}.</p>{% endif %}
+{% if quality.review %}<h4>Review before submission</h4><ul>{% for w in quality.review %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}</div>
 <div class="card">
 {% for b in blocks %}
 {% if b[0] == 'title' %}<p class="small">{{ b[1] }}</p>
@@ -22879,9 +23191,10 @@ def pb_preview(pid):
 {% elif b[0] == 'table' %}<div style="overflow-x:auto"><table><thead><tr>{% for h in b[1] %}<th>{{ h }}</th>{% endfor %}</tr></thead><tbody>
 {% for r in b[2] %}<tr>{% for c in r %}<td>{{ c }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
 {% elif b[0] == 'image' %}<p><img src="{{ b[1] }}" alt="Organisation logo" style="max-width:180px;max-height:120px"></p>
+{% elif b[0] == 'toc' %}<h3>Contents</h3><ol>{% for c in b[1] %}<li>{{ c }}</li>{% endfor %}</ol>
 {% endif %}
 {% endfor %}
-</div>''', p=row, blocks=_pb_export_blocks(row, content), types=PB_DOC_TYPES)
+</div>''', p=row, blocks=_pb_export_blocks(row, content), types=PB_DOC_TYPES, quality=_pb_quality(row, content))
 
 
 def _pb_plain_rows(content, key):
@@ -22903,21 +23216,29 @@ def _pb_export_blocks(row, content):
     fund = _pb_funding_view(content)
     cur = view["currency"]
     blocks = [("title", row.get("title") or "Proposal"),
-              ("para", "%s · %s · Prepared with KOJA AFRICA" % (PB_DOC_TYPES.get(doc_type, "Proposal"), row.get("country") or ""))]
+              ("para", "%s · %s · Prepared with KOJA AFRICA" % (PB_DOC_TYPES.get(doc_type, "Proposal"), row.get("country") or "")),
+              ("para", "Draft for review. Budget amounts are estimates unless their status says Supplier quotation, Actual or Approved. "
+                       "Items marked 'Requires confirmation' must be checked before submission.")]
     uri = content.get("logo_data")
     if uri:
         blocks.append(("image", uri, _pb_logo_bytes(content)))
+    blocks.append(("pagebreak",))
+    chapters = ["%d. %s" % (n, label) for n, (_key, label) in enumerate(_pb_type_sections(doc_type), 1)]
+    blocks.append(("toc", chapters))
+    blocks.append(("pagebreak",))
     for n, (key, label) in enumerate(_pb_type_sections(doc_type), 1):
         blocks.append(("heading", "%d. %s" % (n, label)))
         value = content.get(key)
         if key == "budget_framework":
             if view["rows"]:
-                blocks.append(("para", "All amounts are provisional estimates in %s until replaced with supplier quotes." % cur))
+                blocks.append(("para", "Each amount is quantity x unit cost, in %s. Only priced lines are included in the total." % cur))
                 body = [[r["item"], r["unit"], r["quantity_text"], r["unit_cost_text"], r["amount_text"], r["phase"], r["status"]] for r in view["rows"]]
-                body.append(["Total (%s, provisional)" % cur, "", "", "", view["total_text"], "", ""])
+                body.append(["Total (%s)" % cur, "", "", "", view["total_text"], "", ""])
                 blocks.append(("table", ["Item", "Unit", "Qty", "Unit cost", "Amount", "Phase", "Status"], body))
+                if view["status_lines"]:
+                    blocks.append(("para", "Totals by status (%s): " % cur + " · ".join("%s %s" % (s, a) for s, a in view["status_lines"])))
                 if view["phases"]:
-                    blocks.append(("para", "By phase: " + " · ".join("%s %s" % (p, a) for p, a in view["phases"])))
+                    blocks.append(("para", "By phase (%s): " % cur + " · ".join("%s %s" % (p, a) for p, a in view["phases"])))
                 for note in view["warnings"]:
                     blocks.append(("para", "Note: " + note))
             else:
@@ -22940,7 +23261,12 @@ def _pb_export_blocks(row, content):
             for para in (value or PB_PLACEHOLDER).split("\n"):
                 if para.strip():
                     blocks.append(("para", para))
-            blocks.append(("para", "Amount requested: %s %s (%s)." % (fund["amount_text"], fund["currency"], fund["source"])))
+            if fund["budget_total_text"]:
+                blocks.append(("para", "Budget total (from the itemised budget): %s %s." % (fund["budget_total_text"], cur)))
+            else:
+                blocks.append(("para", "Budget total: not yet calculated, because the budget has no priced lines."))
+            blocks.append(("para", "Less confirmed contributions: %s %s." % (fund["contributions_text"], cur)))
+            blocks.append(("para", "Amount requested: %s %s (%s)." % (fund["amount_text"], cur, fund["source"])))
             for note in fund["warnings"]:
                 blocks.append(("para", "Note: " + note))
         elif key in PB_LIST_KEYS:
@@ -22956,9 +23282,21 @@ def _pb_render_docx(blocks):
     try:
         from docx import Document
         from docx.shared import Inches
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
     except Exception:
         raise RuntimeError("Word export is not available on this server (python-docx is not installed).")
     doc = Document()
+    footer = doc.sections[0].footer.paragraphs[0]
+    footer.text = "KOJA AFRICA · Page "
+    page_field = OxmlElement("w:fldSimple")
+    page_field.set(qn("w:instr"), "PAGE")
+    page_run = OxmlElement("w:r")
+    page_text = OxmlElement("w:t")
+    page_text.text = "1"
+    page_run.append(page_text)
+    page_field.append(page_run)
+    footer._p.append(page_field)
     for b in blocks:
         kind = b[0]
         if kind == "title":
@@ -22970,12 +23308,35 @@ def _pb_render_docx(blocks):
         elif kind == "bullets":
             for item in b[1]:
                 doc.add_paragraph(item, style="List Bullet")
+        elif kind == "pagebreak":
+            doc.add_page_break()
+        elif kind == "toc":
+            contents_label = doc.add_paragraph().add_run("Contents")
+            contents_label.bold = True
+            toc_run = doc.add_paragraph().add_run()
+            for el_name, attrs, text in [("w:fldChar", {"w:fldCharType": "begin"}, None),
+                                         ("w:instrText", {"xml:space": "preserve"}, 'TOC \\o "1-1" \\h \\z \\u'),
+                                         ("w:fldChar", {"w:fldCharType": "separate"}, None),
+                                         ("w:t", {}, "Contents are updated when the file is opened in Word. Accept the update prompt to fill in page numbers."),
+                                         ("w:fldChar", {"w:fldCharType": "end"}, None)]:
+                el = OxmlElement(el_name)
+                for k, v in attrs.items():
+                    el.set(qn(k), v)
+                if text is not None:
+                    el.text = text
+                toc_run._r.append(el)
+            update = OxmlElement("w:updateFields")
+            update.set(qn("w:val"), "true")
+            doc.settings.element.append(update)
         elif kind == "table":
             heads, body = b[1], b[2]
             table = doc.add_table(rows=1, cols=len(heads))
             table.style = "Table Grid"
             for cell, text in zip(table.rows[0].cells, heads):
-                cell.text = text
+                cell.text = str(text)
+            header_mark = OxmlElement("w:tblHeader")  # the column headings repeat on each page
+            header_mark.set(qn("w:val"), "true")
+            table.rows[0]._tr.get_or_add_trPr().append(header_mark)
             for r in body:
                 for cell, text in zip(table.add_row().cells, r):
                     cell.text = str(text)
@@ -22995,12 +23356,17 @@ def _pb_render_pdf(row, blocks):
         from reportlab.lib import colors
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.utils import ImageReader
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+        from reportlab.platypus.tableofcontents import TableOfContents
+        from reportlab.platypus import CondPageBreak
     except Exception:
         raise RuntimeError("PDF export is not available on this server (reportlab is not installed).")
     styles = getSampleStyleSheet()
     styles["Heading2"].keepWithNext = 1  # a heading never sits alone at the foot of a page
     cell_style = ParagraphStyle("pbcell", parent=styles["Normal"], fontSize=8, leading=10)
+    chapter_style = ParagraphStyle("PBChapter", parent=styles["Heading2"], keepWithNext=0)  # no keepWithNext: it wraps the heading and can make contents page numbers wrong
+    toc = TableOfContents()
+    toc.levelStyles = [ParagraphStyle("PBToc", fontSize=10, leftIndent=0, spaceAfter=4, leading=14)]
     story = []
     for b in blocks:
         kind = b[0]
@@ -23009,9 +23375,15 @@ def _pb_render_pdf(row, blocks):
         elif kind == "para":
             story.append(Paragraph(escape(b[1]), styles["Normal"]))
             story.append(Spacer(1, 4))
+        elif kind == "toc":
+            story.append(Paragraph("Contents", styles["Heading2"]))
+            story.append(toc)
         elif kind == "heading":
+            story.append(CondPageBreak(90))  # a chapter heading never sits alone at the foot of a page
             story.append(Spacer(1, 6))
-            story.append(Paragraph(escape(b[1]), styles["Heading2"]))
+            story.append(Paragraph(escape(b[1]), chapter_style))
+        elif kind == "pagebreak":
+            story.append(PageBreak())
         elif kind == "bullets":
             for item in b[1]:
                 story.append(Paragraph("&bull; " + escape(item), styles["Normal"]))
@@ -23045,8 +23417,13 @@ def _pb_render_pdf(row, blocks):
         canvas.drawString(40, 24, "KOJA AFRICA")
         canvas.restoreState()
 
+    class _PBDoc(SimpleDocTemplate):
+        def afterFlowable(self, flowable):
+            if isinstance(flowable, Paragraph) and flowable.style.name == "PBChapter":
+                self.notify("TOCEntry", (0, flowable.getPlainText(), self.page))
+
     buf = io.BytesIO()
-    SimpleDocTemplate(buf, pagesize=A4, title=row.get("title") or "Proposal").build(
+    _PBDoc(buf, pagesize=A4, title=row.get("title") or "Proposal").multiBuild(
         story, onFirstPage=_page_number, onLaterPages=_page_number)
     return buf.getvalue()
 
@@ -23092,7 +23469,6 @@ def pb_delete(pid):
     db_delete("koja_proposals", {"id": pid, "user_id": uid})
     flash("Proposal deleted.", "success")
     return redirect(url_for("pb_dashboard"))
-
 
 
 # ============================================================
@@ -23448,6 +23824,9 @@ def _ld_plan(unit, value):
             "section_words": section_words, "sections": chapters * per_chapter,
             "estimated_pages": max(1, round(words / LD_WORDS_PER_PAGE))}
 
+def d_register(doc):
+    return doc.get("source_register") or ""
+
 
 def _ld_owned(doc_id, uid):
     row = first_row("koja_long_documents", {"id": doc_id, "user_id": uid})
@@ -23617,8 +23996,11 @@ def _ld_check_text(text, target):
 
 def _ld_draft_one(doc, section, previous_tail, outline):
     target = int(section.get("target_words") or 800)
-    answer, err = _ai_call(_ld_section_prompt(doc, section, outline, previous_tail), LD_SYSTEM_PROMPT,
-                           max_output_tokens=min(4000, int(target * 2) + 300), timeout=60)
+    prompt = _ld_section_prompt(doc, section, outline, previous_tail)
+    started = time.time()
+    answer, err = _ai_call(prompt, LD_SYSTEM_PROMPT, max_output_tokens=min(4000, int(target * 2) + 300), timeout=60)
+    seconds = int(round(time.time() - started))
+    tokens = (len(prompt) + len(answer or "")) // 4  # rough estimate: about four characters per token
     if err or not answer:
         reason = "The AI service did not respond (%s)." % (err or "empty reply")
     else:
@@ -23626,11 +24008,32 @@ def _ld_draft_one(doc, section, previous_tail, outline):
         reason = _ld_check_text(text, target)
         if not reason:
             db_update("koja_document_sections", {"id": section["id"]},
-                      {"body": text, "word_count": _ld_words(text), "status": "drafted", "last_error": "", "updated_at": utc_now()})
+                      {"body": text, "word_count": _ld_words(text), "status": "drafted", "last_error": "",
+                       "duration_seconds": seconds, "est_tokens": tokens, "updated_at": utc_now()})
             return True, ""
     db_update("koja_document_sections", {"id": section["id"]},
-              {"status": "failed", "last_error": reason[:500], "updated_at": utc_now()})
+              {"status": "failed", "last_error": reason[:500], "duration_seconds": seconds, "est_tokens": tokens, "updated_at": utc_now()})
     return False, reason
+
+def _ld_citation_flags(body, register):
+    """Citations in the text whose first author does not appear in the source register. The text is not verified; this only flags names to check."""
+    reg = (register or "").lower()
+    flags = []
+    for m in _LD_CITATION_RE.finditer(body or ""):
+        name = m.group(1)
+        if name.lower() not in reg:
+            flags.append("(%s, %s)" % (name, m.group(2)))
+    return sorted(set(flags))
+
+_LD_CITATION_RE = re.compile(r"\(([A-Z][A-Za-z'\-]+)(?: et al\.| and [A-Z][A-Za-z'\-]+| & [A-Z][A-Za-z'\-]+)?,? (\d{4}[a-z]?)\)")
+
+def _ld_timing(secs):
+    """Average of measured drafting times. Falls back to the planning figure until real timings exist."""
+    measured = [int(s.get("duration_seconds") or 0) for s in secs if int(s.get("duration_seconds") or 0) > 0]
+    pending = [s for s in secs if s.get("status") == "pending"]
+    average = (sum(measured) / float(len(measured))) if measured else float(LD_SECTION_SECONDS)
+    return {"average_seconds": int(round(average)), "measured": len(measured), "minutes_left": int(round(len(pending) * average / 60.0)),
+            "tokens_used": sum(int(s.get("est_tokens") or 0) for s in secs)}
 
 
 def _ld_tick(doc, budget=LD_TICK_BUDGET_SECONDS):
@@ -23654,35 +24057,85 @@ def _ld_tick(doc, budget=LD_TICK_BUDGET_SECONDS):
         drafted += 1 if ok else 0
         failed += 0 if ok else 1
     summary = _ld_refresh(doc_id)
+    _pb_long_sync(doc)
     summary.update({"drafted": drafted, "failed": failed, "remaining": len(_ld_candidates(doc_id))})
     return summary
 
+def _ld_body_blocks(body):
+    out, table = [], []
+    for raw in (body or "").split("\n"):
+        line = raw.strip()
+        if line.startswith("|") and line.count("|") >= 2:
+            table.append(line)
+            continue
+        if table:
+            parsed = _ld_export_table(table)
+            table = []
+            if parsed:
+                out.append(("table", parsed[0], parsed[1]))
+        if line:
+            out.append(("para", line))
+    if table:
+        parsed = _ld_export_table(table)
+        if parsed:
+            out.append(("table", parsed[0], parsed[1]))
+    return out
+
+def _ld_export_table(lines):
+    """Pipe-table lines from the text become (heads, rows). Separator rows such as |---|---| are dropped."""
+    rows = []
+    for ln in lines:
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        if cells and all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
+            continue
+        rows.append(cells)
+    if not rows:
+        return None
+    n = max(len(r) for r in rows)
+    rows = [r + [""] * (n - len(r)) for r in rows]
+    return rows[0], rows[1:]
+
 
 def _ld_export_blocks(doc, sections):
-    """Blocks for the document: drafted or approved sections only, grouped by chapter, with references and notes."""
+    """Blocks for the document: drafted or approved sections only, grouped by chapter. Appendix chapters come after the references."""
     included = [s for s in sections if s.get("body") and s.get("status") in ("drafted", "approved")]
     skipped = len(sections) - len(included)
+    order, by_chapter = [], {}
+    for s in included:
+        key = s.get("chapter_title") or "Chapter"
+        if key not in by_chapter:
+            by_chapter[key] = []
+            order.append(key)
+        by_chapter[key].append(s)
+    body_chapters = [k for k in order if not k.lower().startswith("appendix")]
+    appendix_chapters = [k for k in order if k.lower().startswith("appendix")]
     blocks = [("title", doc.get("title") or "Document"),
               ("para", "%s · %s · Prepared with KOJA AFRICA" % (PB_DOC_TYPES.get(doc.get("document_type"), "Document"), doc.get("country") or ""))]
-    current = None
-    for s in included:
-        if s.get("chapter_title") != current:
-            current = s.get("chapter_title")
-            blocks.append(("h1", current or "Chapter"))
-        blocks.append(("h2", s.get("title") or "Section"))
-        for para in (s.get("body") or "").split("\n"):
-            if para.strip():
-                blocks.append(("para", para.strip()))
+
+    def emit(key):
+        blocks.append(("h1", key))
+        for s in by_chapter[key]:
+            blocks.append(("h2", s.get("title") or "Section"))
+            blocks.extend(_ld_body_blocks(s.get("body")))
+
+    for key in body_chapters:
+        emit(key)
     if skipped:
         blocks.append(("para", "Note: %d section(s) are not yet drafted or approved and are not included." % skipped))
-    if doc.get("include_references") and (doc.get("source_register") or "").strip():
+    register = doc.get("source_register") or ""
+    flags = sorted({f for s in included for f in _ld_citation_flags(s.get("body"), register)})
+    if flags:
+        blocks.append(("para", "Citations to check against the source list (not found there, not verified): " + ", ".join(flags)))
+    if doc.get("include_references"):
         blocks.append(("h1", "References"))
-        for line in doc["source_register"].splitlines():
-            if line.strip():
-                blocks.append(("para", line.strip()))
-    elif doc.get("include_references"):
-        blocks.append(("h1", "References"))
-        blocks.append(("para", "No sources were supplied, so no references have been added."))
+        lines = [ln.strip() for ln in register.splitlines() if ln.strip()]
+        if lines:
+            for line in lines:
+                blocks.append(("para", line))
+        else:
+            blocks.append(("para", "No sources were supplied, so no references have been added."))
+    for key in appendix_chapters:
+        emit(key)
     return blocks, skipped
 
 
@@ -23734,6 +24187,14 @@ def _ld_render_docx(doc, blocks):
             word.add_heading(b[1], 2)
         elif kind == "para":
             word.add_paragraph(b[1])
+        elif kind == "table":
+            table = word.add_table(rows=1, cols=len(b[1]))
+            table.style = "Table Grid"
+            for cell, text in zip(table.rows[0].cells, b[1]):
+                cell.text = text
+            for r in b[2]:
+                for cell, text in zip(table.add_row().cells, r):
+                    cell.text = str(text)
     buf = io.BytesIO()
     word.save(buf)
     return buf.getvalue(), 0
@@ -23743,8 +24204,9 @@ def _ld_render_pdf(doc, blocks):
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
         from reportlab.platypus.tableofcontents import TableOfContents
+        from reportlab.lib import colors
     except Exception:
         raise RuntimeError("PDF export is not available on this server (reportlab is not installed).")
     styles = getSampleStyleSheet()
@@ -23774,6 +24236,17 @@ def _ld_render_pdf(doc, blocks):
         elif kind == "para":
             story.append(Paragraph(escape(b[1]), styles["Normal"]))
             story.append(Spacer(1, 4))
+        elif kind == "table":
+            cell = ParagraphStyle("LDCell", parent=styles["Normal"], fontSize=8, leading=10)
+            data = [[Paragraph(escape(h), cell) for h in b[1]]]
+            data += [[Paragraph(escape(str(x)), cell) for x in r] for r in b[2]]
+            width = 451.0
+            table = Table(data, repeatRows=1, colWidths=[width / len(b[1])] * len(b[1]))
+            table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                                       ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1d3b6b")),
+                                       ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+            story.append(table)
+            story.append(Spacer(1, 6))
 
     def _footer(canvas, doc_):
         canvas.saveState()
@@ -23793,6 +24266,7 @@ def _ld_render_pdf(doc, blocks):
 def ld_dashboard():
     uid = str(current_user()["id"])
     rows = db_select("koja_long_documents", filters={"user_id": uid}, order="updated_at.desc", limit=100) or []
+    rows = [r for r in rows if not r.get("proposal_id")]
     return render_page("Long documents", r'''<div class="card"><h2>Long documents</h2>
 <p>Plan a document of up to __MAX__ pages. KOJA writes an outline first, then drafts one section at a time, saving each one. Nothing is promised as a page count until the document is assembled and checked.</p></div>
 <div class="card"><h3>Start a document</h3>
@@ -23865,13 +24339,15 @@ def ld_editor(did):
     doc = _ld_owned(did, uid)
     secs = _ld_sections(did)
     pending = [s for s in secs if s.get("status") in ("pending", "failed")]
-    minutes = round(len([s for s in secs if s.get("status") == "pending"]) * LD_SECTION_SECONDS / 60.0)
+    timing = _ld_timing(secs)
+    minutes = timing["minutes_left"]
+    flags = {s["id"]: _ld_citation_flags(s.get("body"), d_register(doc)) for s in secs}
     words = sum(int(s.get("word_count") or 0) for s in secs)
     return render_page("Long document", r'''<div class="card"><a href="{{ url_for('ld_dashboard') }}">&larr; Long documents</a>
 <h2>{{ d.title }}</h2><div class="small">{{ types.get(d.document_type, 'Document') }} · status {{ d.status }} · {{ d.progress }}% complete</div>
 <div style="background:var(--surface-2,#eee);border-radius:8px;height:10px;margin:10px 0"><div style="width:{{ d.progress }}%;height:10px;border-radius:8px;background:#1d3b6b"></div></div>
 <p class="small">Target: {{ d.target_value }} {{ d.target_unit }} (about {{ d.target_words }} words). Drafted so far: {{ words }} words in {{ done }} of {{ total }} sections.
-Estimated time for the rest: about {{ minutes }} minutes. Cost: not tracked by KOJA; it depends on your AI provider.
+Estimated time for the rest: about {{ minutes }} minutes (average {{ timing.average_seconds }} seconds per section, from {{ timing.measured }} measured). Estimated tokens used so far: {{ timing.tokens_used }}. Money cost is not calculated: it depends on your AI provider's prices.
 Outline source: {{ 'AI' if d.outline_source == 'ai' else 'template (review the titles)' }}.</p>
 <form method="post" action="{{ url_for('ld_draft', did=d.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn">Draft the next sections</button></form>
 <a class="btn secondary" href="{{ url_for('ld_export', did=d.id, fmt='docx') }}">Word</a>
@@ -23879,6 +24355,7 @@ Outline source: {{ 'AI' if d.outline_source == 'ai' else 'template (review the t
 {% if d.last_export_pages %}<p class="small">Last assembled PDF: {{ d.last_export_pages }} pages.</p>{% endif %}
 </div>
 {% for s in secs %}<div class="card"><div class="small">{{ s.chapter_title }} · section {{ s.section_no }} · status {{ s.status }} · {{ s.word_count }} words (target {{ s.target_words }}) · attempts {{ s.attempts }}</div>
+{% if flags.get(s.id) %}<div class="alert">Check these citations against your source list (not found there, not verified): {{ ', '.join(flags.get(s.id)) }}</div>{% endif %}
 <h3>{{ s.title }}</h3>
 {% if s.last_error %}<div class="alert">{{ s.last_error }}</div>{% endif %}
 <form method="post" action="{{ url_for('ld_save', did=d.id, sid=s.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
@@ -23891,7 +24368,7 @@ Outline source: {{ 'AI' if d.outline_source == 'ai' else 'template (review the t
 </div>{% endfor %}
 <div class="card"><form method="post" action="{{ url_for('ld_delete', did=d.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger">Delete this document</button></form></div>''',
                           d=doc, secs=secs, types=PB_DOC_TYPES, words=words, done=len([s for s in secs if s.get("status") in ("drafted", "approved")]),
-                          total=len(secs), minutes=minutes)
+                          total=len(secs), minutes=minutes, timing=timing, flags=flags)
 
 
 @app.route("/long-docs/<did>/draft", methods=["POST"])
