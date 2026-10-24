@@ -5343,6 +5343,127 @@ def _cv_clean_suggestions(raw):
     return out, questions
 
 
+@app.route("/cv/<cid>/download/<fmt>")
+@login_required
+def cv_download(cid, fmt):
+    if fmt not in ("pdf", "docx"):
+        abort(404)
+    row, data = _cv_owned(cid)
+    base = re.sub(r"[^A-Za-z0-9]+", "-", data.get("full_name") or "").strip("-")[:60] or "CV"
+    if fmt == "pdf":
+        blob, mime = _cv_pdf_bytes(data), "application/pdf"
+    else:
+        blob, mime = _cv_docx_bytes(data), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if not blob:
+        flash("The download could not be made. Try Print or save as PDF instead.", "warning")
+        return redirect(url_for("cv_view", cid=cid))
+    resp = Response(blob, mimetype=mime)
+    resp.headers["Content-Disposition"] = 'attachment; filename="%s-CV.%s"' % (base, fmt)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _cv_body_sections(data):
+    return [(label, data.get(key) or "") for key, label in CV_BODY_SECTIONS if data.get(key)]
+
+
+def _cv_contact_line(data):
+    return " | ".join(x for x in [data.get("phone"), data.get("email"), data.get("address")] if x)
+
+
+def _cv_photo_bytes(data):
+    url = data.get("photo") or ""
+    if "," not in url:
+        return None
+    try:
+        import base64 as _b64
+        return _b64.b64decode(url.split(",", 1)[1])
+    except Exception:
+        return None
+
+
+def _cv_pdf_bytes(data):
+    try:
+        import io
+        from xml.sax.saxutils import escape as xesc
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image
+    except Exception:
+        logger.warning("CV PDF needs reportlab, which is not installed")
+        return None
+    try:
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm, topMargin=1.8 * cm,
+                                bottomMargin=1.8 * cm, title=data.get("full_name") or "CV")
+        ss = getSampleStyleSheet()
+        name_style = ParagraphStyle("cvname", parent=ss["Title"], alignment=0, fontSize=22, leading=26, spaceAfter=4)
+        contact_style = ParagraphStyle("cvcontact", parent=ss["Normal"], fontSize=9.5, leading=13)
+        head_style = ParagraphStyle("cvhead", parent=ss["Heading2"], fontSize=12, spaceBefore=10, spaceAfter=4)
+        body_style = ParagraphStyle("cvbody", parent=ss["Normal"], fontSize=10, leading=14)
+        left = [Paragraph(xesc(data.get("full_name") or ""), name_style),
+                Paragraph(xesc(_cv_contact_line(data)), contact_style)]
+        story = []
+        photo = _cv_photo_bytes(data)
+        placed = False
+        if photo:
+            try:
+                img = Image(io.BytesIO(photo), width=3 * cm, height=4 * cm)
+                t = Table([[left, img]], colWidths=[doc.width - 3.6 * cm, 3.6 * cm])
+                t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+                story.append(t)
+                placed = True
+            except Exception:
+                logger.warning("CV photo could not be placed in the PDF")
+        if not placed:
+            story.extend(left)
+        for label, text in _cv_body_sections(data):
+            story.append(Paragraph(xesc(label), head_style))
+            for line in text.split("\n"):
+                if line.strip():
+                    story.append(Paragraph(xesc(line.strip()), body_style))
+        doc.build(story)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("CV PDF could not be built")
+        return None
+
+
+def _cv_docx_bytes(data):
+    try:
+        import io
+        from docx import Document
+        from docx.shared import Cm, Pt
+    except Exception:
+        logger.warning("CV Word file needs python-docx, which is not installed")
+        return None
+    try:
+        doc = Document()
+        doc.styles["Normal"].font.size = Pt(10.5)
+        photo = _cv_photo_bytes(data)
+        if photo:
+            try:
+                doc.add_picture(io.BytesIO(photo), width=Cm(3))
+            except Exception:
+                logger.warning("CV photo could not be placed in the Word file")
+        doc.add_heading(data.get("full_name") or "CV", level=0)
+        contact = _cv_contact_line(data)
+        if contact:
+            doc.add_paragraph(contact)
+        for label, text in _cv_body_sections(data):
+            doc.add_heading(label, level=1)
+            for line in text.split("\n"):
+                if line.strip():
+                    doc.add_paragraph(line.strip())
+        buf = io.BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("CV Word file could not be built")
+        return None
+
+
 CV_TABLE = "koja_cvs"
 # field: (character limit, required)
 CV_FIELDS = {
@@ -5544,6 +5665,8 @@ CV_SHEET_HTML = r"""
 </style>
 <div class="cv-actions"><a class="btn secondary" href="{{ url_for('cv') }}">&larr; My CVs</a>
 <a class="btn secondary" href="{{ url_for('cv_edit', cid=cid) }}">Edit</a>
+<a class="btn" href="{{ url_for('cv_download', cid=cid, fmt='pdf') }}">Download PDF</a>
+<a class="btn" href="{{ url_for('cv_download', cid=cid, fmt='docx') }}">Download Word</a>
 <button class="btn" type="button" onclick="window.print()">Print or save as PDF</button>
 <form method="post" action="{{ url_for('cv_delete', cid=cid) }}" style="display:inline" onsubmit="return confirm('Delete this CV? This cannot be undone.')"><button class="btn danger" type="submit">Delete</button></form></div>
 <div class="cv-sheet">
@@ -18171,13 +18294,106 @@ def nexus_business_detail(id):
 def nexus_b2b():
     return _nexus_shell("NEXUS B2B",r'''<div class="nxhero"><div class="nxcrumb">NEXUS / Business / B2B</div><h1>African B2B Network</h1><p>Discover suppliers, buyers, distributors, service providers, investors and RFQ workflows, then continue into KOJA BUSINESS.</p></div><div class="nxgrid4">{% for title,desc,url in [('Suppliers','Find African suppliers','/business-directory'),('Buyers','Connect with buyers','/business/connect-plus/rfqs'),('Investors','Explore investor connections','/business/connect-plus/investors'),('RFQ','Request quotations','/business/connect-plus/rfqs'),('Partnerships','Build partnerships','/business/connect-plus/investments'),('African Trade','Continue into business commerce','/business-directory') ] %}<a class="nxcard" href="{{ url }}"><h3>{{ title }}</h3><div class="nxmuted">{{ desc }}</div></a>{% endfor %}</div>''')
 
+NEXUS_NEWS_PAGE = 24
+NEXUS_NEWS_SUBJECTS = ["Top Stories", "Latest", "Politics", "Business", "Economy", "Technology", "Education", "Health", "Science", "Sports", "Culture"]
+NEXUS_NEWS_REGIONS = {
+    "Europe": ["GB","IE","FR","DE","IT","ES","PT","NL","BE","LU","CH","AT","SE","NO","DK","FI","IS","PL","CZ","SK","HU","RO","BG","GR","HR","SI","RS","UA","BY","LT","LV","EE","RU","MD","AL","MK","BA","ME","MT","CY"],
+    "Middle East": ["SA","AE","QA","KW","BH","OM","YE","IQ","IR","IL","PS","JO","LB","SY","TR"],
+    "Asia": ["CN","JP","KR","KP","IN","PK","BD","LK","NP","BT","MM","TH","VN","LA","KH","MY","SG","ID","PH","TW","HK","MN","KZ","UZ","TM","KG","TJ","AF"],
+    "North America": ["US","CA","MX","GT","BZ","SV","HN","NI","CR","PA","CU","JM","HT","DO","BS","BB","TT"],
+    "South America": ["BR","AR","CL","CO","PE","VE","EC","BO","PY","UY","GY","SR"],
+    "Oceania": ["AU","NZ","FJ","PG","WS","TO","VU","SB","KI","FM","MH","PW","NR","TV"],
+}
+NEXUS_NEWS_REGION_NAMES = ["Africa"] + list(NEXUS_NEWS_REGIONS.keys()) + ["International"]
+_NEXUS_AFRICA_CODES = {c for c, _n in KOJA_AFRICA_54}
+_NEXUS_NAME_TO_CODE = {n.lower(): c for c, n in KOJA_AFRICA_54}
+_NEXUS_NAME_TO_CODE.update({"united states": "US", "usa": "US", "united kingdom": "GB", "uk": "GB", "china": "CN", "india": "IN",
+    "brazil": "BR", "france": "FR", "germany": "DE", "japan": "JP", "australia": "AU", "canada": "CA", "russia": "RU",
+    "ukraine": "UA", "israel": "IL", "saudi arabia": "SA", "turkey": "TR", "mexico": "MX", "argentina": "AR",
+    "pakistan": "PK", "indonesia": "ID", "new zealand": "NZ", "south korea": "KR", "italy": "IT", "spain": "ES"})
+
+
+def _nexus_region_of(row):
+    rc = str(row.get("country_code") or row.get("country") or "").strip()
+    code = rc.upper() if len(rc) == 2 else _NEXUS_NAME_TO_CODE.get(rc.lower(), "")
+    if code in _NEXUS_AFRICA_CODES:
+        return "Africa"
+    for region, codes in NEXUS_NEWS_REGIONS.items():
+        if code in codes:
+            return region
+    return "International"
+
+
+def _nexus_subject_matches(row, subject):
+    """Subject tabs match the collector's categories by name (for example 'Politics' matches 'Politics & Government')."""
+    cat = str(row.get("category") or "").lower()
+    return subject.lower() in cat
+
+
+def _nexus_newest_first(rows):
+    return sorted(rows, key=lambda r: (bool(r.get("published_at")), str(r.get("published_at") or "")), reverse=True)
+
+
 @app.route("/nexus/news")
 def nexus_news():
-    category=clean(request.args.get("category")); country=clean(request.args.get("country")).upper(); rows=_nexus_news_rows(category=category,country=country,limit=100)
-    cats=['Top Stories','Latest','Politics','Business','Economy','Technology','Education','Health','Science','Sports','Culture']
-    return _nexus_shell("NEXUS Africa Now",r'''
-<div class="nxhero"><div class="nxcrumb">NEXUS / Africa Now</div><h1>Africa Now</h1><p>Current African news and opportunity information from the existing KOJA Africa Now collector.</p><div class="nxactions">{% for c in cats %}<a class="btn secondary" href="{{ url_for('nexus_news',category=c) }}">{{ c }}</a>{% endfor %}</div></div><div class="nxgrid">{% for x in rows %}<article class="nxcard"><span class="nxpill">{{ x.category or 'Africa' }}</span><h2>{{ x.title }}</h2><div class="nxmuted">{{ x.country or 'Africa' }} · {{ x.source_name or 'Source' }}</div><p>{{ x.summary or '' }}</p>{% if x.url %}<div class="nxactions"><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener">Open story</a></div>{% endif %}</article>{% else %}<div class="nxcard"><h3>No stories in this filter.</h3></div>{% endfor %}</div>
-''',rows=rows,cats=cats)
+    q = clean(request.args.get("q"))[:120]
+    subject = clean(request.args.get("category"))
+    if subject not in NEXUS_NEWS_SUBJECTS:
+        subject = ""
+    country = clean(request.args.get("country")).upper()[:2]
+    region = clean(request.args.get("region"))
+    if region not in NEXUS_NEWS_REGION_NAMES:
+        region = ""
+    sort = clean(request.args.get("sort")) or "relevance"
+    if sort not in ("relevance", "newest", "oldest"):
+        sort = "relevance"
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    rows = _nexus_news_rows(q=q, country=country, limit=500)
+    if subject and subject not in ("Top Stories", "Latest"):
+        rows = [r for r in rows if _nexus_subject_matches(r, subject)]
+    if region:
+        rows = [r for r in rows if _nexus_region_of(r) == region]
+    if sort == "newest" or subject == "Latest":
+        rows = _nexus_newest_first(rows)
+    elif sort == "oldest":
+        rows = sorted(rows, key=lambda r: (not r.get("published_at"), str(r.get("published_at") or "")))
+    total = len(rows)
+    start = (page - 1) * NEXUS_NEWS_PAGE
+    shown = rows[start:start + NEXUS_NEWS_PAGE]
+    has_more = total > start + NEXUS_NEWS_PAGE
+    unfiltered = not (q or subject or country or region)
+    front = unfiltered and page == 1
+    breaking = [r for r in rows if "breaking" in str(r.get("category") or "").lower()][:6] if front else []
+    trending = rows[:6] if front else []
+    latest = _nexus_newest_first(rows)[:8] if front else []
+    next_args = {k: v for k, v in request.args.items() if k != "page"}
+    next_args["page"] = page + 1
+    return _nexus_shell("NEXUS Africa Now", r'''
+{% macro card(x) -%}
+<article class="nxcard"><span class="nxpill">{{ x.category or 'News' }}</span><h2>{{ x.title }}</h2>
+<div class="nxmuted">{{ x.country or 'International' }} · {{ x.source_name or 'Source' }}{% if x.published_at %} · {{ (x.published_at|string)[:16]|replace('T', ' ') }}{% endif %}</div>
+<p>{{ x.summary or '' }}</p>{% if x.url %}<div class="nxactions"><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener">Read at {{ x.source_name or 'the original publisher' }}</a></div>{% endif %}</article>
+{%- endmacro %}
+<div class="nxhero"><div class="nxcrumb">NEXUS / Africa Now</div><h1>Africa Now</h1>
+<p>Current news from Africa and the world, with links to the original publishers. Summaries are short extracts only.</p>
+<form method="get" class="nxsearch"><input name="q" value="{{ q }}" maxlength="120" placeholder="Search news">
+<select name="sort">{% for val, label in [('relevance','Most relevant'),('newest','Newest first'),('oldest','Oldest first')] %}<option value="{{ val }}" {% if sort == val %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+{% if subject %}<input type="hidden" name="category" value="{{ subject }}">{% endif %}{% if region %}<input type="hidden" name="region" value="{{ region }}">{% endif %}
+<button class="btn">Search</button></form>
+<div class="nxactions">{% for r in regions %}<a class="btn {% if r == region %}success{% else %}secondary{% endif %}" href="{{ url_for('nexus_news', region=r, category=subject, q=q, sort=sort) }}">{{ r }}</a>{% endfor %}</div>
+<div class="nxactions">{% for c in subjects %}<a class="btn {% if c == subject %}success{% else %}secondary{% endif %}" href="{{ url_for('nexus_news', category=c, region=region, q=q, sort=sort) }}">{{ c }}</a>{% endfor %}</div>
+</div>
+{% if breaking %}<h2>Breaking</h2><div class="nxgrid">{% for x in breaking %}{{ card(x) }}{% endfor %}</div>{% endif %}
+{% if trending %}<h2>Trending</h2><div class="nxgrid">{% for x in trending %}{{ card(x) }}{% endfor %}</div>{% endif %}
+{% if latest %}<h2>Latest</h2><div class="nxgrid">{% for x in latest %}{{ card(x) }}{% endfor %}</div>{% endif %}
+<h2>{% if breaking or trending or latest %}All stories{% else %}Stories{% endif %} <span class="nxmuted">({{ total }})</span></h2>
+<div class="nxgrid">{% for x in shown %}{{ card(x) }}{% else %}<div class="nxcard"><h3>No stories in this filter.</h3><p>Try another region, subject or search word.</p></div>{% endfor %}</div>
+{% if has_more %}<p><a class="btn" href="{{ url_for('nexus_news', **next_args) }}">Load more</a></p>{% endif %}
+''', q=q, subject=subject, region=region, sort=sort, subjects=NEXUS_NEWS_SUBJECTS, regions=NEXUS_NEWS_REGION_NAMES,
+       total=total, shown=shown, has_more=has_more, breaking=breaking, trending=trending, latest=latest, next_args=next_args)
 
 @app.route("/nexus/market")
 def nexus_market():
