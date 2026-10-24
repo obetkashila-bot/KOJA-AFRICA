@@ -96,7 +96,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
-RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:")
+RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:")
 
 def _rate_limited(key, limit, window=60):
     # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
@@ -5204,51 +5204,356 @@ def admin_assignment_payments():
 # CV
 # ============================================================
 
-@app.route("/cv",methods=["GET","POST"])
+@app.route("/cv", methods=["GET", "POST"])
 @login_required
 def cv():
-    user=current_user()
-    if request.method=="POST":
-        data={
-            "full_name":clean(request.form.get("full_name")),
-            "phone":clean(request.form.get("phone")),
-            "email":clean(request.form.get("email")),
-            "address":clean(request.form.get("address")),
-            "profile":clean(request.form.get("profile")),
-            "education":clean(request.form.get("education")),
-            "experience":clean(request.form.get("experience")),
-            "skills":clean(request.form.get("skills")),
-            "references":clean(request.form.get("references")),
-        }
-        return render_page("CV Preview",r"""
-<div class="card">
-<h1>{{ data.full_name }}</h1><p>{{ data.phone }} | {{ data.email }} | {{ data.address }}</p>
-{% if data.profile %}<h2>Professional Profile</h2><p>{{ data.profile }}</p>{% endif %}
-{% if data.education %}<h2>Education</h2><p style="white-space:pre-wrap">{{ data.education }}</p>{% endif %}
-{% if data.experience %}<h2>Work Experience</h2><p style="white-space:pre-wrap">{{ data.experience }}</p>{% endif %}
-{% if data.skills %}<h2>Skills</h2><p style="white-space:pre-wrap">{{ data.skills }}</p>{% endif %}
-{% if data.references %}<h2>References</h2><p style="white-space:pre-wrap">{{ data.references }}</p>{% endif %}
-<hr><button onclick="window.print()">Print / Save as PDF</button>
-</div>
-""",data=data)
+    user = current_user()
+    uid = str(user.get("id") or "")
+    if request.method == "POST":
+        data = _cv_read_form(request.form)
+        photo, photo_error = _cv_read_photo(request.files.get("photo"))
+        data["photo"] = photo
+        errors = _cv_validate(data) + ([photo_error] if photo_error else [])
+        if errors:
+            return _cv_form_page(data, errors, url_for("cv"), "New CV")
+        cid = str(uuid.uuid4())
+        stamp = utc_now()
+        _row, err = db_insert(CV_TABLE, {"id": cid, "user_id": uid, "title": data["full_name"][:120],
+                                         "data": data, "created_at": stamp, "updated_at": stamp})
+        if err:
+            return _cv_form_page(data, ["Your CV could not be saved. Please try again."], url_for("cv"), "New CV")
+        flash("CV saved.", "success")
+        return redirect(url_for("cv_view", cid=cid))
+    return _cv_form_page(_cv_defaults(user), [], url_for("cv"), "New CV", saved=_cv_list(uid))
 
-    return render_page("CV Builder",r"""
-<div class="card"><h2>CV Builder</h2>
-<form method="post">
-<label>Full Name</label><input name="full_name" value="{{ user.name }}" required>
-<label>Phone</label><input name="phone" value="{{ user.phone or '' }}">
-<label>Email</label><input name="email" value="{{ user.email or '' }}" required>
-<label>Address</label><input name="address">
-<label>Professional Profile</label><textarea name="profile"></textarea>
-<label>Education</label><textarea name="education"></textarea>
-<label>Work Experience</label><textarea name="experience"></textarea>
-<label>Skills</label><textarea name="skills"></textarea>
-<label>References</label><textarea name="references"></textarea>
-<button type="submit">Generate CV</button>
+
+@app.route("/cv/<cid>")
+@login_required
+def cv_view(cid):
+    row, data = _cv_owned(cid)
+    return render_page("CV", CV_SHEET_HTML, cid=cid, data=data, sections=CV_BODY_SECTIONS)
+
+
+@app.route("/cv/<cid>/edit", methods=["GET", "POST"])
+@login_required
+def cv_edit(cid):
+    row, current = _cv_owned(cid)
+    if request.method == "POST":
+        data = _cv_read_form(request.form)
+        photo, photo_error = _cv_read_photo(request.files.get("photo"))
+        if request.form.get("remove_photo") == "1":
+            photo = ""
+        elif not photo:
+            photo = current.get("photo", "")
+        data["photo"] = photo
+        errors = _cv_validate(data) + ([photo_error] if photo_error else [])
+        if errors:
+            return _cv_form_page(data, errors, url_for("cv_edit", cid=cid), "Edit CV")
+        _rows, err = db_update(CV_TABLE, {"id": cid, "user_id": str(current_user().get("id") or "")},
+                               {"title": data["full_name"][:120], "data": data, "updated_at": utc_now()})
+        if err:
+            return _cv_form_page(data, ["Your changes could not be saved. Please try again."], url_for("cv_edit", cid=cid), "Edit CV")
+        flash("CV updated.", "success")
+        return redirect(url_for("cv_view", cid=cid))
+    return _cv_form_page(current, [], url_for("cv_edit", cid=cid), "Edit CV")
+
+
+@app.route("/cv/<cid>/delete", methods=["POST"])
+@login_required
+def cv_delete(cid):
+    _cv_owned(cid)
+    db_delete(CV_TABLE, {"id": cid, "user_id": str(current_user().get("id") or "")})
+    flash("CV deleted.", "success")
+    return redirect(url_for("cv"))
+
+
+@app.route("/cv/suggest", methods=["POST"])
+@login_required
+def cv_suggest():
+    uid = str((current_user() or {}).get("id") or "")
+    if _rate_limited("cvai:%s" % uid, 6, 600):
+        return _cv_suggest_reply(False, error="You have asked for several suggestions. Please wait a few minutes and try again.")
+    data = _cv_read_form(request.form)
+    target = " ".join(str(request.form.get("target_job") or "").split())[:120]
+    if not any(data.get(k) for k in ("profile", "education", "experience", "skills", "certifications")):
+        return _cv_suggest_reply(False, error="Add some details about your education, experience or skills first, then ask again.")
+    answer, err = _ai_call(_cv_ai_prompt(data, target), CV_AI_SYSTEM, max_output_tokens=1800, timeout=45)
+    if err or not answer:
+        return _cv_suggest_reply(False, error="KOJA could not reach the AI service (%s). Try again." % (err or "empty reply"))
+    try:
+        suggestions, questions = _cv_clean_suggestions(_pb_parse_reply(answer))
+    except Exception:
+        logger.warning("cv suggestions: malformed AI reply")
+        return _cv_suggest_reply(False, error="KOJA's reply was not in the expected format. Try again.")
+    return _cv_suggest_reply(True, suggestions=suggestions, questions=questions)
+
+
+def _cv_suggest_reply(ok, **kw):
+    body = dict({"ok": ok}, **kw)
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+CV_AI_SYSTEM = (
+    "You help a person write their CV. Use ONLY the facts the person has given you. Do not invent employers, job titles, "
+    "dates, qualifications, numbers, awards or references. If a useful fact is missing, write a short bracketed prompt such as "
+    "[add how many people you trained] instead. Write plain, clear, professional English. "
+    "Return only a JSON object with these keys: "
+    '"profile" (up to 3 profile options, each 2 to 3 sentences), '
+    '"experience" (up to 5 achievement lines, each starting with an action verb), '
+    '"skills" (up to 8 short skill names), '
+    '"questions" (up to 4 short questions that would help make the CV stronger).'
+)
+
+
+def _cv_ai_prompt(data, target):
+    parts = ["Job the person is applying for: %s" % (target or "not stated")]
+    for k in ("profile", "education", "certifications", "experience", "skills", "references"):
+        limit = CV_FIELDS[k][0]
+        parts.append("%s:\n%s" % (CV_LABELS[k], (data.get(k) or "(not given)")[:limit]))
+    return "Write CV suggestions from these details.\n\n" + "\n\n".join(parts) + "\n\nReturn only the JSON object."
+
+
+CV_SUGGEST_LIMITS = {"profile": (3, 600), "experience": (5, 300), "skills": (8, 60)}
+
+
+def _cv_clean_suggestions(raw):
+    if not isinstance(raw, dict):
+        raise ValueError("reply is not a JSON object")
+    out = {}
+    for key, (count, size) in CV_SUGGEST_LIMITS.items():
+        items = raw.get(key) or []
+        if isinstance(items, str):
+            items = [items]
+        if not isinstance(items, list):
+            items = []
+        cleaned = []
+        for x in items:
+            t = str(x).strip() if key == "profile" else " ".join(str(x).split())
+            if t:
+                cleaned.append(t[:size])
+        out[key] = cleaned[:count]
+    q = raw.get("questions") or []
+    if isinstance(q, str):
+        q = [q]
+    questions = [" ".join(str(x).split())[:200] for x in (q if isinstance(q, list) else []) if str(x).strip()][:4]
+    if not any(out.values()):
+        raise ValueError("no suggestions in reply")
+    return out, questions
+
+
+CV_TABLE = "koja_cvs"
+# field: (character limit, required)
+CV_FIELDS = {
+    "full_name": (120, True), "phone": (40, False), "email": (254, True), "address": (200, False),
+    "profile": (1500, False), "education": (4000, False), "experience": (4000, False),
+    "certifications": (2000, False), "skills": (4000, False), "references": (2000, False),
+}
+CV_LABELS = {
+    "full_name": "Full name", "phone": "Phone", "email": "Email", "address": "Address",
+    "profile": "Professional profile", "education": "Education", "experience": "Work experience",
+    "certifications": "Certifications and licences", "skills": "Skills", "references": "References",
+}
+CV_MULTILINE = ("profile", "education", "experience", "certifications", "skills", "references")
+CV_PHOTO_MAX_BYTES = 300 * 1024
+CV_BODY_SECTIONS = [("profile", "Professional profile"), ("experience", "Work experience"),
+                    ("education", "Education"), ("certifications", "Certifications and licences"), ("skills", "Skills"), ("references", "References")]
+CV_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+CV_PHONE_RE = re.compile(r"^\+?[0-9 ()\-]{7,25}$")
+CV_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+
+
+def _cv_read_photo(file_storage):
+    """Passport-style photo as a data URL. Returns (data_url, error). No upload returns ("", "")."""
+    if not file_storage or not file_storage.filename:
+        return "", ""
+    import base64 as _b64
+    raw = file_storage.read(CV_PHOTO_MAX_BYTES + 1)
+    if not raw:
+        return "", ""
+    if len(raw) > CV_PHOTO_MAX_BYTES:
+        return "", "The photo is larger than 300 KB. Use a smaller image; about 600 x 800 pixels is plenty."
+    if raw.startswith(b"\xff\xd8\xff"):
+        mime = "image/jpeg"
+    elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    else:
+        return "", "The photo must be a JPG or PNG image."
+    return "data:%s;base64,%s" % (mime, _b64.b64encode(raw).decode("ascii")), ""
+
+
+def _cv_read_form(form):
+    data = {}
+    for k in CV_FIELDS:
+        v = str(form.get(k) or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if k not in CV_MULTILINE:
+            v = " ".join(v.split())          # single-line fields: no line breaks
+        data[k] = v
+    return data
+
+
+def _cv_validate(data):
+    errors = []
+    for k, (limit, required) in CV_FIELDS.items():
+        v = data.get(k, "")
+        if required and not v:
+            errors.append("%s is required." % CV_LABELS[k])
+        if len(v) > limit:
+            errors.append("%s is too long: %d characters, the limit is %d." % (CV_LABELS[k], len(v), limit))
+    if data.get("full_name") and len(data["full_name"]) < 2:
+        errors.append("Full name must be at least 2 characters.")
+    if data.get("email") and not CV_EMAIL_RE.match(data["email"]):
+        errors.append("Email must look like name@example.com.")
+    if data.get("phone") and not CV_PHONE_RE.match(data["phone"]):
+        errors.append("Phone must have 7 to 25 digits, and may start with +, spaces, brackets or dashes.")
+    return errors
+
+
+def _cv_defaults(user):
+    d = {k: "" for k in CV_FIELDS}
+    d["full_name"] = str(user.get("name") or "")
+    d["email"] = str(user.get("email") or "")
+    d["phone"] = str(user.get("phone") or "")
+    d["photo"] = ""
+    return d
+
+
+def _cv_data_of(row):
+    raw = row.get("data")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    out = {k: str(raw.get(k) or "") for k in CV_FIELDS}
+    photo = str(raw.get("photo") or "")
+    out["photo"] = photo if photo.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")) else ""
+    return out
+
+
+def _cv_owned(cid):
+    """The caller's own CV as (row, data). Anything else is a 404, so other people's CVs are not visible."""
+    uid = str((current_user() or {}).get("id") or "")
+    if not CV_ID_RE.match(str(cid or "")) or not uid:
+        abort(404)
+    row = first_row(CV_TABLE, {"id": cid, "user_id": uid})
+    if not row:
+        abort(404)
+    return row, _cv_data_of(row)
+
+
+def _cv_list(uid):
+    rows = db_select(CV_TABLE, filters={"user_id": uid}, order="updated_at.desc", limit=100) or []
+    return [{"id": r["id"], "title": r.get("title") or "Untitled CV", "updated": str(r.get("updated_at") or "")[:10]} for r in rows]
+
+
+def _cv_form_page(data, errors, action, heading, saved=None):
+    return render_page("CV Builder", CV_FORM_HTML, data=data, errors=errors, action=action,
+                       heading=heading, saved=saved or [])
+
+
+CV_FORM_HTML = r"""
+<div class="card"><h2>{{ heading }}</h2>
+{% if errors %}<div class="alert">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+<form method="post" action="{{ action }}" enctype="multipart/form-data">
+<label>Full name *</label><input name="full_name" value="{{ data.full_name }}" required>
+<label>Phone</label><input name="phone" value="{{ data.phone }}">
+<label>Email *</label><input name="email" type="email" value="{{ data.email }}" required>
+<label>Address</label><input name="address" value="{{ data.address }}">
+<label>Profile photo (optional, passport style, JPG or PNG, under 300 KB)</label>
+{% if data.photo %}<div style="margin:6px 0"><img src="{{ data.photo }}" alt="Current photo" style="width:110px;height:140px;object-fit:cover;border-radius:6px"> <label><input type="checkbox" name="remove_photo" value="1"> Remove photo</label></div>{% endif %}
+<input type="file" name="photo" accept="image/jpeg,image/png">
+<label>Professional profile</label><textarea name="profile" rows="4">{{ data.profile }}</textarea>
+<label>Education</label><textarea name="education" rows="4">{{ data.education }}</textarea>
+<label>Certifications and licences</label><textarea name="certifications" rows="3">{{ data.certifications }}</textarea>
+<label>Work experience</label><textarea name="experience" rows="6">{{ data.experience }}</textarea>
+<label>Skills</label><textarea name="skills" rows="3">{{ data.skills }}</textarea>
+<label>References</label><textarea name="references" rows="3">{{ data.references }}</textarea>
+<button class="btn" type="submit">Save CV</button>
 </form>
-<p class="small">Use Print / Save as PDF in the Android browser. No ReportLab package is required.</p>
+<p class="small">Your CV is saved to your account. Open it to print, or to save it as a PDF from your browser.</p></div>
+<div class="card" id="kojaCvHelp"><h3>KOJA can suggest wording</h3>
+<p class="small">KOJA uses only the details you have entered. It never saves anything, and you choose what to add. Check every suggestion before you use it.</p>
+<label>Job you are applying for (optional)</label><input id="cvTarget" maxlength="120" placeholder="e.g. Clinic Manager">
+<div class="row" style="margin-top:8px"><button class="btn" type="button" id="cvSuggestBtn">Suggest ideas</button> <span class="small" id="cvSuggestMsg"></span></div>
+<div id="cvSuggestions" style="margin-top:10px"></div>
 </div>
-""")
+<script>
+(function(){
+  var btn=document.getElementById('cvSuggestBtn'); if(!btn) return;
+  var msg=document.getElementById('cvSuggestMsg'), out=document.getElementById('cvSuggestions');
+  var ta=document.querySelector('textarea[name="profile"]'); var f=ta&&ta.form; if(!f) return;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var LABELS={profile:'Professional profile',experience:'Work experience',skills:'Skills'};
+  function field(key){ return f.querySelector('[name="'+key+'"]'); }
+  function add(key,text){
+    var el=field(key); if(!el) return;
+    var cur=el.value.replace(/\s+$/,''); el.value=(cur?cur+'\n':'')+text; el.focus();
+  }
+  function render(d){
+    out.textContent='';
+    Object.keys(LABELS).forEach(function(key){
+      var items=d.suggestions[key]||[]; if(!items.length) return;
+      var h=document.createElement('h4'); h.textContent=LABELS[key]; out.appendChild(h);
+      items.forEach(function(text){
+        var box=document.createElement('div'); box.style.cssText='border:1px solid rgba(128,128,128,.35);border-radius:8px;padding:8px;margin:6px 0;white-space:pre-wrap';
+        var p=document.createElement('div'); p.textContent=text; box.appendChild(p);
+        var b=document.createElement('button'); b.type='button'; b.className='btn secondary'; b.style.marginTop='6px';
+        b.textContent='Add to '+LABELS[key].toLowerCase(); b.onclick=function(){ add(key,text); b.textContent='Added'; b.disabled=true; };
+        box.appendChild(b); out.appendChild(box);
+      });
+    });
+    if(d.questions&&d.questions.length){
+      var q=document.createElement('h4'); q.textContent='Questions to make your CV stronger'; out.appendChild(q);
+      var ul=document.createElement('ul'); d.questions.forEach(function(x){ var li=document.createElement('li'); li.textContent=x; ul.appendChild(li); }); out.appendChild(ul);
+    }
+  }
+  btn.onclick=function(){
+    var fd=new FormData(f); fd.delete('photo'); fd.set('target_job', document.getElementById('cvTarget').value);
+    btn.disabled=true; msg.textContent='KOJA is writing suggestions...'; out.textContent='';
+    fetch('/cv/suggest',{method:'POST',body:fd,headers:{'X-CSRF-Token':csrf},credentials:'same-origin'})
+      .then(function(r){ return r.json().catch(function(){ return {ok:false,error:'The reply could not be read. Try again.'}; }); })
+      .then(function(d){ btn.disabled=false; if(!d.ok){ msg.textContent=d.error||'KOJA could not make suggestions.'; return; }
+        msg.textContent='Choose any suggestion to add it to the CV.'; render(d); })
+      .catch(function(){ btn.disabled=false; msg.textContent='Network error. Try again.'; });
+  };
+})();
+</script>
+{% if saved %}<div class="card"><h3>Your saved CVs</h3>{% for s in saved %}<div style="padding:4px 0"><a href="{{ url_for('cv_view', cid=s.id) }}">{{ s.title }}</a> <span class="small">· updated {{ s.updated }}</span></div>{% endfor %}</div>{% endif %}
+"""
+
+CV_SHEET_HTML = r"""
+<style>
+.cv-actions{max-width:800px;margin:0 auto 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.cv-sheet{background:#fff;color:#111;border-radius:12px;padding:28px;max-width:800px;margin:0 auto;box-shadow:0 2px 12px rgba(0,0,0,.15)}
+.cv-sheet h1{margin:0 0 4px;font-size:28px;color:#111}
+.cv-photo{float:right;width:110px;height:140px;object-fit:cover;border-radius:6px;margin:0 0 10px 16px}
+.cv-sheet h2{font-size:17px;border-bottom:1px solid #ccc;padding-bottom:3px;margin:18px 0 6px;color:#111}
+.cv-sheet .contact{color:#333;font-size:14px;margin:0}
+.cv-sheet .cv-body{white-space:pre-wrap;line-height:1.5;color:#111;margin:0}
+@media print{
+  body *{visibility:hidden}
+  .cv-sheet,.cv-sheet *{visibility:visible}
+  .cv-sheet{position:absolute;left:0;top:0;width:100%;margin:0;padding:0;box-shadow:none;border-radius:0}
+  .cv-actions{display:none!important}
+  @page{margin:16mm}
+}
+</style>
+<div class="cv-actions"><a class="btn secondary" href="{{ url_for('cv') }}">&larr; My CVs</a>
+<a class="btn secondary" href="{{ url_for('cv_edit', cid=cid) }}">Edit</a>
+<button class="btn" type="button" onclick="window.print()">Print or save as PDF</button>
+<form method="post" action="{{ url_for('cv_delete', cid=cid) }}" style="display:inline" onsubmit="return confirm('Delete this CV? This cannot be undone.')"><button class="btn danger" type="submit">Delete</button></form></div>
+<div class="cv-sheet">
+{% if data.photo %}<img class="cv-photo" src="{{ data.photo }}" alt="Photo">{% endif %}
+<h1>{{ data.full_name }}</h1>
+<p class="contact">{{ [data.phone, data.email, data.address]|select|join(' | ') }}</p>
+{% for key, label in sections %}{% if data[key] %}<h2>{{ label }}</h2><div class="cv-body">{{ data[key] }}</div>{% endif %}{% endfor %}
+</div>
+"""
+
 
 # ============================================================
 # DOCTORS / TEACHERS
@@ -18128,6 +18433,11 @@ NEWS_EVENTS_TABLE = "koja_news_live_events"
 NEWS_STATE_ID = "main"
 NEWS_SCENES = [("desk", "Desk"), ("reporter", "Reporter"), ("interview", "Interview"), ("world", "World")]
 NEWS_CATEGORIES = ["Breaking", "Politics", "Business", "Sports", "Entertainment", "Health", "Technology", "World", "Africa"]
+# Channels: each one is a row in NEWS_STATE_TABLE with its own live input and on-air flag. "main" is the default channel.
+NEWS_MAIN = NEWS_STATE_ID
+NEWS_CHANNEL_MAX = 6
+NEWS_CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,29}$")
+NEWS_RESERVED_IDS = {"embed", "channels", "live", "state", "api", "admin"}
 
 NEWS_STATE_DEFAULTS = {
     "id": NEWS_STATE_ID, "on_air": False, "cf_input_uid": "", "manual_hls_url": "",
@@ -18136,13 +18446,14 @@ NEWS_STATE_DEFAULTS = {
     "lower_third_enabled": False, "lower_third_name": "", "lower_third_title": "",
     "breaking_enabled": False, "breaking_text": "",
     "logo_enabled": True, "logo_url": "", "started_at": None, "updated_at": None,
+    "channel_name": "",
 }
 # Fields a producer may change from the studio (everything else is server-controlled).
 NEWS_PATCH_FIELDS = {
     "scene", "headline", "location", "category", "presenter",
     "ticker_enabled", "ticker_items", "lower_third_enabled", "lower_third_name",
     "lower_third_title", "breaking_enabled", "breaking_text", "logo_enabled",
-    "logo_url", "manual_hls_url",
+    "logo_url", "manual_hls_url", "channel_name",
 }
 
 
@@ -18215,6 +18526,8 @@ def _news_sanitise_patch(raw):
             patch[k] = _news_text(v, 200)
         elif k in ("location", "category", "presenter", "lower_third_name", "lower_third_title"):
             patch[k] = _news_text(v, 120)
+        elif k == "channel_name":
+            patch[k] = _news_text(v, 60)
         elif k in ("ticker_enabled", "lower_third_enabled", "breaking_enabled", "logo_enabled"):
             patch[k] = _news_bool(v)
         elif k == "ticker_items":
@@ -18227,11 +18540,62 @@ def _news_sanitise_patch(raw):
     return patch, None
 
 
-# ---- state storage -----------------------------------------------------------
-def _news_state_load():
-    state = dict(NEWS_STATE_DEFAULTS)
+# ---- channels and state storage ----------------------------------------------
+def _news_channel_id(raw):
+    """Normalise a channel id from a URL, form or JSON body. Returns None when it is not a valid id."""
+    ch = str(raw or "").strip().lower() or NEWS_MAIN
+    if ch == NEWS_MAIN:
+        return ch
+    if ch in NEWS_RESERVED_IDS or not NEWS_CHANNEL_RE.match(ch):
+        return None
+    return ch
+
+
+def _news_channel_row(ch):
     try:
-        row = first_row(NEWS_STATE_TABLE, {"id": NEWS_STATE_ID})
+        return first_row(NEWS_STATE_TABLE, {"id": ch})
+    except Exception as exc:
+        logger.warning("KOJA NEWS channel lookup failed: %s", exc)
+        return None
+
+
+def _news_channel_known(ch):
+    """main always exists (its row is created on first save); other channels need a row."""
+    return ch == NEWS_MAIN or _news_channel_row(ch) is not None
+
+
+def _news_request_channel(raw):
+    """Valid, existing channel id, or None."""
+    ch = _news_channel_id(raw)
+    if not ch or not _news_channel_known(ch):
+        return None
+    return ch
+
+
+def _news_channel_name(state):
+    cid = state.get("id") or NEWS_MAIN
+    return state.get("channel_name") or ("KOJA NEWS" if cid == NEWS_MAIN else cid)
+
+
+def _news_channels():
+    """Main first, then the other channels by name. Main is always listed."""
+    try:
+        rows = db_select(NEWS_STATE_TABLE, limit=50) or []
+    except Exception as exc:
+        logger.warning("KOJA NEWS channel list unavailable: %s", exc)
+        rows = []
+    main_row = next((r for r in rows if r.get("id") == NEWS_MAIN), {}) or {}
+    out = [{"id": NEWS_MAIN, "name": main_row.get("channel_name") or "KOJA NEWS"}]
+    others = [r for r in rows if r.get("id") and r.get("id") != NEWS_MAIN and _news_channel_id(r.get("id"))]
+    for r in sorted(others, key=lambda r: (r.get("channel_name") or r.get("id")).lower()):
+        out.append({"id": r["id"], "name": r.get("channel_name") or r["id"]})
+    return out
+
+
+def _news_state_load(ch=NEWS_MAIN):
+    state = dict(NEWS_STATE_DEFAULTS, id=ch)
+    try:
+        row = first_row(NEWS_STATE_TABLE, {"id": ch})
     except Exception as exc:
         logger.warning("KOJA NEWS state unavailable: %s", exc)
         row = None
@@ -18241,28 +18605,30 @@ def _news_state_load():
     return state
 
 
-def _news_state_save(patch, user=None):
+def _news_state_save(patch, user=None, ch=NEWS_MAIN):
     patch = dict(patch)
     patch["updated_at"] = utc_now()
     if user and user.get("id"):
         patch["updated_by"] = str(user.get("id"))
     try:
-        exists = first_row(NEWS_STATE_TABLE, {"id": NEWS_STATE_ID})
+        exists = first_row(NEWS_STATE_TABLE, {"id": ch})
     except Exception as exc:
         return str(exc)[:200]
     if exists:
-        _, err = db_update(NEWS_STATE_TABLE, {"id": NEWS_STATE_ID}, patch)
+        _, err = db_update(NEWS_STATE_TABLE, {"id": ch}, patch)
     else:
-        row = dict(NEWS_STATE_DEFAULTS); row.update(patch)
+        row = dict(NEWS_STATE_DEFAULTS); row.update(patch); row["id"] = ch
         _, err = db_insert(NEWS_STATE_TABLE, row)
-    _news_cache_clear()
+    _news_cache_clear(ch)
     return err
 
 
-def _news_log(kind, detail=None, user=None):
+def _news_log(kind, detail=None, user=None, ch=NEWS_MAIN):
+    detail = dict(detail or {})
+    detail["channel"] = ch
     try:
         db_insert(NEWS_EVENTS_TABLE, {
-            "id": str(uuid.uuid4()), "kind": kind, "detail": detail or {},
+            "id": str(uuid.uuid4()), "kind": kind, "detail": detail,
             "created_by": str((user or {}).get("id") or ""), "created_at": utc_now(),
         })
     except Exception as exc:
@@ -18301,30 +18667,34 @@ def _news_encoder_live(state):
     return None
 
 
-# ---- public payload with a short shared cache --------------------------------
-_news_cache = {"t": 0.0, "payload": None}
+# ---- public payload with a short per-channel cache ---------------------------
+_news_cache = {}
 _news_cache_lock = threading.Lock()
 NEWS_CACHE_TTL = 3.0
 
 
-def _news_cache_clear():
+def _news_cache_clear(ch=None):
     with _news_cache_lock:
-        _news_cache["t"] = 0.0
+        if ch is None:
+            _news_cache.clear()
+        else:
+            _news_cache.pop(ch, None)
 
 
-def _news_public_payload():
+def _news_public_payload(ch=NEWS_MAIN):
     now = time.time()
     with _news_cache_lock:
-        if _news_cache["payload"] is not None and now - _news_cache["t"] < NEWS_CACHE_TTL:
-            return _news_cache["payload"]
-    state = _news_state_load()
+        hit = _news_cache.get(ch)
+        if hit and now - hit["t"] < NEWS_CACHE_TTL:
+            return hit["payload"]
+    state = _news_state_load(ch)
     if not state["on_air"]:
         status = "offline"
     else:
         enc = _news_encoder_live(state)
         status = "starting" if enc is False else "live"   # unknown -> let the player try
     payload = {
-        "ok": True, "status": status,
+        "ok": True, "channel": ch, "name": _news_channel_name(state), "status": status,
         "hls_url": _news_hls_url(state) if status == "live" else "",
         "dash_url": _news_dash_url(state) if status == "live" else "",
         "scene": state["scene"], "scene_label": dict(NEWS_SCENES).get(state["scene"], ""),
@@ -18337,15 +18707,49 @@ def _news_public_payload():
         "started_at": state["started_at"], "server_time": utc_now(),
     }
     with _news_cache_lock:
-        _news_cache.update(t=now, payload=payload)
+        _news_cache[ch] = {"t": now, "payload": payload}
     return payload
+
+
+def _news_state_response(ch):
+    resp = jsonify(_news_public_payload(ch))
+    resp.headers["Cache-Control"] = "public, max-age=2"
+    return resp
 
 
 @app.route("/api/news/live/state")
 def news_live_state_api():
-    resp = jsonify(_news_public_payload())
+    return _news_state_response(NEWS_MAIN)
+
+
+@app.route("/api/news/live/<ch>/state")
+def news_live_channel_state_api(ch):
+    cid = _news_request_channel(ch)
+    if not cid:
+        return _news_fail("Unknown channel.", 404)
+    return _news_state_response(cid)
+
+
+@app.route("/api/news/channels")
+def news_channels_api():
+    resp = jsonify({"ok": True, "channels": _news_channel_cards()})
     resp.headers["Cache-Control"] = "public, max-age=2"
     return resp
+
+
+def _news_channel_cards():
+    cards = []
+    for c in _news_channels():
+        p = _news_public_payload(c["id"])
+        cards.append({
+            "id": c["id"], "name": p.get("name") or c["id"], "status": p.get("status"),
+            "live": p.get("status") == "live", "headline": p.get("headline") or "",
+            "scene": p.get("scene_label") or "",
+            "url": url_for("news_live_public") if c["id"] == NEWS_MAIN else url_for("news_live_channel", ch=c["id"]),
+        })
+    return cards
+
+
 
 
 # ---- shared player (public page + embed + studio preview) --------------------
@@ -18461,23 +18865,68 @@ NEWS_PLAYER_HTML = r'''
 '''
 
 
+NEWS_CHANNELS_HTML = r'''
+<style>
+.nc{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.nc a{display:block;text-decoration:none;color:inherit}
+.nc .c{background:#0a1422;color:#fff;border-radius:14px;padding:16px;border:2px solid rgba(255,255,255,.12);min-height:130px}
+.nc .c.live{border-color:#d62828}
+.nc .tag{display:inline-block;font-weight:800;font-size:.8em;padding:.15em .6em;border-radius:6px;background:#243247;color:#fff}
+.nc .c.live .tag{background:#d62828}
+.nc h3{margin:.6em 0 .3em}.nc p{opacity:.8;margin:0}
+</style>
+<div class="hero"><h1>KOJA NEWS Channels</h1><p>Choose what you want to watch. Each channel plays its own broadcast.</p></div>
+{% if not channels %}<div class="card"><p>No channels are available yet.</p></div>{% endif %}
+<div class="nc">{% for c in channels %}<a href="{{ c.url }}"><div class="c{% if c.live %} live{% endif %}"><span class="tag">{{ 'ON AIR' if c.live else ('STARTING SOON' if c.status == 'starting' else 'OFF AIR') }}</span><h3>{{ c.name }}</h3><p>{{ c.headline or c.scene or 'Watch when we go live' }}</p></div></a>{% endfor %}</div>
+<script>setTimeout(function(){location.reload();},20000);</script>
+'''
+
+
+@app.route("/news/channels")
+def news_channels_public():
+    return render_page("KOJA NEWS Channels", NEWS_CHANNELS_HTML, channels=_news_channel_cards())
+
+
 @app.route("/news/live")
 def news_live_public():
     return render_page("KOJA NEWS Live", NEWS_PLAYER_HTML, api=url_for("news_live_state_api"))
 
 
-@app.route("/news/live/embed")
-def news_live_embed():
+@app.route("/news/live/<ch>")
+def news_live_channel(ch):
+    cid = _news_request_channel(ch)
+    if not cid:
+        abort(404)
+    if cid == NEWS_MAIN:
+        return redirect(url_for("news_live_public"))
+    name = _news_channel_name(_news_state_load(cid))
+    return render_page(name + " - KOJA NEWS Live", NEWS_PLAYER_HTML, api=url_for("news_live_channel_state_api", ch=cid))
+
+
+def _news_embed_html(api):
     page = ('<!doctype html><html><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>KOJA NEWS Live</title><style>html,body{margin:0;background:#000}.nlp-meta{display:none}'
             '.nlp-stage{border-radius:0!important}</style></head><body>' + NEWS_PLAYER_HTML + '</body></html>')
-    return render_template_string(page, api=url_for("news_live_state_api"))
+    return render_template_string(page, api=api)
+
+
+@app.route("/news/live/embed")
+def news_live_embed():
+    return _news_embed_html(url_for("news_live_state_api"))
+
+
+@app.route("/news/live/<ch>/embed")
+def news_live_channel_embed(ch):
+    cid = _news_request_channel(ch)
+    if not cid:
+        abort(404)
+    return _news_embed_html(url_for("news_live_channel_state_api", ch=cid))
 
 
 # ---- producer API (admin only) ------------------------------------------------
-def _news_admin_reply(extra=None, status=200):
-    body = {"ok": status < 400, "state": _news_state_load()}
+def _news_admin_reply(ch=NEWS_MAIN, extra=None, status=200):
+    body = {"ok": status < 400, "channel": ch, "state": _news_state_load(ch)}
     body.update(extra or {})
     resp = jsonify(body)
     resp.headers["Cache-Control"] = "no-store"
@@ -18493,9 +18942,12 @@ def _news_fail(msg, status=400):
 @app.route("/api/admin/news/live/ingest")
 @admin_required
 def news_live_ingest_api():
-    """Encoder credentials + health. Credentials come straight from Cloudflare, never from our DB."""
-    state = _news_state_load()
-    out = {"ok": True, "configured": _cf_configured(), "customer_code_set": bool(_cf_customer_code()),
+    """Encoder credentials + health for one channel. Credentials come straight from Cloudflare, never from our DB."""
+    ch = _news_request_channel(request.args.get("channel"))
+    if not ch:
+        return _news_fail("Unknown channel.", 404)
+    state = _news_state_load(ch)
+    out = {"ok": True, "channel": ch, "configured": _cf_configured(), "customer_code_set": bool(_cf_customer_code()),
            "uid": state["cf_input_uid"], "manual_hls_url": state["manual_hls_url"],
            "on_air": state["on_air"], "hls_url": _news_hls_url(state), "dash_url": _news_dash_url(state),
            "encoder_live": _news_encoder_live(state), "low_latency": KOJA_NEWS_LL_HLS}
@@ -18516,12 +18968,16 @@ def news_live_ingest_api():
 @app.route("/api/admin/news/live/provision", methods=["POST"])
 @admin_required
 def news_live_provision_api():
-    state = _news_state_load()
+    ch = _news_request_channel((request.get_json(silent=True) or {}).get("channel"))
+    if not ch:
+        return _news_fail("Unknown channel.", 404)
+    state = _news_state_load(ch)
     if state["cf_input_uid"]:
-        return _news_fail("A live input is already attached.", 409)
+        return _news_fail("A live input is already attached to this channel.", 409)
     if not _cf_configured():
         return _news_fail("Set CF_ACCOUNT_ID and CF_STREAM_API_TOKEN first, or use a manual HLS URL.")
-    body = {"meta": {"name": "KOJA NEWS Live"}, "enabled": True,
+    label = "KOJA NEWS Live" if ch == NEWS_MAIN else "KOJA NEWS Live - " + _news_channel_name(state)
+    body = {"meta": {"name": label}, "enabled": True,
             "recording": {"mode": "automatic" if KOJA_NEWS_RECORD else "off"}}
     if KOJA_NEWS_LL_HLS:
         body["preferLowLatency"] = True
@@ -18529,80 +18985,118 @@ def news_live_provision_api():
     if err or not (res or {}).get("uid"):
         return _news_fail(err or "Cloudflare returned no live input.", 502)
     user = current_user()
-    save_err = _news_state_save({"cf_input_uid": res["uid"]}, user)
+    save_err = _news_state_save({"cf_input_uid": res["uid"]}, user, ch)
     if save_err:
         return _news_fail("Live input created but could not be saved: " + str(save_err)[:160], 500)
-    _news_log("provision", {"uid": res["uid"]}, user)
-    return _news_admin_reply()
+    _news_log("provision", {"uid": res["uid"]}, user, ch)
+    return _news_admin_reply(ch)
 
 
 @app.route("/api/admin/news/live/attach", methods=["POST"])
 @admin_required
 def news_live_attach_api():
-    uid = _news_text((request.get_json(silent=True) or {}).get("uid"), 64).lower()
+    body = request.get_json(silent=True) or {}
+    ch = _news_request_channel(body.get("channel"))
+    if not ch:
+        return _news_fail("Unknown channel.", 404)
+    uid = _news_text(body.get("uid"), 64).lower()
     if not re.fullmatch(r"[0-9a-f]{32}", uid):
         return _news_fail("A Cloudflare live input ID is 32 hex characters.")
     res, err = _cf_stream("GET", f"/live_inputs/{uid}")
     if err or not res:
         return _news_fail(err or "Live input not found.", 404)
     user = current_user()
-    save_err = _news_state_save({"cf_input_uid": uid}, user)
+    save_err = _news_state_save({"cf_input_uid": uid}, user, ch)
     if save_err:
         return _news_fail("Could not save: " + str(save_err)[:160], 500)
-    _news_log("attach", {"uid": uid}, user)
-    return _news_admin_reply()
+    _news_log("attach", {"uid": uid}, user, ch)
+    return _news_admin_reply(ch)
 
 
 @app.route("/api/admin/news/live/state", methods=["POST"])
 @admin_required
 def news_live_update_api():
-    patch, err = _news_sanitise_patch(request.get_json(silent=True) or {})
+    body = request.get_json(silent=True) or {}
+    ch = _news_request_channel(body.get("channel"))
+    if not ch:
+        return _news_fail("Unknown channel.", 404)
+    patch, err = _news_sanitise_patch(body)
     if err:
         return _news_fail(err)
-    current = _news_state_load()
+    current = _news_state_load(ch)
     merged = dict(current); merged.update(patch)
     if merged["breaking_enabled"] and not merged["breaking_text"]:
         return _news_fail("Write the breaking-news text before putting it on air.")
     if merged["lower_third_enabled"] and not merged["lower_third_name"]:
         return _news_fail("Add a name for the lower third before showing it.")
     if not patch:
-        return _news_admin_reply()
+        return _news_admin_reply(ch)
     user = current_user()
-    save_err = _news_state_save(patch, user)
+    save_err = _news_state_save(patch, user, ch)
     if save_err:
         return _news_fail("Could not save (is the koja_news_live_state table created?): " + str(save_err)[:160], 500)
     for k, kind in (("scene", "scene"), ("breaking_enabled", "breaking"), ("headline", "headline")):
         if k in patch and patch[k] != current.get(k):
-            _news_log(kind, {k: patch[k]}, user)
-    return _news_admin_reply()
+            _news_log(kind, {k: patch[k]}, user, ch)
+    return _news_admin_reply(ch)
 
 
 @app.route("/api/admin/news/live/go-live", methods=["POST"])
 @admin_required
 def news_live_go_live_api():
-    state = _news_state_load()
+    ch = _news_request_channel((request.get_json(silent=True) or {}).get("channel"))
+    if not ch:
+        return _news_fail("Unknown channel.", 404)
+    state = _news_state_load(ch)
     if not _news_hls_url(state):
         return _news_fail("No playback source yet: provision a live input (and set CF_STREAM_CUSTOMER_CODE) or add a manual HLS URL.")
     if state["on_air"]:
-        return _news_admin_reply()
+        return _news_admin_reply(ch)
     user = current_user()
-    err = _news_state_save({"on_air": True, "started_at": utc_now()}, user)
+    err = _news_state_save({"on_air": True, "started_at": utc_now()}, user, ch)
     if err:
         return _news_fail("Could not go live: " + str(err)[:160], 500)
-    _news_log("go_live", {"headline": state["headline"]}, user)
-    return _news_admin_reply()
+    _news_log("go_live", {"headline": state["headline"]}, user, ch)
+    return _news_admin_reply(ch)
 
 
 @app.route("/api/admin/news/live/end", methods=["POST"])
 @admin_required
 def news_live_end_api():
+    ch = _news_request_channel((request.get_json(silent=True) or {}).get("channel"))
+    if not ch:
+        return _news_fail("Unknown channel.", 404)
     user = current_user()
     # Taking the broadcast off air also clears time-sensitive graphics so they can't reappear next time.
-    err = _news_state_save({"on_air": False, "breaking_enabled": False, "lower_third_enabled": False}, user)
+    err = _news_state_save({"on_air": False, "breaking_enabled": False, "lower_third_enabled": False}, user, ch)
     if err:
         return _news_fail("Could not end the broadcast: " + str(err)[:160], 500)
-    _news_log("end", {}, user)
-    return _news_admin_reply()
+    _news_log("end", {}, user, ch)
+    return _news_admin_reply(ch)
+
+
+@app.route("/api/admin/news/channels", methods=["POST"])
+@admin_required
+def news_channel_create_api():
+    name = _news_text((request.get_json(silent=True) or {}).get("name"), 60)
+    if len(name) < 2:
+        return _news_fail("Give the channel a name of at least 2 characters.")
+    if len(_news_channels()) >= NEWS_CHANNEL_MAX:
+        return _news_fail("A studio can have up to %d channels." % NEWS_CHANNEL_MAX)
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:20] or "channel"
+    if slug in NEWS_RESERVED_IDS or slug == NEWS_MAIN:
+        slug = "ch-" + slug
+    ch = "%s-%s" % (slug, uuid.uuid4().hex[:4])
+    user = current_user()
+    row = dict(NEWS_STATE_DEFAULTS, id=ch, channel_name=name, updated_by=str((user or {}).get("id") or ""), updated_at=utc_now())
+    _r, err = db_insert(NEWS_STATE_TABLE, row)
+    if err:
+        return _news_fail("Could not create the channel: " + str(err)[:160], 500)
+    _news_cache_clear(ch)
+    _news_log("channel_create", {"name": name}, user, ch)
+    return _news_admin_reply(ch, {"id": ch})
+
+
 
 
 NEWS_STUDIO_HTML = r'''
@@ -18624,12 +19118,15 @@ NEWS_STUDIO_HTML = r'''
 </style>
 <div class="nls">
 <div class="hero"><h1>KOJA NEWS Live Studio</h1>
-<p>Encoder &rarr; Cloudflare Stream &rarr; <a href="{{ url_for('news_live_public') }}" target="_blank" rel="noopener">/news/live</a></p>
+<p>Encoder &rarr; Cloudflare Stream &rarr; <a href="{{ boot.public_url }}" target="_blank" rel="noopener">{{ boot.public_url }}</a></p>
 <div class="row"><span class="chip" id="chipAir">OFF AIR</span><span class="chip" id="chipEnc">Encoder: &hellip;</span>
 <button class="btn success" type="button" id="btnLive">Go Live</button>
 <button class="btn danger" type="button" id="btnEnd">End Broadcast</button></div>
 <div class="msg" id="msg" role="status"></div></div>
 
+<div class="card"><h2>Channels</h2><div class="row">{% for c in boot.channels %}<a class="btn{% if c.id == boot.channel %} success{% else %} secondary{% endif %}" href="{{ url_for('news_live_admin', channel=c.id) }}">{{ c.name }}</a>{% endfor %}</div>
+{% if boot.can_create %}<div class="row" style="margin-top:10px"><input id="newChName" maxlength="60" placeholder="New channel name, e.g. Sports Desk" style="flex:1"><button class="btn" type="button" id="btnNewCh">Create channel</button></div>{% else %}<p class="hint">This studio has the maximum number of channels.</p>{% endif %}
+<p class="hint">Each channel is its own broadcast with its own encoder and stream key. Viewers choose a channel on <a href="{{ url_for('news_channels_public') }}" target="_blank" rel="noopener">/news/channels</a>.</p></div>
 <div class="card"><h2>1 &middot; Encoder &amp; ingest</h2><div id="ingest" class="hint">Loading&hellip;</div></div>
 
 <div class="card"><h2>2 &middot; Scenes</h2><div class="row" id="scenes"></div>
@@ -18640,7 +19137,8 @@ NEWS_STUDIO_HTML = r'''
 <div><label>Headline</label><input id="headline" maxlength="200"></div>
 <div><label>Presenter</label><input id="presenter" maxlength="120"></div>
 <div><label>Location</label><input id="location" maxlength="120"></div>
-<div><label>Category</label><input id="category" maxlength="120" list="nlCats"></div></div>
+<div><label>Category</label><input id="category" maxlength="120" list="nlCats"></div>
+<div><label>Channel name</label><input id="chName" maxlength="60"></div></div>
 <datalist id="nlCats">{% for c in categories %}<option value="{{ c }}">{% endfor %}</datalist>
 <div class="row" style="margin-top:10px"><button class="btn" type="button" id="btnMeta">Update metadata</button></div></div>
 
@@ -18658,18 +19156,18 @@ NEWS_STUDIO_HTML = r'''
 <input id="logoUrl" maxlength="500" placeholder="https://&hellip;/logo.png">
 <div class="row" style="margin-top:8px"><button class="btn" type="button" id="btnLogoOn">Show logo</button><button class="btn secondary" type="button" id="btnLogoOff">Hide logo</button></div></div>
 
-<div class="card"><h2>Preview</h2><iframe src="{{ url_for('news_live_embed') }}" title="Live preview" allow="autoplay; fullscreen"></iframe></div>
+<div class="card"><h2>Preview</h2><iframe src="{{ boot.embed_url }}" title="Live preview" allow="autoplay; fullscreen"></iframe></div>
 <div class="card"><h2>Recent activity</h2><ul class="ev" id="events"></ul></div>
 </div>
 <script id="nlBoot" type="application/json">{{ boot|tojson }}</script>
 <script>
 (function(){
-  var boot=JSON.parse(document.getElementById('nlBoot').textContent), st=boot.state;
+  var boot=JSON.parse(document.getElementById('nlBoot').textContent), st=boot.state, CH=boot.channel;
   var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
   var $=function(id){return document.getElementById(id);};
   function say(t,bad){ var m=$('msg'); m.textContent=t||''; m.style.color=bad?'#ff6b6b':'#6fdc8c'; }
   function post(url,body){
-    return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body||{})})
+    return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(Object.assign({channel:CH},body||{}))})
       .then(function(r){return r.json().catch(function(){return {ok:false,error:'Session expired. Reload and sign in again.'};});});
   }
   function act(url,body,okMsg){ return post(url,body).then(function(d){ if(d.ok){ if(d.state) st=d.state; paint(); say(okMsg||'Saved.'); refreshIngest(); } else say(d.error||'Failed.',true); return d; }); }
@@ -18683,7 +19181,7 @@ NEWS_STUDIO_HTML = r'''
     $('chipAir').textContent=st.on_air?'ON AIR':'OFF AIR'; $('chipAir').className='chip'+(st.on_air?' on':'');
     $('btnLive').disabled=!!st.on_air; $('btnEnd').disabled=!st.on_air;
     Array.prototype.forEach.call(document.querySelectorAll('.scene'),function(b){ b.classList.toggle('active',b.dataset.k===st.scene); });
-    [['headline','headline'],['presenter','presenter'],['location','location'],['category','category'],['breakingText','breaking_text'],['ltName','lower_third_name'],['ltTitle','lower_third_title'],['logoUrl','logo_url']].forEach(function(p){
+    [['headline','headline'],['presenter','presenter'],['location','location'],['category','category'],['breakingText','breaking_text'],['ltName','lower_third_name'],['ltTitle','lower_third_title'],['logoUrl','logo_url'],['chName','channel_name']].forEach(function(p){
       var el=$(p[0]); if(document.activeElement!==el) el.value=st[p[1]]||''; });
     if(document.activeElement!==$('tickerItems')) $('tickerItems').value=(st.ticker_items||[]).join('\n');
   }
@@ -18733,12 +19231,12 @@ NEWS_STUDIO_HTML = r'''
     }
   }
   var busy=false;
-  function refreshIngest(){ if(busy) return; busy=true; fetch('/api/admin/news/live/ingest',{cache:'no-store'}).then(function(r){return r.json();}).then(paintIngest).catch(function(){}).then(function(){busy=false;}); }
+  function refreshIngest(){ if(busy) return; busy=true; fetch('/api/admin/news/live/ingest?channel='+encodeURIComponent(CH),{cache:'no-store'}).then(function(r){return r.json();}).then(paintIngest).catch(function(){}).then(function(){busy=false;}); }
   function paintEvents(){ var ul=$('events'); ul.textContent=''; (boot.events||[]).forEach(function(e){ var li=document.createElement('li'); li.textContent=(e.created_at||'').replace('T',' ').slice(0,19)+' \u2014 '+e.kind; ul.appendChild(li); }); if(!ul.children.length){var li=document.createElement('li'); li.className='hint'; li.textContent='Nothing yet.'; ul.appendChild(li);} }
 
   $('btnLive').onclick=function(){ act('/api/admin/news/live/go-live',{},'You are on air.'); };
   $('btnEnd').onclick=function(){ if(confirm('End the broadcast and take it off air?')) act('/api/admin/news/live/end',{},'Broadcast ended.'); };
-  $('btnMeta').onclick=function(){ patch({headline:$('headline').value,presenter:$('presenter').value,location:$('location').value,category:$('category').value},'Metadata updated.'); };
+  $('btnMeta').onclick=function(){ patch({headline:$('headline').value,presenter:$('presenter').value,location:$('location').value,category:$('category').value,channel_name:$('chName').value},'Metadata updated.'); };
   $('btnBreakOn').onclick=function(){ patch({breaking_text:$('breakingText').value,breaking_enabled:true},'Breaking alert on air.'); };
   $('btnBreakOff').onclick=function(){ patch({breaking_enabled:false},'Breaking alert cleared.'); };
   $('btnLtOn').onclick=function(){ patch({lower_third_name:$('ltName').value,lower_third_title:$('ltTitle').value,lower_third_enabled:true},'Lower third shown.'); };
@@ -18747,6 +19245,8 @@ NEWS_STUDIO_HTML = r'''
   $('btnTickerOff').onclick=function(){ patch({ticker_enabled:false},'Ticker hidden.'); };
   $('btnLogoOn').onclick=function(){ patch({logo_url:$('logoUrl').value,logo_enabled:true},'Logo shown.'); };
   $('btnLogoOff').onclick=function(){ patch({logo_enabled:false},'Logo hidden.'); };
+  if($('btnNewCh')) $('btnNewCh').onclick=function(){ var n=$('newChName').value.trim(); if(n.length<2){ say('Give the channel a name of at least 2 characters.',true); return; }
+    post('/api/admin/news/channels',{name:n}).then(function(d){ if(d.ok){ location.href='/admin/news/live?channel='+encodeURIComponent(d.channel); } else say(d.error||'Could not create the channel.',true); }); };
   paint(); paintEvents(); refreshIngest(); setInterval(refreshIngest,6000);
 })();
 </script>
@@ -18756,11 +19256,20 @@ NEWS_STUDIO_HTML = r'''
 @app.route("/admin/news/live")
 @admin_required
 def news_live_admin():
+    ch = _news_request_channel(request.args.get("channel"))
+    if not ch:
+        return redirect(url_for("news_live_admin"))
     try:
-        events = db_select(NEWS_EVENTS_TABLE, order="created_at.desc", limit=10) or []
+        events = db_select(NEWS_EVENTS_TABLE, order="created_at.desc", limit=60) or []
     except Exception:
         events = []
-    boot = {"state": _news_state_load(), "scenes": NEWS_SCENES,
+    events = [e for e in events if str((e.get("detail") or {}).get("channel") or NEWS_MAIN) == ch][:10]
+    state = _news_state_load(ch)
+    channels = _news_channels()
+    boot = {"state": state, "channel": ch, "channels": channels, "scenes": NEWS_SCENES,
+            "can_create": len(channels) < NEWS_CHANNEL_MAX,
+            "public_url": url_for("news_live_public") if ch == NEWS_MAIN else url_for("news_live_channel", ch=ch),
+            "embed_url": url_for("news_live_embed") if ch == NEWS_MAIN else url_for("news_live_channel_embed", ch=ch),
             "events": [{"kind": e.get("kind"), "created_at": e.get("created_at")} for e in events]}
     return render_page("KOJA NEWS Live Studio", NEWS_STUDIO_HTML, boot=boot, categories=NEWS_CATEGORIES)
 
@@ -22191,6 +22700,11 @@ PB_TABLE_HEADS = {
 # Values stored beside the sections (not sections themselves).
 PB_EXTRA_KEYS = ("budget_currency", "cashflow_opening", "funding_amount", "confirmed_contributions", "logo_data")
 PB_LOGO_MAX_BYTES = 300 * 1024
+# Length limits for proposal text. They are high enough for a proposal of many pages (about 10,000 words per
+# section, 5,000 characters per list item, 200 list items). Text over a limit is cut and the editor says so.
+PB_SECTION_MAX_CHARS = 60000
+PB_ITEM_MAX_CHARS = 5000
+PB_LIST_MAX_ITEMS = 200
 # Sections each document type uses, in order. Other sections are kept in storage but not shown for that type.
 PB_TYPE_KEYS = {
     "business": ["executive_summary", "background", "problem_statement", "proposed_solution", "product_scope", "target_market", "competitive_analysis", "business_model", "marketing_strategy", "operations_plan", "implementation_plan", "budget_framework", "financial_plan", "cashflow_rows", "risk_analysis", "sustainability", "conclusion", "appendices"],
@@ -22583,16 +23097,39 @@ def _pb_empty_content():
     return {k: ([] if k in PB_LIST_KEYS else "") for k, _ in PB_SECTIONS}
 
 
-def _pb_clean_section(key, value):
+def _pb_clean_section(key, value, notes=None):
+    """Clean one section. Anything over the length limits is cut, and a note is added to `notes` (when given)
+    so the editor can tell the user. Nothing is cut without a note."""
+    label = PB_LABELS.get(key, key)
     if key in PB_LIST_KEYS:
         if isinstance(value, str):
             value = value.splitlines()
         if not isinstance(value, list):
             return []
-        return [_pb_finish_text(str(x).strip())[:1500] for x in value if str(x).strip()][:60]
+        items = []
+        for x in value:
+            t = str(x).strip()
+            if not t:
+                continue
+            t = _pb_finish_text(t)
+            if len(t) > PB_ITEM_MAX_CHARS:
+                if notes is not None:
+                    notes.append("%s: one item is longer than %d characters and was cut to that length." % (label, PB_ITEM_MAX_CHARS))
+                t = t[:PB_ITEM_MAX_CHARS]
+            items.append(t)
+        if len(items) > PB_LIST_MAX_ITEMS:
+            if notes is not None:
+                notes.append("%s: only the first %d items were kept (%d were entered)." % (label, PB_LIST_MAX_ITEMS, len(items)))
+            items = items[:PB_LIST_MAX_ITEMS]
+        return items
     if isinstance(value, list):
         value = "\n".join(str(x) for x in value)
-    return _pb_finish_text(str(value or "").strip())[:6000]
+    text = _pb_finish_text(str(value or "").strip())
+    if len(text) > PB_SECTION_MAX_CHARS:
+        if notes is not None:
+            notes.append("%s: the text is %d characters long. Only the first %d characters were kept. Move the rest into another section or shorten it." % (label, len(text), PB_SECTION_MAX_CHARS))
+        text = text[:PB_SECTION_MAX_CHARS]
+    return text
 
 
 def _pb_clean_extra(key, value):
@@ -22641,16 +23178,16 @@ def _pb_table_lines_from_form(form, key):
     return lines
 
 
-def _pb_form_content(form, base):
+def _pb_form_content(form, base, notes=None):
     out = dict(base)
     for k, _ in PB_SECTIONS:
         if k in PB_TABLES:
             lines = _pb_table_lines_from_form(form, k)
             if lines is not None:
-                out[k] = _pb_clean_section(k, lines)
+                out[k] = _pb_clean_section(k, lines, notes)
                 continue
         if ("s_" + k) in form:
-            out[k] = _pb_clean_section(k, form.get("s_" + k))
+            out[k] = _pb_clean_section(k, form.get("s_" + k), notes)
     for k in PB_EXTRA_KEYS:
         if k == "logo_data" or k not in form:
             continue  # the logo is changed only by the upload handler
@@ -22902,6 +23439,18 @@ def _pb_long_keys(doc_type):
     return [k for k in _pb_type_keys(doc_type) if k not in PB_TABLES]
 
 
+PB_LONG_WORD_CHOICES = (600, 1200, 2000)
+
+
+def _pb_long_words(value):
+    """Words per chapter for a long proposal: 600 (about one page), 1200 or 2000. Anything else gives 600."""
+    try:
+        v = int(str(value or "").strip())
+    except ValueError:
+        return PB_LONG_SECTION_WORDS
+    return v if v in PB_LONG_WORD_CHOICES else PB_LONG_SECTION_WORDS
+
+
 def _pb_long_create(pid, uid, data):
     """Creates the long-document record and one chapter per prose section. Returns (doc_id, error)."""
     keys = _pb_long_keys(data["document_type"])
@@ -22909,10 +23458,11 @@ def _pb_long_create(pid, uid, data):
         return None, "this document type has no prose sections"
     doc_id = str(uuid.uuid4())
     stamp = utc_now()
+    words = _pb_long_words(data.get("long_words"))
     doc = {"id": doc_id, "user_id": uid, "title": data["title"], "document_type": data["document_type"],
            "country": data.get("country"), "intended_recipient": data.get("intended_recipient"),
            "brief": data["description"], "terminology": "", "source_register": "", "include_references": False,
-           "target_unit": "chapters", "target_value": len(keys), "target_words": len(keys) * PB_LONG_SECTION_WORDS,
+           "target_unit": "chapters", "target_value": len(keys), "target_words": len(keys) * words,
            "outline_source": "proposal", "status": "drafting", "progress": 0, "proposal_id": pid,
            "created_at": stamp, "updated_at": stamp}
     _row, err = db_insert("koja_long_documents", doc)
@@ -22921,7 +23471,7 @@ def _pb_long_create(pid, uid, data):
     for n, key in enumerate(keys, 1):
         _r, err = db_insert("koja_document_sections", {
             "id": str(uuid.uuid4()), "document_id": doc_id, "user_id": uid, "position": n, "chapter_no": n, "section_no": 1,
-            "chapter_title": PB_LABELS[key], "title": PB_LABELS[key], "target_words": PB_LONG_SECTION_WORDS,
+            "chapter_title": PB_LABELS[key], "title": PB_LABELS[key], "target_words": words,
             "body": "", "word_count": 0, "status": "pending", "attempts": 0, "last_error": "", "updated_at": stamp})
         if err:
             db_delete("koja_long_documents", {"id": doc_id, "user_id": uid})
@@ -22991,6 +23541,8 @@ def _pb_form_page(form, problems, suggestion=None):
 <p><button class="btn secondary" name="apply" value="starter" formaction="{{ url_for('pb_new_suggest') }}" formnovalidate>Use starter text</button></p></div>{% endif %}
 <p><button class="btn secondary" formaction="{{ url_for('pb_new_suggest') }}" formnovalidate>Suggest choices from my title</button></p>
 <label>Describe the project (at least 40 characters)</label><textarea name="description" rows="8" maxlength="4000" required>{{ form.get('description','') }}</textarea>
+<label>Long proposal: length of each chapter</label>
+<select name="long_words"><option value="600" {% if form.get('long_words') in (None, '', '600') %}selected{% endif %}>About 1 page per chapter (600 words)</option><option value="1200" {% if form.get('long_words') == '1200' %}selected{% endif %}>About 2 pages per chapter (1,200 words)</option><option value="2000" {% if form.get('long_words') == '2000' %}selected{% endif %}>About 4 pages per chapter (2,000 words)</option></select>
 <label><input type="checkbox" name="long" value="1"> Write as a long proposal: each chapter is drafted in the background and you can review each one</label>
 <button class="btn">Create draft</button>
 </form></div>''', form=form, problems=problems, types=PB_DOC_TYPES, suggestion=suggestion)
@@ -23029,7 +23581,7 @@ def pb_new():
     if err:
         return _pb_form_page(request.form, ["Could not save the proposal. Please try again."])
     if request.form.get("long") == "1":
-        _ld_id, ld_err = _pb_long_create(pid, uid, data)
+        _ld_id, ld_err = _pb_long_create(pid, uid, dict(data, long_words=request.form.get("long_words")))
         if _ld_id:
             flash("Long proposal started. Chapters are drafted in the background. You can fill in the budget and objectives tables now.", "success")
             return redirect(url_for("pb_editor", pid=pid))
@@ -23105,7 +23657,8 @@ Chapters are drafted in the background and filled into the sections below. Text 
 {% if key == 'cashflow_rows' %}{% for w in cashflow.warnings %}<div class="alert">{{ w }}</div>{% endfor %}<p class="small">{{ cashflow.summary }}</p>{% endif %}
 {% else %}
 <label>{{ loop.index }}. {{ label }}{% if key in lists %} <span class="small">(one item per line)</span>{% endif %}</label>
-<textarea name="s_{{ key }}" rows="{{ 3 if key in lists else 6 }}" placeholder="Write this section, or regenerate it">{{ values[key] }}</textarea>
+<textarea name="s_{{ key }}" data-list="{{ 1 if key in lists else 0 }}" rows="{{ 3 if key in lists else 6 }}" placeholder="Write this section, or regenerate it">{{ values[key] }}</textarea>
+<div class="small pb-count" data-key="{{ key }}"></div>
 {% endif %}
 <button class="btn secondary" formaction="{{ url_for('pb_regenerate', pid=p.id, section=key) }}" formnovalidate>Regenerate this section</button>
 {% endfor %}
@@ -23115,11 +23668,21 @@ Chapters are drafted in the background and filled into the sections below. Text 
 <script>
 function pbAdd(k){var t=document.getElementById('tpl-'+k),b=document.getElementById('body-'+k);if(t&&b){b.appendChild(t.content.firstElementChild.cloneNode(true));}}
 function pbRemove(btn){var tr=btn.closest('tr');if(tr){tr.parentNode.removeChild(tr);}}
-(function(){try{var f=document.getElementById('pb-form'),s=document.getElementById('pb-save-status');if(!f||!s){return;}
+(function(){try{var MAXC={{ max_chars }},MAXI={{ max_items }},MAXL={{ max_item }};
+function pbCount(ta){var box=document.querySelector('.pb-count[data-key="'+ta.name.slice(2)+'"]');if(!box)return;var v=ta.value;
+if(ta.getAttribute('data-list')==='1'){var lines=v.split('\n').filter(function(x){return x.trim()!==''});var longest=0;
+lines.forEach(function(x){if(x.length>longest)longest=x.length});var bad=[];
+if(lines.length>MAXI)bad.push('only the first '+MAXI+' items will be saved');if(longest>MAXL)bad.push('items over '+MAXL+' characters will be cut');
+box.className='small pb-count'+(bad.length?' alert':'');
+box.textContent=bad.length?'Not saved in full: '+bad.join('; ')+'.':lines.length+' items (limit '+MAXI+')';}
+else{var n=v.length;box.className='small pb-count'+(n>MAXC?' alert':'');
+box.textContent=n>MAXC?'Not saved in full: '+n.toLocaleString()+' characters, the limit is '+MAXC.toLocaleString()+'. Text after the first '+MAXC.toLocaleString()+' characters will be cut. Shorten this section.':n.toLocaleString()+' of '+MAXC.toLocaleString()+' characters';}}
+document.querySelectorAll('textarea[name^="s_"]').forEach(function(ta){ta.addEventListener('input',function(){pbCount(ta)});pbCount(ta);});
+var f=document.getElementById('pb-form'),s=document.getElementById('pb-save-status');if(!f||!s){return;}
 f.addEventListener('input',function(){s.textContent='Unsaved changes. Press Save changes to keep them.';});
 f.addEventListener('submit',function(){s.textContent='Saving…';});}catch(e){}})();
 </script>''',
-        p=row, sections=_pb_type_sections(row.get("document_type")), lists=PB_LIST_KEYS, values=values,
+        p=row, sections=_pb_type_sections(row.get("document_type")), lists=PB_LIST_KEYS, values=values, max_chars=PB_SECTION_MAX_CHARS, max_items=PB_LIST_MAX_ITEMS, max_item=PB_ITEM_MAX_CHARS,
         types=PB_DOC_TYPES, currencies=PB_CURRENCIES, currency=content.get("budget_currency") or "USD",
         table_keys=list(PB_TABLES), table_views=_pb_table_views(content, row.get("document_type")),
         funding_amount=content.get("funding_amount", ""), contributions=content.get("confirmed_contributions", ""),
@@ -23132,7 +23695,8 @@ f.addEventListener('submit',function(){s.textContent='Saving…';});}catch(e){}}
 def pb_update(pid):
     uid = _pb_uid()
     row = _pb_owned(pid, uid)
-    content = _pb_form_content(request.form, _pb_content_of(row))
+    notes = []
+    content = _pb_form_content(request.form, _pb_content_of(row), notes)
     logo, logo_error = _pb_check_logo(request.files.get("logo"))
     if logo:
         content["logo_data"] = logo
@@ -23145,6 +23709,8 @@ def pb_update(pid):
     ok = _pb_save(pid, uid, fields)
     if logo_error:
         flash(logo_error, "warning")
+    for note in notes:
+        flash("Not saved in full. " + note, "warning")
     flash("Saved." if ok else "Could not save. Your last saved version is still there.", "success" if ok else "warning")
     return redirect(url_for("pb_editor", pid=pid))
 
@@ -23156,7 +23722,10 @@ def pb_regenerate(pid, section):
     row = _pb_owned(pid, uid)
     if section not in _pb_type_keys(row.get("document_type")):
         abort(404)
-    content = _pb_form_content(request.form, _pb_content_of(row))
+    notes = []
+    content = _pb_form_content(request.form, _pb_content_of(row), notes)
+    for note in notes:
+        flash("Not saved in full. " + note, "warning")
     if _rate_limited("pbgen:%s" % uid, 5, 600):
         flash("You have asked for several drafts. Please wait a few minutes and try again.", "warning")
     else:
