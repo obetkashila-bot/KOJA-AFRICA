@@ -96,7 +96,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
-RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:")
+RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:", "cvcoach:")
 
 def _rate_limited(key, limit, window=60):
     # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
@@ -5224,14 +5224,16 @@ def cv():
             return _cv_form_page(data, ["Your CV could not be saved. Please try again."], url_for("cv"), "New CV")
         flash("CV saved.", "success")
         return redirect(url_for("cv_view", cid=cid))
-    return _cv_form_page(_cv_defaults(user), [], url_for("cv"), "New CV", saved=_cv_list(uid))
+    return _cv_form_page(_cv_defaults(user), [], url_for("cv"), "New CV", saved=_cv_list(uid),
+                         target=clean(request.args.get("target"))[:120])
 
 
 @app.route("/cv/<cid>")
 @login_required
 def cv_view(cid):
     row, data = _cv_owned(cid)
-    return render_page("CV", CV_SHEET_HTML, cid=cid, data=data, sections=CV_BODY_SECTIONS)
+    shown = dict(data, photo="") if data.get("template") == "ats" else data
+    return render_page("CV", CV_SHEET_HTML, cid=cid, data=shown, sections=_cv_section_order(data.get("template")))
 
 
 @app.route("/cv/<cid>/edit", methods=["GET", "POST"])
@@ -5255,7 +5257,7 @@ def cv_edit(cid):
             return _cv_form_page(data, ["Your changes could not be saved. Please try again."], url_for("cv_edit", cid=cid), "Edit CV")
         flash("CV updated.", "success")
         return redirect(url_for("cv_view", cid=cid))
-    return _cv_form_page(current, [], url_for("cv_edit", cid=cid), "Edit CV")
+    return _cv_form_page(current, [], url_for("cv_edit", cid=cid), "Edit CV", target=clean(request.args.get("target"))[:120])
 
 
 @app.route("/cv/<cid>/delete", methods=["POST"])
@@ -5364,7 +5366,7 @@ def cv_download(cid, fmt):
 
 
 def _cv_body_sections(data):
-    return [(label, data.get(key) or "") for key, label in CV_BODY_SECTIONS if data.get(key)]
+    return [(label, data.get(key) or "") for key, label in _cv_section_order(data.get("template")) if data.get(key)]
 
 
 def _cv_contact_line(data):
@@ -5382,10 +5384,50 @@ def _cv_photo_bytes(data):
         return None
 
 
+def _cv_pdf_fonts():
+    """Unicode font for the CV PDF so bullets, accents and symbols are kept. Uses the DejaVu fonts shipped in fonts/,
+    then reportlab's bundled Vera fonts. Returns (regular, bold)."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import reportlab as _rl
+    if "KojaCV" in pdfmetrics.getRegisteredFontNames():
+        return "KojaCV", "KojaCV-Bold"
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    rl = os.path.join(os.path.dirname(_rl.__file__), "fonts")
+    for reg, bold in [(os.path.join(here, "DejaVuSans.ttf"), os.path.join(here, "DejaVuSans-Bold.ttf")),
+                      (os.path.join(rl, "Vera.ttf"), os.path.join(rl, "VeraBd.ttf"))]:
+        if os.path.exists(reg) and os.path.exists(bold):
+            pdfmetrics.registerFont(TTFont("KojaCV", reg))
+            pdfmetrics.registerFont(TTFont("KojaCV-Bold", bold))
+            return "KojaCV", "KojaCV-Bold"
+    return "Helvetica", "Helvetica-Bold"
+
+
+_CV_PDF_SYMBOLS = {"✓": "•", "✔": "•", "►": "•", "→": "-", "➔": "-", "➜": "-"}
+
+
+def _cv_pdf_safe(value):
+    """Text the PDF font can draw. Common CV symbols get plain equivalents; any other character the font cannot
+    show becomes '?', so nothing disappears silently. Word files keep the original text."""
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        cmap = pdfmetrics.getFont(_cv_pdf_fonts()[0]).face.charToGlyph
+    except Exception:
+        cmap = None
+    out = []
+    for ch in str(value or ""):
+        ch = _CV_PDF_SYMBOLS.get(ch, ch)
+        if ch in "\n\t " or cmap is None or ord(ch) in cmap:
+            out.append(ch)
+        else:
+            out.append("?")
+    return "".join(out)
+
+
 def _cv_pdf_bytes(data):
     try:
         import io
-        from xml.sax.saxutils import escape as xesc
+        from xml.sax.saxutils import escape as _xesc_raw
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.units import cm
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -5398,14 +5440,19 @@ def _cv_pdf_bytes(data):
         doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2 * cm, rightMargin=2 * cm, topMargin=1.8 * cm,
                                 bottomMargin=1.8 * cm, title=data.get("full_name") or "CV")
         ss = getSampleStyleSheet()
-        name_style = ParagraphStyle("cvname", parent=ss["Title"], alignment=0, fontSize=22, leading=26, spaceAfter=4)
-        contact_style = ParagraphStyle("cvcontact", parent=ss["Normal"], fontSize=9.5, leading=13)
-        head_style = ParagraphStyle("cvhead", parent=ss["Heading2"], fontSize=12, spaceBefore=10, spaceAfter=4)
-        body_style = ParagraphStyle("cvbody", parent=ss["Normal"], fontSize=10, leading=14)
+        regular, bold = _cv_pdf_fonts()
+
+        def xesc(value):
+            return _xesc_raw(_cv_pdf_safe(value))
+
+        name_style = ParagraphStyle("cvname", parent=ss["Title"], fontName=bold, alignment=0, fontSize=22, leading=26, spaceAfter=4)
+        contact_style = ParagraphStyle("cvcontact", parent=ss["Normal"], fontName=regular, fontSize=9.5, leading=13)
+        head_style = ParagraphStyle("cvhead", parent=ss["Heading2"], fontName=bold, fontSize=12, spaceBefore=10, spaceAfter=4)
+        body_style = ParagraphStyle("cvbody", parent=ss["Normal"], fontName=regular, fontSize=10, leading=14)
         left = [Paragraph(xesc(data.get("full_name") or ""), name_style),
                 Paragraph(xesc(_cv_contact_line(data)), contact_style)]
         story = []
-        photo = _cv_photo_bytes(data)
+        photo = None if data.get("template") == "ats" else _cv_photo_bytes(data)
         placed = False
         if photo:
             try:
@@ -5441,7 +5488,7 @@ def _cv_docx_bytes(data):
     try:
         doc = Document()
         doc.styles["Normal"].font.size = Pt(10.5)
-        photo = _cv_photo_bytes(data)
+        photo = None if data.get("template") == "ats" else _cv_photo_bytes(data)
         if photo:
             try:
                 doc.add_picture(io.BytesIO(photo), width=Cm(3))
@@ -5470,11 +5517,12 @@ CV_FIELDS = {
     "full_name": (120, True), "phone": (40, False), "email": (254, True), "address": (200, False),
     "profile": (1500, False), "education": (4000, False), "experience": (4000, False),
     "certifications": (2000, False), "skills": (4000, False), "references": (2000, False),
+    "template": (20, False),
 }
 CV_LABELS = {
     "full_name": "Full name", "phone": "Phone", "email": "Email", "address": "Address",
     "profile": "Professional profile", "education": "Education", "experience": "Work experience",
-    "certifications": "Certifications and licences", "skills": "Skills", "references": "References",
+    "certifications": "Certifications and licences", "skills": "Skills", "references": "References", "template": "Template",
 }
 CV_MULTILINE = ("profile", "education", "experience", "certifications", "skills", "references")
 CV_PHOTO_MAX_BYTES = 300 * 1024
@@ -5511,6 +5559,8 @@ def _cv_read_form(form):
         if k not in CV_MULTILINE:
             v = " ".join(v.split())          # single-line fields: no line breaks
         data[k] = v
+    if data.get("template") not in CV_TEMPLATES:
+        data["template"] = "professional"
     return data
 
 
@@ -5537,6 +5587,7 @@ def _cv_defaults(user):
     d["email"] = str(user.get("email") or "")
     d["phone"] = str(user.get("phone") or "")
     d["photo"] = ""
+    d["template"] = "professional"
     return d
 
 
@@ -5552,6 +5603,8 @@ def _cv_data_of(row):
     out = {k: str(raw.get(k) or "") for k in CV_FIELDS}
     photo = str(raw.get("photo") or "")
     out["photo"] = photo if photo.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")) else ""
+    if out.get("template") not in CV_TEMPLATES:
+        out["template"] = "professional"
     return out
 
 
@@ -5571,19 +5624,21 @@ def _cv_list(uid):
     return [{"id": r["id"], "title": r.get("title") or "Untitled CV", "updated": str(r.get("updated_at") or "")[:10]} for r in rows]
 
 
-def _cv_form_page(data, errors, action, heading, saved=None):
+def _cv_form_page(data, errors, action, heading, saved=None, target=""):
     return render_page("CV Builder", CV_FORM_HTML, data=data, errors=errors, action=action,
-                       heading=heading, saved=saved or [])
+                       heading=heading, saved=saved or [], target=target, templates=CV_TEMPLATES)
 
 
 CV_FORM_HTML = r"""
 <div class="card"><h2>{{ heading }}</h2>
 {% if errors %}<div class="alert">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+<p class="small"><a href="{{ url_for('cv_start') }}">Start faster: speak, scan a document, or practise with the KOJA coach</a></p>
 <form method="post" action="{{ action }}" enctype="multipart/form-data">
 <label>Full name *</label><input name="full_name" value="{{ data.full_name }}" required>
 <label>Phone</label><input name="phone" value="{{ data.phone }}">
 <label>Email *</label><input name="email" type="email" value="{{ data.email }}" required>
 <label>Address</label><input name="address" value="{{ data.address }}">
+<label>Template</label><select name="template">{% for k, v in templates.items() %}<option value="{{ k }}"{% if data.template == k %} selected{% endif %}>{{ v }}</option>{% endfor %}</select>
 <label>Profile photo (optional, passport style, JPG or PNG, under 300 KB)</label>
 {% if data.photo %}<div style="margin:6px 0"><img src="{{ data.photo }}" alt="Current photo" style="width:110px;height:140px;object-fit:cover;border-radius:6px"> <label><input type="checkbox" name="remove_photo" value="1"> Remove photo</label></div>{% endif %}
 <input type="file" name="photo" accept="image/jpeg,image/png">
@@ -5598,7 +5653,7 @@ CV_FORM_HTML = r"""
 <p class="small">Your CV is saved to your account. Open it to print, or to save it as a PDF from your browser.</p></div>
 <div class="card" id="kojaCvHelp"><h3>KOJA can suggest wording</h3>
 <p class="small">KOJA uses only the details you have entered. It never saves anything, and you choose what to add. Check every suggestion before you use it.</p>
-<label>Job you are applying for (optional)</label><input id="cvTarget" maxlength="120" placeholder="e.g. Clinic Manager">
+<label>Job you are applying for (optional)</label><input id="cvTarget" maxlength="120" value="{{ target }}" placeholder="e.g. Clinic Manager">
 <div class="row" style="margin-top:8px"><button class="btn" type="button" id="cvSuggestBtn">Suggest ideas</button> <span class="small" id="cvSuggestMsg"></span></div>
 <div id="cvSuggestions" style="margin-top:10px"></div>
 </div>
@@ -5665,6 +5720,7 @@ CV_SHEET_HTML = r"""
 </style>
 <div class="cv-actions"><a class="btn secondary" href="{{ url_for('cv') }}">&larr; My CVs</a>
 <a class="btn secondary" href="{{ url_for('cv_edit', cid=cid) }}">Edit</a>
+<a class="btn secondary" href="{{ url_for('cv_match', cid=cid) }}">Find matching jobs</a>
 <a class="btn" href="{{ url_for('cv_download', cid=cid, fmt='pdf') }}">Download PDF</a>
 <a class="btn" href="{{ url_for('cv_download', cid=cid, fmt='docx') }}">Download Word</a>
 <button class="btn" type="button" onclick="window.print()">Print or save as PDF</button>
@@ -5676,6 +5732,522 @@ CV_SHEET_HTML = r"""
 {% for key, label in sections %}{% if data[key] %}<h2>{{ label }}</h2><div class="cv-body">{{ data[key] }}</div>{% endif %}{% endfor %}
 </div>
 """
+
+
+# ============================================================
+# KOJA SmartCV: speak, scan, coach, templates and job matching
+# ============================================================
+CV_TEMPLATES = {
+    "professional": "Professional",
+    "graduate": "Graduate (education first)",
+    "academic": "Academic (education and certifications first)",
+    "ats": "ATS-friendly (plain, one column, no photo)",
+}
+CV_DRAFT_MAX_CHARS = 12000
+CV_SCAN_MAX_BYTES = 5 * 1024 * 1024
+CV_SCAN_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # phone camera photos are often 3 to 8 MB
+CV_SCAN_TYPES = ("pdf", "docx", "xlsx", "csv", "txt", "png", "jpg", "jpeg")
+CV_SCAN_XLSX_MAX_ROWS = 2000
+CV_STRUCTURE_SYSTEM = (
+    "You organise a person's own words into CV sections. Use ONLY facts the person gave. Never invent employers, job titles, "
+    "dates, qualifications, numbers, awards or references. If a field is not stated, use an empty string. Text may come from an "
+    "old CV or a certificate: copy only what is written there. Put each job or achievement on its own line. Keep the person's "
+    "language and spelling. Return only a JSON object with these string keys: full_name, phone, email, address, profile, "
+    "education, experience, certifications, skills, references."
+)
+CV_COACH_GUIDE = (
+    "You are KOJA's career coach for young people and job seekers across Africa. Have a warm, practical conversation that gathers "
+    "material for a CV. Ask ONE question at a time, in plain English. Cover, in this order: education, key achievements, work "
+    "history, skills, certifications or training, and career goals. Ask for specifics such as dates, places and results, and say "
+    "so when a detail is missing. Keep each message under 90 words. Never invent facts. When you have enough, tell the candidate "
+    "they can press 'Build my CV from this chat'."
+)
+CV_COACH_MOCK = (
+    "You are a friendly but honest interviewer running a practice interview for this role: {ROLE}. Ask ONE interview question at a "
+    "time. After each answer, give brief feedback in two parts: what worked, and one specific way to improve, such as a clear example "
+    "with a result. Then ask the next question. Keep each message under 120 words. Do not claim to be a real employer."
+)
+CV_MATCH_STOP = set("""the and for with from that this have has was were are you your our will work job role team years year
+experience skills including using use such able also more most across other into over under must should who whom their they them
+been being about applicants candidates ability good strong excellent least plus will may can its not all any one two new per""".split())
+
+
+def _cv_section_order(template):
+    keys = [k for k, _ in CV_BODY_SECTIONS]
+    if template in ("graduate", "academic"):
+        first = ["education"] + (["certifications"] if template == "academic" else [])
+        keys = first + [k for k in keys if k not in first]
+    labels = dict(CV_BODY_SECTIONS)
+    return [(k, labels[k]) for k in keys]
+
+
+def _cv_clean_text(value):
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()[:CV_DRAFT_MAX_CHARS]
+
+
+def _cv_clean_fields(raw):
+    out = {}
+    for k, (limit, _required) in CV_FIELDS.items():
+        if k == "template":
+            continue
+        v = raw.get(k)
+        if isinstance(v, list):
+            v = "\n".join(str(x) for x in v if str(x).strip())
+        v = str(v or "").replace("\r\n", "\n").strip()
+        if k not in CV_MULTILINE:
+            v = " ".join(v.split())
+        out[k] = v[:limit]
+    return out
+
+
+def _cv_structure(text):
+    """Turn free text into CV fields with KOJA AI. Returns (fields, note). Falls back to the profile box."""
+    fallback = "Professional profile"
+    answer, err = _ai_call("Organise this text into CV fields:\n\n" + text[:CV_DRAFT_MAX_CHARS] + "\n\nReturn only the JSON object.",
+                           CV_STRUCTURE_SYSTEM, max_output_tokens=2400, timeout=45)
+    if err or not answer:
+        return {"profile": text[:CV_FIELDS["profile"][0]]}, (
+            "KOJA's AI service is not available right now, so your text was placed in the %s box. Split it into the right boxes." % fallback)
+    try:
+        raw = _pb_parse_reply(answer)
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        logger.warning("cv structure: malformed AI reply")
+        return {"profile": text[:CV_FIELDS["profile"][0]]}, (
+            "KOJA could not organise the text automatically, so it was placed in the %s box. Split it into the right boxes." % fallback)
+    return _cv_clean_fields(raw), "KOJA filled in the form from your words."
+
+
+def _cv_new_draft(fields, note):
+    """Save the generated fields as a draft CV, then open it for review. Nothing is published until the person saves."""
+    user = current_user() or {}
+    uid = str(user.get("id") or "")
+    data = _cv_defaults(user)
+    for k in CV_FIELDS:
+        if k in fields and k != "template":
+            data[k] = str(fields.get(k) or "")[:CV_FIELDS[k][0]]
+    data["template"] = "professional"
+    data["photo"] = ""
+    cid = str(uuid.uuid4())
+    stamp = utc_now()
+    title = (data.get("full_name") or "").strip()[:120] or "Draft CV"
+    _row, err = db_insert(CV_TABLE, {"id": cid, "user_id": uid, "title": title, "data": data,
+                                     "created_at": stamp, "updated_at": stamp})
+    if err:
+        flash("Your CV could not be started. Please try again.", "warning")
+        return redirect(url_for("cv_start"))
+    flash(note + " Check every line before you save.", "info")
+    return redirect(url_for("cv_edit", cid=cid))
+
+
+@app.route("/cv/start")
+@login_required
+def cv_start():
+    uid = str((current_user() or {}).get("id") or "")
+    return render_page("Build your CV", CV_START_HTML, auto_on=_cv_auto_save_on(uid))
+
+
+@app.route("/cv/start/speak", methods=["POST"])
+@login_required
+def cv_start_speak():
+    uid = str((current_user() or {}).get("id") or "")
+    if _rate_limited("cvai:%s" % uid, 6, 600):
+        flash("You have asked for several CVs. Please wait a few minutes and try again.", "warning")
+        return redirect(url_for("cv_start"))
+    text = _cv_clean_text(request.form.get("speech"))
+    if len(text) < 20:
+        flash("Tell KOJA a little more about your background first, a few sentences at least.", "warning")
+        return redirect(url_for("cv_start"))
+    fields, note = _cv_structure(text)
+    return _cv_new_draft(fields, note)
+
+
+def _cv_ocr_image(raw, ext):
+    import os, shutil, subprocess, tempfile
+    if not shutil.which("tesseract"):
+        return "", "Reading photos of documents needs OCR, which is not set up on this server. Upload a PDF or Word file, or use the speak option."
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "page." + ("png" if ext == "png" else "jpg"))
+        with open(src, "wb") as fh:
+            fh.write(raw)
+        try:
+            out = subprocess.run(["tesseract", src, "stdout"], capture_output=True, text=True, timeout=60)
+        except Exception:
+            return "", "The document took too long to read. Try a smaller, clearer image."
+        return out.stdout or "", ""
+
+
+def _cv_ocr_pdf(raw):
+    import glob, os, shutil, subprocess, tempfile
+    if not (shutil.which("pdftoppm") and shutil.which("tesseract")):
+        return "", "This PDF has no selectable text, and scanning it needs OCR, which is not set up on this server. Upload a Word file or use the speak option."
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "in.pdf")
+        with open(src, "wb") as fh:
+            fh.write(raw)
+        try:
+            subprocess.run(["pdftoppm", "-r", "200", "-png", "-l", "3", src, os.path.join(tmp, "pg")], capture_output=True, timeout=120)
+            parts = []
+            for img in sorted(glob.glob(os.path.join(tmp, "pg*.png"))):
+                parts.append(subprocess.run(["tesseract", img, "stdout"], capture_output=True, text=True, timeout=60).stdout or "")
+        except Exception:
+            return "", "The document took too long to read. Try a smaller, clearer file."
+        return "\n".join(parts), ""
+
+
+def _cv_extract_text(raw, ext):
+    import io
+    try:
+        if ext in ("txt", "csv"):
+            return raw.decode("utf-8-sig", "replace"), ""
+        if ext == "xlsx":
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+            parts = []
+            for sheet in wb.worksheets:
+                parts.append("Sheet: %s" % sheet.title)
+                for i, row in enumerate(sheet.iter_rows(values_only=True)):
+                    if i >= CV_SCAN_XLSX_MAX_ROWS:
+                        break
+                    cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                    if cells:
+                        parts.append(" | ".join(cells))
+            wb.close()
+            return "\n".join(parts), ""
+        if ext == "docx":
+            from docx import Document
+            d = Document(io.BytesIO(raw))
+            parts = [p.text for p in d.paragraphs]
+            for table in d.tables:
+                for row in table.rows:
+                    parts.append(" | ".join(c.text for c in row.cells))
+            return "\n".join(parts), ""
+        if ext == "pdf":
+            from pypdf import PdfReader
+            text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(raw)).pages)
+            return (text, "") if text.strip() else _cv_ocr_pdf(raw)
+        if ext in ("png", "jpg", "jpeg"):
+            return _cv_ocr_image(raw, ext)
+    except Exception:
+        logger.exception("cv scan: file could not be opened")
+        return "", "KOJA could not open that file. Check that it is not damaged or password-protected."
+    return "", "Use a PDF, Word (.docx), Excel (.xlsx), CSV, text, PNG or JPG file. Old .doc and .xls files: save them again as .docx or .xlsx."
+
+
+CV_SETTINGS_TABLE = "koja_cv_settings"
+
+
+def _cv_auto_save_on(uid):
+    row = first_row(CV_SETTINGS_TABLE, {"user_id": uid}) if uid else None
+    return bool(row) and str(row.get("auto_save_documents")).lower() in ("true", "t", "1")
+
+
+@app.route("/cv/start/auto-save", methods=["POST"])
+@login_required
+def cv_auto_save():
+    uid = str((current_user() or {}).get("id") or "")
+    on = request.form.get("on") == "1"
+    if on and request.form.get("agree") != "1":
+        flash("Tick the box to say you agree before turning on automatic saving.", "warning")
+        return redirect(url_for("cv_start"))
+    stamp = utc_now()
+    if first_row(CV_SETTINGS_TABLE, {"user_id": uid}):
+        _rows, err = db_update(CV_SETTINGS_TABLE, {"user_id": uid}, {"auto_save_documents": on, "updated_at": stamp})
+    else:
+        _row, err = db_insert(CV_SETTINGS_TABLE, {"user_id": uid, "auto_save_documents": on, "updated_at": stamp})
+    if err:
+        flash("The setting could not be saved. Please try again.", "warning")
+    else:
+        flash("Automatic saving is on. Every scan is saved to KOJA Documents and stays pending until approved." if on
+              else "Automatic saving is off. Scans are no longer saved automatically.", "success")
+    return redirect(url_for("cv_start"))
+
+
+def _cv_save_scan_copy(raw, filename, mime, uid):
+    """Keep a copy of a scanned document in the existing KOJA Documents workspace.
+    It is saved as pending, so the owner and admins see it, and it becomes public only when approved there."""
+    from io import BytesIO
+    from werkzeug.datastructures import FileStorage
+    fs = FileStorage(stream=BytesIO(raw), filename=filename[:200], content_type=mime or "application/octet-stream")
+    uploaded, error = upload_storage(fs, "documents", public=False, allowed=CV_SCAN_TYPES)
+    if error or not uploaded:
+        return False
+    stamp = utc_now()
+    title = (filename.rsplit(".", 1)[0] or "Scanned document")[:120]
+    _row, err = db_insert("documents", {
+        "id": str(uuid.uuid4()), "title": title, "description": "Scanned for a CV in KOJA SmartCV.",
+        "category": "CV document", "user_id": uid, "file_name": uploaded["file_name"],
+        "file_path": uploaded["path"], "file_url": uploaded["path"], "approval_status": "pending",
+        "is_public": False, "is_active": True, "created_at": stamp, "updated_at": stamp})
+    if err:
+        delete_storage_path(uploaded.get("path"))
+        return False
+    return True
+
+
+@app.route("/cv/start/scan", methods=["POST"])
+@login_required
+def cv_start_scan():
+    uid = str((current_user() or {}).get("id") or "")
+    if _rate_limited("cvai:%s" % uid, 6, 600):
+        flash("You have asked for several CVs. Please wait a few minutes and try again.", "warning")
+        return redirect(url_for("cv_start"))
+    uid = str((current_user() or {}).get("id") or "")
+    standing = _cv_auto_save_on(uid)
+    if request.form.get("consent") != "1" and not standing:
+        flash("Tick the box to say KOJA may read the document. Nothing is saved without your review.", "warning")
+        return redirect(url_for("cv_start"))
+    f = next((x for x in request.files.getlist("document") if x and x.filename), None)
+    if not f or "." not in f.filename:
+        flash("Choose a document to scan.", "warning")
+        return redirect(url_for("cv_start"))
+    ext = f.filename.rsplit(".", 1)[-1].lower()
+    if ext not in CV_SCAN_TYPES:
+        flash("Use a PDF, Word (.docx), Excel (.xlsx), CSV, text, PNG or JPG file. Old .doc and .xls files: save them again as .docx or .xlsx.", "warning")
+        return redirect(url_for("cv_start"))
+    limit = CV_SCAN_IMAGE_MAX_BYTES if ext in ("png", "jpg", "jpeg") else CV_SCAN_MAX_BYTES
+    raw = f.read(limit + 1)
+    if not raw:
+        flash("That file is empty.", "warning")
+        return redirect(url_for("cv_start"))
+    if len(raw) > limit:
+        flash("The file is too large. Photos can be up to 10 MB and documents up to 5 MB. Try a smaller photo or a PDF.", "warning")
+        return redirect(url_for("cv_start"))
+    text, err = _cv_extract_text(raw, ext)
+    if err:
+        flash(err, "warning")
+        return redirect(url_for("cv_start"))
+    text = _cv_clean_text(text)
+    if len(text) < 20:
+        flash("KOJA could not read text from this file. Try a clearer photo or a text-based PDF, or use the speak option.", "warning")
+        return redirect(url_for("cv_start"))
+    fields, note = _cv_structure(text)
+    auto = standing
+    if auto or request.form.get("save_copy") == "1":
+        saved = _cv_save_scan_copy(raw, f.filename, f.mimetype, uid)
+        why = " It was saved automatically because you turned on automatic saving." if auto else ""
+        extra = (" A copy is in KOJA Documents, pending until it is approved for public listing." + why if saved
+                 else " A copy could not be saved to KOJA Documents, but the document was read.")
+        return _cv_new_draft(fields, note + extra)
+    return _cv_new_draft(fields, note + " The document was read only and was not stored.")
+
+
+@app.route("/cv/coach")
+@login_required
+def cv_coach():
+    return render_page("CV Coach", CV_COACH_HTML)
+
+
+@app.route("/cv/coach/reply", methods=["POST"])
+@login_required
+def cv_coach_reply():
+    uid = str((current_user() or {}).get("id") or "")
+    if _rate_limited("cvcoach:%s" % uid, 60, 600):
+        return _cv_suggest_reply(False, error="You have sent many messages. Please wait a few minutes and try again.")
+    payload = request.get_json(silent=True) or {}
+    mode = "mock" if payload.get("mode") == "mock" else "guide"
+    role = " ".join(str(payload.get("role") or "").split())[:120] or "the job the candidate wants"
+    turns = []
+    raw_turns = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    for t in raw_turns[-12:]:
+        if not isinstance(t, dict):
+            continue
+        who = "Candidate" if t.get("role") == "user" else "Coach"
+        content = " ".join(str(t.get("content") or "").split())[:1500]
+        if content:
+            turns.append("%s: %s" % (who, content))
+    system = CV_COACH_MOCK.replace("{ROLE}", role) if mode == "mock" else CV_COACH_GUIDE
+    body = "\n".join(turns) if turns else "(The session is starting. Give the opening message and ask the first question.)"
+    answer, err = _ai_call("Conversation so far:\n%s\n\nWrite the coach's next message only." % body, system, max_output_tokens=500, timeout=30)
+    if err or not answer:
+        return _cv_suggest_reply(False, error="KOJA could not reach the AI service. Try again in a moment.")
+    return _cv_suggest_reply(True, reply=str(answer).strip()[:1800])
+
+
+@app.route("/cv/coach/finish", methods=["POST"])
+@login_required
+def cv_coach_finish():
+    uid = str((current_user() or {}).get("id") or "")
+    if _rate_limited("cvai:%s" % uid, 6, 600):
+        flash("You have asked for several CVs. Please wait a few minutes and try again.", "warning")
+        return redirect(url_for("cv_coach"))
+    text = _cv_clean_text(request.form.get("transcript"))
+    if len(text) < 20:
+        flash("Answer a few of the coach's questions first, then build your CV.", "warning")
+        return redirect(url_for("cv_coach"))
+    fields, note = _cv_structure(text)
+    return _cv_new_draft(fields, note)
+
+
+def _cv_terms_text(text):
+    words = set()
+    for w in re.findall(r"[a-z][a-z+#.\-]*", str(text or "").lower()):
+        w = w.strip(".-")
+        if len(w) >= 3 and w not in CV_MATCH_STOP:
+            words.add(w)
+    return words
+
+
+def _cv_match_rows(data, jobs, limit=20):
+    terms = _cv_terms_text(" ".join(data.get(k, "") for k in ("profile", "education", "experience", "certifications", "skills")))
+    out = []
+    for j in jobs:
+        title = str(j.get("title") or "").strip() or "Opportunity"
+        title_terms = _cv_terms_text(title)
+        summary_terms = _cv_terms_text(j.get("summary") or "") - title_terms
+        hit_t = title_terms & terms
+        hit_s = summary_terms & terms
+        if not hit_t and len(hit_s) < 2:
+            continue
+        score = int(round(min(100.0, 70.0 * len(hit_t) / max(1, len(title_terms)) + 30.0 * min(1.0, len(hit_s) / 8.0))))
+        url = str(j.get("url") or "")
+        out.append({"title": title, "source": j.get("source_name") or j.get("source") or "",
+                    "country": j.get("country") or "", "url": url if url.startswith(("https://", "http://")) else "",
+                    "score": score, "hits": sorted(hit_t | hit_s)[:8], "missing": sorted(title_terms - terms)[:6]})
+    out.sort(key=lambda m: (-m["score"], m["title"]))
+    return out[:limit]
+
+
+@app.route("/cv/<cid>/match")
+@login_required
+def cv_match(cid):
+    row, data = _cv_owned(cid)
+    jobs = _nexus_opportunity_rows("", "", 400)
+    return render_page("Job matches", CV_MATCH_HTML, cid=cid, cv_name=data.get("full_name") or "",
+                       matches=_cv_match_rows(data, jobs), checked=len(jobs))
+
+
+CV_START_HTML = r"""
+<div class="hero"><h2>Build your CV</h2><p>Speak, scan a document, or practise with the coach. KOJA writes a draft and you check every line before you save.</p></div>
+<div class="card"><h3>1. Speak my CV</h3>
+<p class="small">Describe your background in your own words. Your words are sent to KOJA's AI service to be organised. Some browsers send voice to their speech service, so use the typing box if you prefer.</p>
+<form method="post" action="{{ url_for('cv_start_speak') }}">
+<label>What you say or type</label>
+<textarea id="speechText" name="speech" rows="6" maxlength="12000" placeholder="e.g. I completed secondary school, studied teaching, and I have taught students during teaching practice..."></textarea>
+<div class="row" style="margin-top:8px"><button class="btn secondary" type="button" id="micBtn">Start speaking</button> <span class="small" id="micMsg"></span></div>
+<button class="btn" type="submit" style="margin-top:10px">Build my CV from this</button>
+</form></div>
+<div class="card"><h3>2. Scan a document</h3>
+<p class="small">Upload a certificate, transcript, old CV or employment letter (PDF, Word, text, PNG or JPG, up to 5 MB). KOJA reads the text and fills the form. Certificates are not checked or verified by KOJA, and the file is not stored.</p>
+<form id="scanForm" method="post" action="{{ url_for('cv_start_scan') }}" enctype="multipart/form-data">
+{% if not auto_on %}<label style="display:block"><input type="checkbox" id="scanConsent" name="consent" value="1"> I agree that KOJA may read this document to fill in my CV. The text is sent to KOJA's AI service, and I will check every line before saving.</label>
+<label style="display:block;margin-top:6px"><input type="checkbox" name="save_copy" value="1"> Also keep a copy in KOJA Documents. I choose this myself. The copy is private, and it stays pending until an admin approves it for public listing.</label>{% endif %}
+<div class="row" style="margin-top:10px">
+<label class="btn" style="cursor:pointer">Take a photo<input type="file" id="scanPhoto" name="document" accept="image/*" capture="environment" style="display:none"></label>
+<label class="btn secondary" style="cursor:pointer">Choose a document<input type="file" id="scanFile" name="document" accept=".pdf,.docx,.xlsx,.csv,.txt,image/*" style="display:none"></label>
+</div>
+<p class="small" id="scanMsg">Tick the box first. Then take a photo or choose a PDF, Word, Excel, CSV or text file. It uploads and is read automatically. Photos can be up to 10 MB, documents up to 5 MB.</p>
+<p class="small">Old .doc and .xls files: save them as .docx or .xlsx first.</p>
+</form>
+<script>
+(function(){
+  var f=document.getElementById('scanForm'), cb=document.getElementById('scanConsent');
+  function agreed(){ return !cb || cb.checked; }
+  var photo=document.getElementById('scanPhoto'), file=document.getElementById('scanFile');
+  var msg=document.getElementById('scanMsg');
+  if(!f) return;
+  var chosen=null;
+  function go(){
+    if(!chosen || !chosen.files || !chosen.files.length){ msg.textContent='Take a photo or choose a document first.'; return; }
+    if(!agreed()){ msg.textContent='Tick the consent box first. Your file stays selected and uploads as soon as you tick it.'; return; }
+    msg.textContent='Uploading and reading your document. This can take a little while. Please keep this page open.';
+    photo.disabled=(chosen!==photo); file.disabled=(chosen!==file);
+    f.submit();
+  }
+  function pick(input){ return function(){ chosen=input; if(input.files && input.files.length) go(); }; }
+  photo.onchange=pick(photo);
+  file.onchange=pick(file);
+  if(cb) cb.onchange=function(){ if(cb.checked && chosen && chosen.files && chosen.files.length) go(); };
+})();
+</script></div>
+<div class="card"><h3>3. Coach me</h3>
+<p class="small">Answer a few questions in a guided chat, or practise a mock interview. When you are ready, KOJA builds your CV from your answers.</p>
+<a class="btn" href="{{ url_for('cv_coach') }}">Open the coach</a></div>
+<div class="card"><h3>4. KOJA Documents</h3>
+<p class="small">Scanned copies are kept here. A document becomes public once it is approved.</p>
+{% if auto_on %}<p class="small"><strong>Your standing permission is on.</strong> KOJA reads the documents you scan without asking each time, and keeps a copy in KOJA Documents, private and pending until approved.</p>
+<form method="post" action="{{ url_for('cv_auto_save') }}"><input type="hidden" name="on" value="0"><button class="btn secondary" type="submit">Turn off automatic saving</button></form>
+{% else %}<form method="post" action="{{ url_for('cv_auto_save') }}"><input type="hidden" name="on" value="1">
+<label style="display:block"><input type="checkbox" name="agree" value="1"> I agree that KOJA may read the documents I scan or upload to fill in my CV, send the text to KOJA's AI service, and keep a copy in KOJA Documents, from now on without asking each time. Copies are private and pending until an admin approves them. I can turn this off at any time.</label>
+<button class="btn secondary" type="submit" style="margin-top:8px">Turn on automatic saving</button></form>{% endif %}
+<a class="btn secondary" href="{{ url_for('documents') }}">Open KOJA Documents</a></div>
+<div class="card"><h3>5. Match me to jobs</h3>
+<p class="small">Open a saved CV and choose Find matching jobs. KOJA compares your CV with the vacancies it collects.</p>
+<a class="btn secondary" href="{{ url_for('cv') }}">My CVs</a></div>
+<script>
+(function(){
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var btn=document.getElementById('micBtn'), ta=document.getElementById('speechText'), msg=document.getElementById('micMsg');
+  if(!SR){ btn.style.display='none'; msg.textContent='Voice typing is not available in this browser. Type or paste your background instead.'; return; }
+  var rec=new SR(); rec.lang='en-US'; rec.continuous=true; rec.interimResults=false; var on=false;
+  rec.onresult=function(e){ for(var i=e.resultIndex;i<e.results.length;i++){ if(e.results[i].isFinal){ var t=e.results[i][0].transcript.trim(); ta.value=(ta.value.trim()?ta.value.trim()+' ':'')+t; } } };
+  rec.onerror=function(e){ msg.textContent='Voice typing stopped ('+e.error+'). You can type the rest.'; on=false; btn.textContent='Start speaking'; };
+  rec.onend=function(){ on=false; btn.textContent='Start speaking'; };
+  btn.onclick=function(){ if(on){ rec.stop(); return; } try{ rec.start(); on=true; btn.textContent='Stop'; msg.textContent='Listening. Tap Stop when you are done.'; }catch(err){ msg.textContent='Could not start the microphone. Check the browser permission.'; } };
+})();
+</script>
+"""
+
+CV_COACH_HTML = r"""
+<div class="card"><h2>KOJA career coach</h2>
+<p class="small">Choose a mode. The coach asks one question at a time. Use only true details: KOJA does not invent facts.</p>
+<div class="row"><label>Mode</label> <select id="coachMode"><option value="guide">Guide me through my CV</option><option value="mock">Mock interview</option></select></div>
+<label>Job you want (for the mock interview)</label><input id="coachRole" maxlength="120" placeholder="e.g. Clinic Manager">
+<div id="coachLog" style="max-height:420px;overflow:auto;margin-top:12px"></div>
+<label>Your answer</label><textarea id="coachInput" rows="3" maxlength="1500"></textarea>
+<div class="row" style="margin-top:8px"><button class="btn" type="button" id="coachSend">Send</button>
+<button class="btn secondary" type="button" id="coachFinish" style="display:none">Build my CV from this chat</button> <span class="small" id="coachMsg"></span></div>
+</div>
+<form id="coachFinishForm" method="post" action="{{ url_for('cv_coach_finish') }}" style="display:none"><textarea name="transcript"></textarea></form>
+<script>
+(function(){
+  var log=document.getElementById('coachLog'), input=document.getElementById('coachInput'), send=document.getElementById('coachSend');
+  var msg=document.getElementById('coachMsg'), mode=document.getElementById('coachMode'), role=document.getElementById('coachRole');
+  var fin=document.getElementById('coachFinish'), finForm=document.getElementById('coachFinishForm');
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var turns=[], candidateTurns=0;
+  function bubble(who,text){
+    var d=document.createElement('div'); d.style.cssText='margin:8px 0;padding:10px 12px;border-radius:10px;white-space:pre-wrap;'+(who==='me'?'background:rgba(128,128,128,.18);margin-left:20%':'border:1px solid rgba(128,128,128,.35);margin-right:10%');
+    d.textContent=text; log.appendChild(d); log.scrollTop=log.scrollHeight;
+  }
+  function refreshFinish(){ fin.style.display=(mode.value==='guide'&&candidateTurns>=4)?'inline-block':'none'; }
+  function ask(){
+    send.disabled=true; msg.textContent='KOJA is thinking...';
+    fetch('/cv/coach/reply',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},credentials:'same-origin',body:JSON.stringify({mode:mode.value,role:role.value,messages:turns})})
+      .then(function(r){ return r.json().catch(function(){ return {ok:false,error:'The reply could not be read. Try again.'}; }); })
+      .then(function(d){ send.disabled=false; if(!d.ok){ msg.textContent=d.error||'KOJA could not reply.'; return; }
+        msg.textContent=''; turns.push({role:'assistant',content:d.reply}); bubble('coach',d.reply); refreshFinish(); })
+      .catch(function(){ send.disabled=false; msg.textContent='Network error. Try again.'; });
+  }
+  send.onclick=function(){
+    var t=input.value.trim(); if(!t) return; input.value='';
+    turns.push({role:'user',content:t}); candidateTurns++; bubble('me',t); ask();
+  };
+  mode.onchange=function(){ turns=[]; log.textContent=''; candidateTurns=0; refreshFinish(); ask(); };
+  fin.onclick=function(){
+    var parts=turns.filter(function(x){ return x.role==='user'; }).map(function(x){ return x.content; });
+    finForm.elements.transcript.value=parts.join('\n'); finForm.submit();
+  };
+  ask();
+})();
+</script>
+"""
+
+CV_MATCH_HTML = r"""
+<div class="card"><h2>Jobs that match {{ cv_name or 'your CV' }}</h2>
+<p class="small">KOJA compares the job titles and descriptions in its collected vacancy feed ({{ checked }} checked) with the words in your CV. It is a quick guide, not a guarantee. Read each advert before you apply.</p>
+{% if not matches %}<p>No open vacancies matched this CV yet. Add more skills or experience, then try again.</p>{% endif %}
+{% for m in matches %}<div class="card" style="margin:10px 0"><h3>{{ m.title }}</h3>
+<p class="small">{{ m.source or 'Vacancy feed' }}{% if m.country %} · {{ m.country }}{% endif %}</p>
+<p><strong>Match: {{ m.score }}%</strong></p>
+{% if m.hits %}<p class="small">Matches your CV: {{ m.hits|join(', ') }}</p>{% endif %}
+{% if m.missing %}<p class="small">To strengthen: {{ m.missing|join(', ') }}</p>{% endif %}
+<div class="actions"><a class="btn secondary" href="{{ url_for('cv_edit', cid=cid, target=m.title) }}">Tailor my CV for this job</a>{% if m.url %} <a class="btn" href="{{ m.url }}" target="_blank" rel="noopener">View advert</a>{% endif %}</div></div>
+{% endfor %}
+<a class="btn secondary" href="{{ url_for('cv_view', cid=cid) }}">Back to my CV</a></div>
+"""
+
 
 
 # ============================================================
