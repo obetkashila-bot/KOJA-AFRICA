@@ -10293,6 +10293,7 @@ def admin():
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}"> Google Search & Distribution</a>
+<a class="btn success" href="{{ url_for('admin_resources') }}">Resource research and add sources</a>
 <a class="btn success" href="{{ url_for('music_admin') }}">KOJA MUSIC Management</a>
 </div></div>
 """,counts=counts)
