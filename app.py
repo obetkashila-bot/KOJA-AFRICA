@@ -3799,14 +3799,16 @@ def documents():
         subject = clean(request.form.get("subject"))
         author = clean(request.form.get("author"))
         tags = clean(request.form.get("tags"))
-        file = request.files.get("file")
+        file = next((x for x in request.files.getlist("file") if x and x.filename), None)
+        if not title and file and file.filename:
+            title = clean(file.filename.rsplit(".", 1)[0])[:180] or "Document"
         if not title:
             flash("Enter a document title.", "danger")
             return redirect(url_for("documents"))
         if not file or not file.filename:
             flash("Choose a document file.", "danger")
             return redirect(url_for("documents"))
-        uploaded, error = upload_storage(file, "documents", public=False)
+        uploaded, error = upload_storage(file, "documents", public=False, allowed=ALLOWED_EXTENSIONS | {"xlsx", "csv"})
         if error:
             flash("Document upload failed: " + str(error)[:500], "danger")
             return redirect(url_for("documents"))
@@ -3814,7 +3816,7 @@ def documents():
             "id": str(uuid.uuid4()), "title": title, "description": description,
             "category": category, "user_id": user.get("id"),
             "file_name": uploaded["file_name"], "file_path": uploaded["path"],
-            "file_url": uploaded["path"], "approval_status": "pending",
+            "file_url": uploaded["path"], "approval_status": "approved" if user.get("is_admin") else "pending",
             "is_public": False, "is_active": True, "created_at": utc_now(),
             "updated_at": utc_now()
         }
@@ -3922,7 +3924,7 @@ def documents():
   <section class="docs-section" id="library"><div class="docs-section-head"><h2>Your Library</h2></div><div class="doc-strip"><div class="doc-mini"><div class="doc-mini-cover">S</div><div class="doc-mini-info"><strong>Saved Documents</strong><span id="savedCount">Bookmarked for later</span></div></div><div class="doc-mini"><div class="doc-mini-cover">R</div><div class="doc-mini-info"><strong>Recently Opened</strong><span>Documents you viewed recently</span></div></div><div class="doc-mini"><div class="doc-mini-cover">U</div><div class="doc-mini-info"><strong>My Uploads</strong><span>Your submitted documents</span></div></div></div></section>
 </div>
 
-<div class="docs-modal" id="uploadModal" onclick="if(event.target===this)this.classList.remove('open')"><div class="docs-modal-panel"><div class="docs-modal-head"><strong>Upload your document</strong><button class="viewer-btn" type="button" onclick="document.getElementById('uploadModal').classList.remove('open')">×</button></div><form method="post" enctype="multipart/form-data"><div class="upload-drop" onclick="document.getElementById('docUploadFile').click()"><strong>Drag & Drop / Choose File</strong><span id="docUploadName">PDF, Word, TXT, images · maximum 15 MB</span><input class="upload-file" id="docUploadFile" name="file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required></div><div class="upload-grid" style="margin-top:14px"><div><label>Title</label><input name="title" maxlength="220" required></div><div><label>Category</label><select name="category"><option>Academic</option><option>Research</option><option>Notes</option><option>Books</option><option>Professional</option><option>Other</option></select></div><div><label>Subject</label><input name="subject" maxlength="180" placeholder="e.g. Psychology"></div><div><label>Author</label><input name="author" maxlength="180"></div><div class="full"><label>Tags</label><input name="tags" maxlength="500" placeholder="e.g. adolescence, Piaget, revision"></div><div class="full"><label>Description</label><textarea name="description" maxlength="4000" rows="4" placeholder="What is this document about?"></textarea></div></div><div class="docs-actions" style="margin-bottom:0"><button class="btn" type="submit">Submit for Approval</button><button class="btn secondary" type="button" onclick="document.getElementById('uploadModal').classList.remove('open')">Cancel</button></div><p class="small">Processing → AI indexing → Awaiting approval → Approved</p></form></div></div>
+<div class="docs-modal" id="uploadModal" onclick="if(event.target===this)this.classList.remove('open')"><div class="docs-modal-panel"><div class="docs-modal-head"><strong>Upload your document</strong><button class="viewer-btn" type="button" onclick="document.getElementById('uploadModal').classList.remove('open')">×</button></div><form method="post" enctype="multipart/form-data"><div class="upload-drop" onclick="document.getElementById('docUploadFile').click()"><strong>Drag & Drop / Choose File</strong><span id="docUploadName">PDF, Word, TXT, images · maximum 15 MB</span><input class="upload-file" id="docUploadFile" name="file" type="file" accept=".pdf,.doc,.docx,.xlsx,.csv,.txt,.jpg,.jpeg,.png,.webp,image/*"></div><p class="small" style="margin-top:8px">Fill in the title and details first. Choosing a file or taking a photo uploads it automatically.</p><label class="btn secondary" style="cursor:pointer;margin-top:8px">Take a photo<input type="file" id="docPhoto" name="file" accept="image/*" capture="environment" style="display:none"></label><div class="upload-grid" style="margin-top:14px"><div><label>Title</label><input name="title" maxlength="220" required></div><div><label>Category</label><select name="category"><option>Academic</option><option>Research</option><option>Notes</option><option>Books</option><option>Professional</option><option>Other</option></select></div><div><label>Subject</label><input name="subject" maxlength="180" placeholder="e.g. Psychology"></div><div><label>Author</label><input name="author" maxlength="180"></div><div class="full"><label>Tags</label><input name="tags" maxlength="500" placeholder="e.g. adolescence, Piaget, revision"></div><div class="full"><label>Description</label><textarea name="description" maxlength="4000" rows="4" placeholder="What is this document about?"></textarea></div></div><div class="docs-actions" style="margin-bottom:0"><button class="btn" type="submit">Submit for Approval</button><button class="btn secondary" type="button" onclick="document.getElementById('uploadModal').classList.remove('open')">Cancel</button></div><p class="small">Processing → AI indexing → Awaiting approval → Approved</p></form></div></div>
 
 <div class="docs-viewer" id="docViewer"><div class="viewer-head"><button class="viewer-btn" type="button" onclick="closeKOJADocument()">Close</button><strong id="viewerTitle">KOJA Document</strong><a id="viewerDownload" class="viewer-btn viewer-download" href="#">Download</a></div><div class="viewer-tabs"><button id="viewerTabDoc" class="active" type="button" onclick="showViewerTab('doc')">Document</button><button id="viewerTabAI" type="button" onclick="showViewerTab('ai')">AI</button></div><div class="viewer-body show-doc" id="viewerBody"><div class="viewer-doc"><iframe id="viewerFrame" title="KOJA document viewer"></iframe></div><aside class="viewer-ai"><div class="viewer-ai-head"><h3>Ask about this document</h3><p id="viewerSubtitle">KOJA AI answers from the selected document.</p></div><div class="viewer-ai-body"><div class="ai-prompts"><button onclick="runViewerAI('summarize')">Summarise</button><button onclick="runViewerAI('study_questions')">Exam questions</button><button onclick="runViewerAI('explain')">Explain topic</button><button onclick="runViewerAI('key_points')">Important definitions</button><button onclick="runViewerAI('research')">Research analysis</button></div><textarea id="viewerQuestion" placeholder="Ask anything about this document..."></textarea><div style="margin-top:8px"><button class="btn" type="button" onclick="runViewerAI('ask')">Ask KOJA AI</button></div><div class="viewer-answer" id="viewerAnswer" style="display:none"></div></div></aside></div></div>
 
@@ -3936,7 +3938,7 @@ async function runViewerAI(action){const id=KOJA_DOCS.current;if(!id)return;cons
 function saveKOJADoc(id,title){let a=[];try{a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]')}catch(e){};if(!a.some(x=>x.id===id)){a.unshift({id,title,at:Date.now()});localStorage.setItem('koja_doc_saved',JSON.stringify(a.slice(0,100)));}document.getElementById('savedCount').textContent=a.length+' saved document'+(a.length===1?'':'s');}
 async function shareKOJADoc(id,title){const url=location.origin+'/documents/view/'+encodeURIComponent(id);if(navigator.share){try{await navigator.share({title:title||'KOJA Document',url})}catch(e){}}else{try{await navigator.clipboard.writeText(url);alert('Document link copied.')}catch(e){alert(url)}}}
 function viewDocDetails(id){const card=document.querySelector('[data-document-id="'+CSS.escape(id)+'"]');if(card)alert(card.dataset.title+'\n\nOpen the document to read it with KOJA AI.');}
-(function(){const f=document.getElementById('docUploadFile');if(f)f.addEventListener('change',function(){document.getElementById('docUploadName').textContent=this.files[0]?this.files[0].name:'PDF, Word, TXT, images · maximum 15 MB'});const saved=document.getElementById('savedCount');try{const a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]');saved.textContent=a.length+' saved document'+(a.length===1?'':'s')}catch(e){};const last=JSON.parse(localStorage.getItem('koja_doc_last')||'null');const strip=document.getElementById('continueStrip');if(last&&strip){strip.innerHTML='<a class="doc-mini" href="javascript:openKOJADocument('+JSON.stringify(last.id)+','+JSON.stringify(last.title)+')"><div class="doc-mini-cover">↻</div><div class="doc-mini-info"><strong>'+String(last.title).replace(/</g,'&lt;')+'</strong><span>Continue where you left off</span></div></a>'}})();
+(function(){function docPick(input){if(!input.files||!input.files.length)return;document.getElementById('docUploadName').textContent=input.files[0].name;var form=input.form;var t=form.querySelector('input[name=title]');if(t&&!t.value.trim()){t.value=input.files[0].name.replace(/\.[^.]+$/,'').slice(0,160);}form.submit();}const f=document.getElementById('docUploadFile');if(f)f.addEventListener('change',function(){docPick(this)});const ph=document.getElementById('docPhoto');if(ph)ph.addEventListener('change',function(){docPick(this)});const saved=document.getElementById('savedCount');try{const a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]');saved.textContent=a.length+' saved document'+(a.length===1?'':'s')}catch(e){};const last=JSON.parse(localStorage.getItem('koja_doc_last')||'null');const strip=document.getElementById('continueStrip');if(last&&strip){strip.innerHTML='<a class="doc-mini" href="javascript:openKOJADocument('+JSON.stringify(last.id)+','+JSON.stringify(last.title)+')"><div class="doc-mini-cover">↻</div><div class="doc-mini-info"><strong>'+String(last.title).replace(/</g,'&lt;')+'</strong><span>Continue where you left off</span></div></a>'}})();
 </script>
 """, categories=categories, counts=counts, visible=visible, q=q)
 
@@ -24884,6 +24886,9 @@ def _res_gutendex(query, get):
 
 
 RES_CONNECTORS = {"openalex": _res_openalex, "gutendex": _res_gutendex}
+RES_CONNECTOR_NAMES = {"openalex": "OpenAlex (open-access works)", "gutendex": "Project Gutenberg (via Gutendex)"}
+RES_CONNECTOR_URLS = {"openalex": "https://api.openalex.org/works", "gutendex": "https://gutendex.com/books/"}
+RES_SOURCE_TEST_QUERY = "open access research"
 
 # Topics the system searches each day, rotating through the list. Admins can change this list in code.
 RES_AUTO_QUERIES = [
@@ -25027,6 +25032,8 @@ def admin_resources():
     filters = {"status": status} if status else None
     rows = db_select("koja_discovered_resources", filters=filters, order="discovered_at.desc", limit=200) or []
     sources = db_select("koja_resource_sources", limit=20) or []
+    listed = {str(s.get("id")) for s in sources}
+    addable = {k: RES_CONNECTOR_NAMES.get(k, k) for k in RES_CONNECTORS if k not in listed}
     return render_page("Resource research", r'''<div class="card"><h2>Resource research</h2>
 <p>The system searches on its own each day and publishes items with an open licence. Items with an unclear licence wait here. Nothing is downloaded or copied.</p>
 <form method="post" action="{{ url_for('admin_resources_run') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
@@ -25040,7 +25047,14 @@ def admin_resources():
 <div class="card"><h3>Sources</h3>{% for s in sources %}
 <form method="post" action="{{ url_for('admin_resource_source_toggle', sid=s.id) }}" style="margin:6px 0"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
 <strong>{{ s.name }}</strong> · {{ 'enabled' if s.enabled else 'paused' }} <span class="small">{{ s.licence_note }}</span>
-<button class="btn secondary">{{ 'Pause' if s.enabled else 'Enable' }}</button></form>{% endfor %}</div>
+<button class="btn secondary">{{ 'Pause' if s.enabled else 'Enable' }}</button></form>{% endfor %}
+<h4 style="margin-top:14px">Add a source</h4>
+{% if addable %}<p class="small">Only the built-in, reviewed connectors can be added. Each is test-run automatically when added, and it starts paused.</p>
+<form method="post" action="{{ url_for('admin_resource_source_add') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<select name="connector">{% for k, v in addable.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select>
+<button class="btn">Add and check automatically</button></form>
+{% else %}<p class="small">Every built-in source is already listed.</p>{% endif %}
+</div>
 <div class="card"><h3>Discovered</h3>
 <p><a href="{{ url_for('admin_resources') }}">All</a> · <a href="{{ url_for('admin_resources', status='new') }}">New</a> · <a href="{{ url_for('admin_resources', status='approved') }}">Approved</a> · <a href="{{ url_for('admin_resources', status='rejected') }}">Rejected</a></p>
 {% for r in rows %}<div class="card"><strong>{{ r.title }}</strong> <span class="small">({{ r.status }})</span>
@@ -25050,7 +25064,7 @@ def admin_resources():
 {% if r.status != 'approved' %}<form method="post" action="{{ url_for('admin_resource_review', rid=r.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn" name="action" value="approve">Approve</button></form>{% endif %}
 {% if r.status != 'rejected' %}<form method="post" action="{{ url_for('admin_resource_review', rid=r.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn secondary" name="action" value="reject">Reject</button></form>{% endif %}
 </div>{% else %}<p>Nothing here yet. Run a search.</p>{% endfor %}</div>''',
-        rows=rows, sources=sources, settings=_res_settings(), schedules=RES_SCHEDULES)
+        rows=rows, sources=sources, settings=_res_settings(), schedules=RES_SCHEDULES, addable=addable)
 
 
 @app.route("/admin/resources/schedule", methods=["POST"])
@@ -25099,6 +25113,38 @@ def admin_resource_review(rid):
     else:
         _res_audit(actor, "review_" + action, {"resource_id": rid})
         flash("Resource %sd." % action, "success")
+    return redirect(url_for("admin_resources"))
+
+
+@app.route("/admin/resources/sources/add", methods=["POST"])
+@admin_required
+def admin_resource_source_add():
+    key = clean(request.form.get("connector"))
+    if key not in RES_CONNECTORS:
+        flash("Only the built-in, reviewed connectors can be added. Web addresses cannot be added as sources.", "warning")
+        return redirect(url_for("admin_resources"))
+    if first_row("koja_resource_sources", {"id": key}):
+        flash("That source is already listed.", "warning")
+        return redirect(url_for("admin_resources"))
+    actor = current_user().get("id")
+    try:
+        items = RES_CONNECTORS[key](RES_SOURCE_TEST_QUERY, _res_get_json)
+    except Exception:
+        logger.warning("resource source check failed: %s", key)
+        flash("The source could not be reached, so it was not added. Try again later.", "warning")
+        return redirect(url_for("admin_resources"))
+    rows = [r for r in (_res_clean_row(i) for i in (items or []) if isinstance(i, dict)) if r]
+    open_count = sum(1 for r in rows if _res_auto_publishable(r.get("licence")))
+    note = ("Checked automatically on %s: %d sample items, %d with an open licence. "
+            "Review the licences before enabling.") % (utc_now()[:10], len(rows), open_count)
+    _r, err = db_insert("koja_resource_sources", {"id": key, "name": RES_CONNECTOR_NAMES.get(key, key),
+                                                  "base_url": RES_CONNECTOR_URLS.get(key, ""),
+                                                  "licence_note": note, "enabled": False, "updated_at": utc_now()})
+    if err:
+        flash("The source could not be saved. Please try again.", "warning")
+        return redirect(url_for("admin_resources"))
+    _res_audit(actor, "source_added", {"source_id": key, "sample": len(rows), "open_licence": open_count})
+    flash("Source added and paused. It was checked automatically. Enable it once you are happy with its licence notes.", "success")
     return redirect(url_for("admin_resources"))
 
 
