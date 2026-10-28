@@ -1069,8 +1069,16 @@ nav{background:linear-gradient(180deg,var(--nav-2),var(--nav));color:#fff;paddin
 .brand-mark{width:34px;height:34px;border-radius:10px;display:inline-grid;place-items:center;background:linear-gradient(135deg,var(--accent-2),var(--gold));box-shadow:0 6px 18px rgba(0,0,0,.25);animation:logoFloat 4s ease-in-out infinite}
 .brand-mark svg{width:22px;height:22px}
 .brand-name{white-space:nowrap}
-.menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);color:#fff;border-radius:10px;font-weight:700;cursor:pointer}
-.menu-toggle:hover{background:rgba(255,255,255,.16);transform:none;box-shadow:none}
+.menu-toggle{display:none;width:38px;height:38px;margin:0;padding:0;background:transparent;border:0;color:#fff;border-radius:50%;cursor:pointer;align-items:center;justify-content:center}
+.menu-toggle:hover{background:rgba(255,255,255,.12);transform:none;box-shadow:none}
+.nav-icon{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;margin:0;background:transparent;border:0;border-radius:50%;color:#e8eef7;cursor:pointer;flex:0 0 auto}
+.nav-icon:hover{background:rgba(255,255,255,.12);color:#fff}
+.menu-toggle svg,.nav-icon svg{width:22px;height:22px;display:block}
+.nav-ico{width:18px;height:18px;flex:0 0 auto;display:block}
+.nav-top{display:inline-flex;align-items:center;gap:6px}
+.dropdown .nav-ico{color:var(--muted,#5b6b82)}
+.menu-group>button.nav-icon{padding:0;font-size:0}
+.nav-icon:focus-visible,.menu-toggle:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .nav-links{display:flex;align-items:center;gap:2px;flex-wrap:nowrap}
 nav a{color:#e8eef7;text-decoration:none;padding:8px 7px;border-radius:9px;font-size:14px;font-weight:500;white-space:nowrap;transition:background .18s ease,color .18s ease}
 nav a:hover{background:rgba(255,255,255,.1);color:#fff}
@@ -1087,7 +1095,7 @@ nav a:hover{background:rgba(255,255,255,.1);color:#fff}
 .menu-group>button:hover{background:rgba(255,255,255,.1);color:#fff;transform:none;box-shadow:none}
 .dropdown{display:none;position:absolute;right:0;top:calc(100% + 8px);min-width:220px;background:var(--surface);border-radius:12px;padding:6px;box-shadow:0 18px 44px rgba(2,8,20,.28);border:1px solid var(--border)}
 .dropdown.open{display:block;animation:menuDrop .16s ease both}
-.dropdown a{display:block;color:var(--text)!important;padding:10px 12px;white-space:nowrap;border-radius:8px;font-size:14.5px}
+.dropdown a{display:flex;align-items:center;gap:10px;color:var(--text)!important;padding:10px 12px;white-space:nowrap;border-radius:8px;font-size:14.5px}
 .dropdown a:hover{background:var(--surface-2)}
 @keyframes menuDrop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 
@@ -1224,6 +1232,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
   .actions .btn,.actions button{width:100%}
 }
 @media(min-width:761px){.nav-links{display:flex!important}}
+@media(min-width:761px) and (max-width:1199px){.nav-top .nav-label{display:none}.nav-top{padding:8px 9px}}
 </style>
 </head>
 <body>
@@ -1231,57 +1240,60 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
-<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu"> Menu</button>
+<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu" title="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 <div class="nav-links" id="navLinks">
-<a href="{{ url_for('home') }}">Home</a>
-<a href="{{ url_for('news_live_public') }}">Live News</a>
+<a class="nav-top" href="{{ url_for('home') }}" aria-label="Home" title="Home">{{ nav_icon('home') }}<span class="nav-label">Home</span></a>
+<a class="nav-top" href="{{ url_for('news_live_public') }}" aria-label="Live News" title="Live News">{{ nav_icon('radio') }}<span class="nav-label">Live News</span></a>
 {% if user %}
-<a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('services') }}">Services</a>
-<a href="{{ url_for('research') }}">Research</a>
-<a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
-<a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
-<a href="{{ '/market' }}">KOJA Market</a> {% if koja_live_now() %}<a href="{{ url_for('market_live') }}">Live Shop</a>{% endif %}
-<a href="{{ url_for('communication_nextgen') }}">Connect+</a>
-<a class="nexus-nav-link" href="{{ url_for('koja_nexus_home') }}">KOJA NEXUS</a>
+<a class="nav-top" href="{{ url_for('dashboard') }}" aria-label="Dashboard" title="Dashboard">{{ nav_icon('grid') }}<span class="nav-label">Dashboard</span></a>
+<a class="nav-top" href="{{ url_for('services') }}" aria-label="Services" title="Services">{{ nav_icon('wrench') }}<span class="nav-label">Services</span></a>
+<a class="nav-top" href="{{ url_for('research') }}" aria-label="Research" title="Research">{{ nav_icon('book') }}<span class="nav-label">Research</span></a>
+<a class="nav-top" href="{{ url_for('ai_nextgen') }}" aria-label="KOJA AI" title="KOJA AI">{{ nav_icon('sparkles') }}<span class="nav-label">KOJA AI</span></a>
+<a class="notification-bell nav-top" href="{{ url_for('notifications_page') }}" aria-label="Notifications">{{ nav_icon('bell') }}<span class="nav-label">Notifications</span> <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
+<a class="nav-top" href="{{ '/market' }}" aria-label="KOJA Market" title="KOJA Market">{{ nav_icon('bag') }}<span class="nav-label">KOJA Market</span></a> {% if koja_live_now() %}<a class="nav-top" href="{{ url_for('market_live') }}" aria-label="Live Shop" title="Live Shop">{{ nav_icon('video') }}<span class="nav-label">Live Shop</span></a>{% endif %}
+<a class="nav-top" href="{{ url_for('communication_nextgen') }}" aria-label="Connect+" title="Connect+">{{ nav_icon('users') }}<span class="nav-label">Connect+</span></a>
+<a class="nav-top" class="nexus-nav-link" href="{{ url_for('koja_nexus_home') }}" aria-label="KOJA NEXUS" title="KOJA NEXUS">{{ nav_icon('network') }}<span class="nav-label">KOJA NEXUS</span></a>
 <div class="menu-group">
-<button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
+<button type="button" id="moreMenuButton" class="nav-icon" aria-expanded="false" aria-haspopup="true" aria-label="More options" title="More options"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
 <div class="dropdown" id="moreMenu" role="menu">
-<a role="menuitem" href="{{ url_for('questions') }}">Questions</a>
-<a role="menuitem" href="{{ url_for('assignments') }}">Assignments</a>
-{% if user %}<a role="menuitem" href="{{ url_for('pb_dashboard') }}">Proposal Builder</a>{% endif %}
-<a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
-<a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
-<a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
-<a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
-<a role="menuitem" href="{{ url_for('music_home') }}">KOJA MUSIC</a>
-{% if user and user.role in ['artist','musician','music_artist'] %}<a role="menuitem" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('music_admin') }}">MUSIC Admin</a><a role="menuitem" href="{{ url_for('news_live_admin') }}">News Live Studio</a><a role="menuitem" href="{{ url_for('bh_admin') }}">Business Hub Admin</a>{% endif %}
-<a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
-<a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
-<a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
-<a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
-<a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
-<a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
-<a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
-<a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
+<a role="menuitem" href="{{ url_for('questions') }}">{{ nav_icon('help') }}<span class="nav-label">Questions</span></a>
+<a role="menuitem" href="{{ url_for('assignments') }}">{{ nav_icon('clipboard') }}<span class="nav-label">Assignments</span></a>
+{% if user %}<a role="menuitem" href="{{ url_for('pb_dashboard') }}">{{ nav_icon('filetext') }}<span class="nav-label">Proposal Builder</span></a>{% endif %}
+<a role="menuitem" href="{{ url_for('public_feed') }}">{{ nav_icon('globe') }}<span class="nav-label">Public</span></a>
+<a role="menuitem" href="{{ url_for('news_nextgen') }}">{{ nav_icon('newspaper') }}<span class="nav-label">News</span></a>
+<a role="menuitem" href="{{ url_for('media_nextgen') }}">{{ nav_icon('image') }}<span class="nav-label">Media</span></a>
+<a role="menuitem" href="{{ url_for('public_videos') }}">{{ nav_icon('play') }}<span class="nav-label">Videos</span></a>
+<a role="menuitem" href="{{ url_for('music_home') }}">{{ nav_icon('music') }}<span class="nav-label">KOJA MUSIC</span></a>
+{% if user and user.role in ['artist','musician','music_artist'] %}<a role="menuitem" href="{{ url_for('music_studio') }}">{{ nav_icon('music') }}<span class="nav-label">MUSIC Studio</span></a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('music_admin') }}">{{ nav_icon('shield') }}<span class="nav-label">MUSIC Admin</span></a><a role="menuitem" href="{{ url_for('news_live_admin') }}">{{ nav_icon('video') }}<span class="nav-label">News Live Studio</span></a><a role="menuitem" href="{{ url_for('bh_admin') }}">{{ nav_icon('briefcase') }}<span class="nav-label">Business Hub Admin</span></a>{% endif %}
+<a role="menuitem" href="{{ url_for('marketplace') }}">{{ nav_icon('tag') }}<span class="nav-label">Digital Marketplace</span></a>
+<a role="menuitem" href="{{ url_for('connect') }}">{{ nav_icon('message') }}<span class="nav-label">Communication</span></a>
+<a role="menuitem" href="{{ url_for('professional_communication') }}">{{ nav_icon('briefcase') }}<span class="nav-label">Professional Communication</span></a>
+<a role="menuitem" href="{{ url_for('deliveries') }}">{{ nav_icon('package') }}<span class="nav-label">Deliveries</span></a>
+<a role="menuitem" href="{{ url_for('drivers') }}">{{ nav_icon('car') }}<span class="nav-label">Drivers</span></a>
+<a role="menuitem" href="{{ url_for('koja_cloud_page') }}">{{ nav_icon('cloud') }}<span class="nav-label">KOJA Cloud</span></a>
+<a role="menuitem" href="{{ url_for('settings') }}">{{ nav_icon('sliders') }}<span class="nav-label">Settings</span></a>
+{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">{{ nav_icon('pin') }}<span class="nav-label">Driver Dashboard</span></a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">{{ nav_icon('shield') }}<span class="nav-label">Admin</span></a><a role="menuitem" href="{{ url_for('admin_market') }}">{{ nav_icon('bag') }}<span class="nav-label">KOJA Market Admin</span></a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">{{ nav_icon('tag') }}<span class="nav-label">Digital Marketplace Admin</span></a>{% endif %}
+<a role="menuitem" href="{{ url_for('logout') }}">{{ nav_icon('logout') }}<span class="nav-label">Logout</span></a>
 </div></div>
 {% else %}
 <a href="{{ url_for('login') }}">Login</a>
 <a href="{{ url_for('register') }}">Register</a>
 {% endif %}
+<a class="nav-icon nav-account" href="{{ url_for('settings') if user else url_for('login') }}" aria-label="{{ 'My account' if user else 'Log in' }}" title="{{ 'My account' if user else 'Log in' }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg></a>
 </div>
 </div>
 </nav>
 <script>
 (function(){
+ const MENU_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+ const CLOSE_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
  const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu');
- if(toggle){toggle.addEventListener('click',function(){const open=links.classList.toggle('open');toggle.setAttribute('aria-expanded',open);toggle.setAttribute('aria-label',open?'Close menu':'Open menu');toggle.innerHTML=open?' Close':' Menu';});}
+ if(toggle){toggle.addEventListener('click',function(){const open=links.classList.toggle('open');toggle.setAttribute('aria-expanded',open);toggle.setAttribute('aria-label',open?'Close menu':'Open menu');toggle.innerHTML=open?CLOSE_ICON:MENU_ICON;});}
  if(more&&drop){more.addEventListener('click',function(e){e.stopPropagation();const open=drop.classList.toggle('open');more.setAttribute('aria-expanded',open);});document.addEventListener('click',function(e){if(!e.target.closest('.menu-group')){drop.classList.remove('open');more.setAttribute('aria-expanded','false');}});}
  document.querySelectorAll('#navLinks a').forEach(function(a){a.addEventListener('click',function(){if(window.innerWidth<=760&&links.classList.contains('open')){links.classList.remove('open');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Open menu');toggle.innerHTML=' Menu';}});});
- window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML=' Menu');}});
+ window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML=MENU_ICON);}});
 })();
 </script>
 <script>
@@ -5531,7 +5543,8 @@ CV_LABELS = {
     "certifications": "Certifications and licences", "skills": "Skills", "references": "References", "template": "Template",
 }
 CV_MULTILINE = ("profile", "education", "experience", "certifications", "skills", "references")
-CV_PHOTO_MAX_BYTES = 300 * 1024
+CV_PHOTO_MAX_BYTES = 15 * 1024 * 1024      # any photo up to the upload limit is accepted (phone photos are often 3 to 8 MB)
+CV_PHOTO_STORED_MAX_BYTES = 300 * 1024     # stored size: the server shrinks the photo automatically to fit
 CV_BODY_SECTIONS = [("profile", "Professional profile"), ("experience", "Work experience"),
                     ("education", "Education"), ("certifications", "Certifications and licences"), ("skills", "Skills"), ("references", "References")]
 CV_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -5540,22 +5553,43 @@ CV_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
 
 def _cv_read_photo(file_storage):
-    """Passport-style photo as a data URL. Returns (data_url, error). No upload returns ("", "")."""
+    """Passport-style photo as a data URL. Returns (data_url, error). No upload returns ("", "").
+    Any JPG or PNG up to CV_PHOTO_MAX_BYTES is accepted. It is resized and re-encoded as JPEG so that it
+    fits in CV_PHOTO_STORED_MAX_BYTES before it is stored."""
     if not file_storage or not file_storage.filename:
         return "", ""
     import base64 as _b64
+    import io as _io
     raw = file_storage.read(CV_PHOTO_MAX_BYTES + 1)
     if not raw:
         return "", ""
     if len(raw) > CV_PHOTO_MAX_BYTES:
-        return "", "The photo is larger than 300 KB. Use a smaller image; about 600 x 800 pixels is plenty."
-    if raw.startswith(b"\xff\xd8\xff"):
-        mime = "image/jpeg"
-    elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        mime = "image/png"
-    else:
+        return "", "The photo is larger than 15 MB. Choose a smaller photo."
+    if not (raw.startswith(b"\xff\xd8\xff") or raw.startswith(b"\x89PNG\r\n\x1a\n")):
         return "", "The photo must be a JPG or PNG image."
-    return "data:%s;base64,%s" % (mime, _b64.b64encode(raw).decode("ascii")), ""
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(_io.BytesIO(raw))
+        img.load()
+        img = ImageOps.exif_transpose(img) or img
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            rgba = img.convert("RGBA")
+            flat = Image.new("RGB", rgba.size, (255, 255, 255))
+            flat.paste(rgba, mask=rgba.split()[3])
+            img = flat
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception:
+        return "", "That photo could not be read. Try another JPG or PNG."
+    # Try a few sizes and qualities until the photo fits the stored limit.
+    for max_side, quality in ((1000, 88), (800, 85), (700, 80), (600, 75), (500, 70), (400, 60)):
+        scaled = img.copy()
+        scaled.thumbnail((max_side, max_side))
+        buf = _io.BytesIO()
+        scaled.save(buf, "JPEG", quality=quality, optimize=True)
+        if buf.tell() <= CV_PHOTO_STORED_MAX_BYTES:
+            return "data:image/jpeg;base64,%s" % _b64.b64encode(buf.getvalue()).decode("ascii"), ""
+    return "", "That photo is too detailed to shrink enough. Try a simpler or smaller photo."
 
 
 def _cv_read_form(form):
@@ -5645,7 +5679,7 @@ CV_FORM_HTML = r"""
 <label>Email *</label><input name="email" type="email" value="{{ data.email }}" required>
 <label>Address</label><input name="address" value="{{ data.address }}">
 <label>Template</label><select name="template">{% for k, v in templates.items() %}<option value="{{ k }}"{% if data.template == k %} selected{% endif %}>{{ v }}</option>{% endfor %}</select>
-<label>Profile photo (optional, passport style, JPG or PNG, under 300 KB)</label>
+<label>Profile photo (optional, passport style, JPG or PNG; large photos are made smaller automatically)</label>
 {% if data.photo %}<div style="margin:6px 0"><img src="{{ data.photo }}" alt="Current photo" style="width:110px;height:140px;object-fit:cover;border-radius:6px"> <label><input type="checkbox" name="remove_photo" value="1"> Remove photo</label></div>{% endif %}
 <input type="file" name="photo" accept="image/jpeg,image/png">
 <label>Professional profile</label><textarea name="profile" rows="4">{{ data.profile }}</textarea>
@@ -6416,7 +6450,7 @@ PROFILE_HTML = r"""
 <div class="hero"><h2>My profile</h2><p>Your bio, status, social links and community updates. Your profile stays private until you make it public.</p></div>
 <div class="card"><h3>Profile details</h3>
 <form method="post" action="{{ url_for('account_profile') }}" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-<label>Profile picture (JPG or PNG, under 300 KB)</label>
+<label>Profile picture (JPG or PNG; large photos are made smaller automatically)</label>
 {% if d.photo %}<div style="margin:6px 0"><img src="{{ d.photo }}" alt="Your profile picture" style="width:120px;height:120px;object-fit:cover;border-radius:50%"> <label><input type="checkbox" name="remove_photo" value="1"> Remove picture</label></div>{% endif %}
 <input type="file" name="photo" accept="image/jpeg,image/png">
 <label>Bio (up to {{ max_bio }} characters)</label><textarea name="bio" rows="4" maxlength="{{ max_bio }}">{{ d.bio or '' }}</textarea>
@@ -6430,7 +6464,7 @@ PROFILE_HTML = r"""
 {% if public %}<p class="small">Your public link: <a href="{{ url_for('profile_public', uid=uid) }}" target="_blank" rel="noopener">{{ url_for('profile_public', uid=uid) }}</a></p>{% endif %}
 </div>
 <div class="card"><h3>My photos ({{ photos|length }} of {{ photos_max }})</h3>
-<p class="small">JPG or PNG under 300 KB each. Photos show on your public profile when it is public.</p>
+<p class="small">JPG or PNG, up to 15 MB each. Large photos are made smaller automatically. Photos show on your public profile when it is public.</p>
 <form method="post" action="{{ url_for('account_profile_photo_add') }}" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
 <input type="file" name="gallery_photo" accept="image/jpeg,image/png">
 <input name="caption" maxlength="140" placeholder="Caption (optional)" style="margin-top:6px">
@@ -8397,6 +8431,11 @@ def driver_delivery_action(delivery_id, action):
     else:
         log_activity("delivery_status", f"Delivery {delivery.get('tracking_code')} changed to {status}.")
         _cm_event(delivery, status, note="by driver")
+        if delivery.get("tracking_code"):
+            try:
+                db_update("koja_market_delivery_jobs", {"tracking_code": delivery.get("tracking_code")}, {"status": status, "updated_at": utc_now()})
+            except Exception:
+                logger.exception("Market delivery job status sync failed")
         _msgs = {"accepted": "A driver accepted your delivery.", "picked_up": "Your package was picked up.", "in_transit": "Your package is on the way.",
                  "delivered": "The driver marked your package delivered. Please confirm receipt so the delivery can be completed."}
         if status in _msgs:
@@ -13573,7 +13612,7 @@ def admin_monetization():
 @app.route('/market/wallet')
 @login_required
 def seller_wallet():
-    uid=(current_user() or {}).get('id'); rows=db_select('koja_market_orders',{'seller_id':uid,'status':'eq.paid'},limit=500) or []
+    uid=(current_user() or {}).get('id'); rows=db_select('koja_market_orders',{'seller_id':uid,'status':'in.(paid,completed)'},limit=500) or []
     earned=sum(_money_value(x.get('seller_amount')) for x in rows); pending=db_select('koja_payout_requests',{'user_id':uid,'status':'pending'},limit=50) or []
     return render_page('Seller Wallet',r'''<div class="hero"><h1> Seller Wallet</h1><p>Marketplace earnings after KOJA commission.</p></div><div class="grid"><div class="card"><h2>Available earnings</h2><div style="font-size:34px;font-weight:800">{{ money(earned,'ZMW') }}</div></div><div class="card"><h2>Request payout</h2><form method="post" action="{{ url_for('seller_payout_request') }}"><input name="amount" type="number" min="10" step="0.01" max="{{ earned }}" required placeholder="Amount ZMW"><input name="phone" value="{{ user.phone or '' }}" required placeholder="Mobile-money number"><button class="btn">Request Payout</button></form></div></div><div class="card"><h2>Pending requests</h2>{% for x in pending %}<p>{{ money(x.amount,'ZMW') }} · {{ x.status }} · {{ x.created_at }}</p>{% else %}<p>No pending payout requests.</p>{% endfor %}</div>''',earned=earned,pending=pending,user=current_user() or {},money=market_money)
 
@@ -14357,6 +14396,9 @@ def complete_delivery(tracking_code):
         jobs=db_select('koja_market_delivery_jobs',{'tracking_code':tracking_code},limit=5) or []
         for j in jobs:
             db_update('koja_market_delivery_jobs',{'id':j.get('id')},{'status':'completed','completed_at':utc_now(),'updated_at':utc_now()})
+            order_row=first_row('koja_market_orders',{'id':j.get('order_id')}) if j.get('order_id') else None
+            if order_row and str(order_row.get('status') or '').lower()=='paid':
+                db_update('koja_market_orders',{'id':order_row.get('id')},{'status':'completed','updated_at':utc_now()})
     except Exception: logger.exception('Market delivery job completion sync failed')
     notify_user(delivery.get('driver_id'),'Delivery completed',f'The owner confirmed receipt. Delivery fee: ZMW {amount:.2f}. Payout status: {payout_status}.','delivery',delivery.get('id'),'/deliveries')
     notify_user(delivery.get('customer_id'),'Delivery completed',f'Your KOJA delivery {tracking_code} was confirmed as received. Driver payout status: {payout_status}.','delivery',delivery.get('id'),f'/track/{tracking_code}')
@@ -14993,6 +15035,58 @@ def _koja_live_now():
     return rooms
 
 app.jinja_env.globals['koja_live_now'] = _koja_live_now
+
+# ---- Header and menu icons (Lucide-style line icons, drawn inline; no external files) ----
+from markupsafe import Markup as _NavMarkup
+NAV_ICON_PATHS = {
+    "home": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/>',
+    "radio": '<path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19.1 4.9a10 10 0 0 1 0 14.2M4.9 19.1a10 10 0 0 1 0-14.2"/><circle cx="12" cy="12" r="2"/>',
+    "grid": '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    "wrench": '<path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 8-8z"/>',
+    "book": '<path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z"/><path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z"/>',
+    "sparkles": '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+    "bell": '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+    "bag": '<path d="M6 7h12l1 13H5z"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/>',
+    "video": '<rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4z"/>',
+    "users": '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.8.8 3 2.8 3 5.2"/>',
+    "network": '<circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M9.8 10.8 6.4 6.4M14.2 10.8l3.4-4.4M9.8 13.2l-3.4 4.4M14.2 13.2l3.4 4.4"/>',
+    "help": '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14"/><path d="M12 17.5h.01"/>',
+    "clipboard": '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1M9 11h6M9 15h6"/>',
+    "filetext": '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h8"/>',
+    "globe": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/>',
+    "newspaper": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h4M7 16h10M13 12h4"/>',
+    "image": '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-8 8"/>',
+    "play": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/>',
+    "music": '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+    "tag": '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+    "message": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    "briefcase": '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/>',
+    "package": '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+    "car": '<path d="M5 17h14M5 17a2 2 0 0 1-2-2v-4l2-5h14l2 5v4a2 2 0 0 1-2 2"/><circle cx="7.5" cy="17" r="1.5"/><circle cx="16.5" cy="17" r="1.5"/>',
+    "cloud": '<path d="M17.5 19a4.5 4.5 0 0 0 0-9 6 6 0 0 0-11.7 1.5A4 4 0 0 0 6.5 19z"/>',
+    "sliders": '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+    "pin": '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+    "shield": '<path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/>',
+    "logout": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+}
+def nav_icon(name):
+    """Small inline icon for the header and menus. Returns empty text for unknown names."""
+    body = NAV_ICON_PATHS.get(name)
+    if not body:
+        return ""
+    return _NavMarkup('<svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">%s</svg>' % body)
+app.jinja_env.globals['nav_icon'] = nav_icon
+# Label text -> icon name, used for the header links and the three-dot menu.
+NAV_LABEL_ICONS = {
+    "Home": "home", "Live News": "radio", "Dashboard": "grid", "Services": "wrench", "Research": "book",
+    "KOJA AI": "sparkles", "KOJA Market": "bag", "Live Shop": "video", "Connect+": "users", "KOJA NEXUS": "network",
+    "Questions": "help", "Assignments": "clipboard", "Proposal Builder": "filetext", "Public": "globe", "News": "newspaper",
+    "Media": "image", "Videos": "play", "KOJA MUSIC": "music", "MUSIC Studio": "music", "MUSIC Admin": "shield",
+    "News Live Studio": "video", "Business Hub Admin": "briefcase", "Digital Marketplace": "tag", "Communication": "message",
+    "Professional Communication": "briefcase", "Deliveries": "package", "Drivers": "car", "KOJA Cloud": "cloud",
+    "Settings": "sliders", "Driver Dashboard": "pin", "Admin": "shield", "KOJA Market Admin": "bag",
+    "Digital Marketplace Admin": "tag", "Logout": "logout",
+}
 
 @app.route('/market/live')
 def market_live():
@@ -23467,11 +23561,13 @@ def cm_order(oid):
     p = market_product(o.get("product_id")) or {}
     disputes = _cm_rows("koja_market_disputes", {"order_id": oid}, order="created_at.desc", limit=5)
     delivery = first_row("koja_market_delivery_jobs", {"order_id": oid}) if str(p.get("product_type")) != "digital" else None
+    can_cancel_paid = str(o.get("status")).lower() == "paid" and p.get("product_type") != "digital" and (not delivery or str(delivery.get("status") or "").lower() == "requested")
     return _cm_page("Order " + str(o.get("order_number")), r'''<div class="card"><a href="{{ url_for('cm_orders') }}">← My orders</a><h2>{{ p.title }}</h2>
 <p>Order <strong>{{ o.order_number }}</strong> · {{ o.quantity }} × · {{ money(o.total_amount, o.currency) }} · Status: <strong>{{ o.status }}</strong></p>
 {% if delivery %}<p>Delivery: <a href="{{ url_for('track_delivery', tracking_code=delivery.tracking_code) }}">{{ delivery.tracking_code }}</a> ({{ delivery.status }})</p>{% endif %}
 {% if is_buyer %}
  {% if o.status == 'pending' %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='cancel') }}">{{ csrf }}<button class="btn secondary">Cancel unpaid order</button></form>{% endif %}
+ {% if can_cancel_paid %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='cancel_paid') }}">{{ csrf }}<button class="btn secondary">Cancel before dispatch and request refund</button></form>{% endif %}
  {% if o.status in ['paid','shipped','processing'] and p.product_type != 'digital' %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='received') }}">{{ csrf }}<button class="btn success">I received this order</button></form>{% endif %}
  {% if o.status in ['paid','shipped','processing','completed'] and not disputes %}<form method="post" action="{{ url_for('cm_order_dispute', oid=o.id) }}">{{ csrf }}<select name="reason"><option>Item not received</option><option>Not as described</option><option>Damaged item</option><option>Digital file problem</option><option>Other</option></select><textarea name="details" maxlength="1000" placeholder="Tell us what went wrong" required></textarea><button class="btn danger">Report a problem / request refund</button></form>{% endif %}
 {% else %}
@@ -23479,7 +23575,7 @@ def cm_order(oid):
  {% if o.status in ['paid','processing'] and p.product_type != 'digital' %}<form method="post" action="{{ url_for('cm_order_action', oid=o.id, action='shipped') }}" style="display:inline">{{ csrf }}<button class="btn">Mark shipped / handed over</button></form>{% endif %}
 {% endif %}
 {% for d in disputes %}<div class="card"><strong>Dispute: {{ d.reason }}</strong> — {{ d.status }}{% if d.resolution %}<p>{{ d.resolution }}</p>{% endif %}</div>{% endfor %}</div>''',
-                    o=o, p=p, disputes=disputes, delivery=delivery, is_buyer=(uid == str(o.get("buyer_id"))))
+                    o=o, p=p, disputes=disputes, delivery=delivery, can_cancel_paid=can_cancel_paid, is_buyer=(uid == str(o.get("buyer_id"))))
 
 
 def _cm_restock(o):
@@ -23504,6 +23600,11 @@ def cm_order_action(oid, action):
     buyer, seller = uid == str(o.get("buyer_id")), uid == str(o.get("seller_id"))
     new = None
     if buyer and action == "cancel" and status == "pending": new = "cancelled"
+    elif buyer and action == "cancel_paid" and status == "paid":
+        job = first_row("koja_market_delivery_jobs", {"order_id": oid})
+        if job and str(job.get("status") or "").lower() != "requested":
+            flash("This order is already being delivered, so it cannot be cancelled. Confirm receipt or open a dispute instead.", "warning"); return redirect(url_for("cm_order", oid=oid))
+        new = "cancel_requested"
     elif buyer and action == "received" and status in ("paid", "shipped", "processing"): new = "completed"
     elif seller and action in CM_SELLER_STEPS and status in CM_SELLER_STEPS[action]:
         new = "shipped" if action in ("shipped", "ready") else "processing"
@@ -23520,7 +23621,17 @@ def cm_order_action(oid, action):
     if new == "completed":
         for l in _cm_rows("koja_market_ledger", {"order_id": oid}, limit=5):
             if str(l.get("status")) == "pending": db_update("koja_market_ledger", {"id": l["id"]}, {"status": "available"})
-    flash("Order %s." % new, "success")
+    if new == "cancel_requested":
+        # The existing admin dispute queue decides the refund, so money only moves through the same checked path.
+        db_insert("koja_market_disputes", {"id": str(uuid.uuid4()), "order_id": oid, "buyer_id": o.get("buyer_id"), "seller_id": o.get("seller_id"),
+                  "reason": "Cancelled before dispatch", "details": "Buyer cancelled a paid order before the seller started processing. Refund requested.",
+                  "status": "open", "created_at": utc_now()})
+        for l in _cm_rows("koja_market_ledger", {"order_id": oid}, limit=5):
+            if str(l.get("status")) in ("pending", "available"): db_update("koja_market_ledger", {"id": l["id"]}, {"status": "held"})
+        for job in _cm_rows("koja_market_delivery_jobs", {"order_id": oid}, limit=5):
+            db_update("koja_market_delivery_jobs", {"id": job["id"]}, {"status": "cancelled", "updated_at": utc_now()})
+            if job.get("tracking_code"): db_update("deliveries", {"tracking_code": job.get("tracking_code")}, {"status": "cancelled", "updated_at": utc_now()})
+    flash("Order %s." % ("cancellation sent to KOJA for refund" if new == "cancel_requested" else new), "success")
     return redirect(url_for("cm_order", oid=oid))
 
 
@@ -23570,6 +23681,8 @@ def cm_admin_disputes():
         else:
             for l in _cm_rows("koja_market_ledger", {"order_id": o["id"]}, limit=5):
                 if str(l.get("status")) == "held": db_update("koja_market_ledger", {"id": l["id"]}, {"status": "available"})
+            if str(o.get("status")).lower() == "cancel_requested":
+                db_update("koja_market_orders", {"id": o["id"]}, {"status": "paid", "updated_at": utc_now()})
         db_update("koja_market_disputes", {"id": d["id"]}, {"status": "resolved_" + decision, "resolution": result, "resolved_by": _cm_uid(), "resolved_at": utc_now()})
         for u in (o.get("buyer_id"), o.get("seller_id")):
             notify_user(u, "Dispute resolved", "Order %s: %s" % (o.get("order_number"), result[:140]), "market_order", o["id"], "/market/order/%s/view" % o["id"])
