@@ -96,7 +96,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
-RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:", "cvcoach:")
+RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:", "cvcoach:", "profile:")
 
 def _rate_limited(key, limit, window=60):
     # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
@@ -836,6 +836,9 @@ def admin_edit_unlock():
     if _rate_limited("adminunlock:" + user_id, 5, 900):
         return _admin_edit_page("Too many attempts. Wait 15 minutes and try again.")
     stored = _admin_edit_hash()
+    if not stored:
+        logger.error("ADMIN_EDIT_PASSWORD_HASH is not set, so the admin password cannot be checked")
+        return _admin_edit_page("The admin password has not been set on this server yet. The site owner must set the ADMIN_EDIT_PASSWORD_HASH setting and restart the app.")
     try:
         ok = bool(stored) and check_password_hash(stored, request.form.get("password") or "")
     except Exception:
@@ -1752,6 +1755,7 @@ def settings():
 <div class="grid">
 <div class="card"><h3>Account</h3><p><strong>Name:</strong> {{ user.name or "KOJA User" }}</p><p><strong>Email:</strong> {{ user.email or "Not provided" }}</p><p><strong>Role:</strong> {{ user.role or "student" }}</p><p class="small">KOJA Identity protects account identity, verification and security across connected services.</p><button class="btn secondary" type="button" onclick="activateEngine('identity',this)">Activate KOJA Identity</button></div>
 <div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option><option value="black" {% if prefs.theme == 'black' %}selected{% endif %}>Black</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form><form method="post" style="margin-top:6px"><input type="hidden" name="action" value="reset"><button class="btn secondary" type="submit">Reset to defaults</button></form></div>
+<div class="card"><h3>My profile</h3><p class="small">Your bio, status, social links and community updates. Private unless you make it public.</p><a class="btn" href="{{ url_for('account_profile') }}">Open my profile</a></div>
 <div class="card"><h3>Wallpaper</h3><p class="small">Each page has its own wallpaper by default. Choose one to use everywhere on this device. Wallpapers and photos are saved on this device only.</p><select id="kojaWallpaper" onchange="kojaSetWallpaper(this.value)"><option value="auto">Automatic (different per page)</option><option value="1">Wallpaper 1</option><option value="2">Wallpaper 2</option><option value="3">Wallpaper 3</option><option value="4">Wallpaper 4</option><option value="5">Wallpaper 5</option><option value="6">Wallpaper 6</option><option value="7">Wallpaper 7</option><option value="8">Wallpaper 8</option><option value="9">Wallpaper 9</option><option value="10">Wallpaper 10</option><option value="custom">My photo</option></select><div style="margin-top:12px"><label>Use a photo from your phone or library</label><input type="file" id="kojaWpFile" accept="image/*" onchange="kojaUploadWallpaper(this)" style="padding:8px"><p class="small" id="kojaWpMsg"></p><button class="btn secondary" type="button" onclick="kojaRemoveWallpaper()">Remove my photo</button></div><script>(function(){var s=document.getElementById("kojaWallpaper");try{var w=localStorage.getItem("koja_wallpaper");s.value=(w&&/^(10|[1-9]|custom)$/.test(w))?w:"auto";}catch(e){}})();function kojaMsg(t){var m=document.getElementById("kojaWpMsg");if(m)m.textContent=t;}function kojaSetWallpaper(v){if(v==="custom"){window.kojaWp.get().then(function(d){if(!d){kojaMsg("Upload a photo first.");document.getElementById("kojaWallpaper").value="auto";return;}try{localStorage.setItem("koja_wallpaper","custom");}catch(e){}location.reload();});return;}try{if(v==="auto"){localStorage.removeItem("koja_wallpaper");}else{localStorage.setItem("koja_wallpaper",v);}}catch(e){}location.reload();}function kojaUploadWallpaper(input){var f=input.files&&input.files[0];if(!f)return;kojaMsg("Saving photo…");window.kojaWp.compress(f).then(function(d){return window.kojaWp.put(d);}).then(function(){try{localStorage.setItem("koja_wallpaper","custom");}catch(e){}location.reload();}).catch(function(e){kojaMsg((e&&e.message)||"Could not save the photo on this device.");});}function kojaRemoveWallpaper(){window.kojaWp.del().then(function(){try{localStorage.removeItem("koja_wallpaper");}catch(e){}location.reload();}).catch(function(){kojaMsg("Could not remove the photo.");});}</script></div>
 <div class="card"><h3>Notifications</h3><p>Choose which updates you receive and how: in the app, push, email or SMS.</p><a class="btn" href="{{ url_for('notification_settings') }}">Notification settings</a></div>
 <div class="card"><h3>Privacy and your data</h3><p>Read how KOJA uses your data, or request deletion of your account and data.</p><div class="actions"><a class="btn secondary" href="{{ url_for('public_privacy') }}">Privacy Policy</a><a class="btn secondary" href="{{ url_for('public_data_deletion') }}">Data deletion</a></div></div>
@@ -6250,6 +6254,217 @@ CV_MATCH_HTML = r"""
 <a class="btn secondary" href="{{ url_for('cv_view', cid=cid) }}">Back to my CV</a></div>
 """
 
+
+
+# ============================================================
+# KOJA profile: bio, status, social links and community updates (private unless the owner makes it public)
+# ============================================================
+PROFILE_TABLE = "koja_profile_details"
+PROFILE_UPDATES_TABLE = "koja_profile_updates"
+PROFILE_BIO_MAX = 500
+PROFILE_STATUS_MAX = 160
+PROFILE_UPDATE_MAX = 280
+PROFILE_LINK_HOSTS = {"facebook": ("facebook.com", "fb.com", "fb.watch"), "youtube": ("youtube.com", "youtu.be")}
+
+
+def _profile_link(value, kind):
+    """Returns (url, error). Only https links to the named platform are accepted."""
+    from urllib.parse import urlparse
+    v = str(value or "").strip()
+    if not v:
+        return "", ""
+    if len(v) > 300:
+        return None, "The %s link is too long." % kind
+    p = urlparse(v if "://" in v else "https://" + v)
+    host = (p.hostname or "").lower()
+    if p.scheme != "https" or not host:
+        return None, "Use a full https link for %s." % kind
+    if not any(host == h or host.endswith("." + h) for h in PROFILE_LINK_HOSTS[kind]):
+        return None, "That is not a %s address." % kind
+    return p.geturl(), ""
+
+
+def _profile_is_public(row):
+    return str((row or {}).get("is_public")).lower() in ("true", "t", "1")
+
+
+@app.route("/account/profile", methods=["GET", "POST"])
+@login_required
+def account_profile():
+    uid = str((current_user() or {}).get("id") or "")
+    if request.method == "POST":
+        bio = _cv_clean_text(request.form.get("bio"))[:PROFILE_BIO_MAX]
+        status_text = " ".join(str(request.form.get("status") or "").split())[:PROFILE_STATUS_MAX]
+        fb, fb_err = _profile_link(request.form.get("facebook"), "facebook")
+        yt, yt_err = _profile_link(request.form.get("youtube"), "youtube")
+        wa_raw = " ".join(str(request.form.get("whatsapp") or "").split())
+        wa = re.sub(r"[^0-9]", "", wa_raw)
+        wa_err = "" if not wa_raw or (7 <= len(wa) <= 15 and CV_PHONE_RE.match(wa_raw)) else \
+            "Enter the WhatsApp number with its country code, or leave it blank."
+        errors = [e for e in (fb_err, yt_err, wa_err) if e]
+        if errors:
+            flash(" ".join(errors), "warning")
+            return redirect(url_for("account_profile"))
+        photo, photo_err = _cv_read_photo(request.files.get("photo"))
+        if photo_err:
+            flash(photo_err, "warning")
+            return redirect(url_for("account_profile"))
+        current_photo = str((first_row(PROFILE_TABLE, {"user_id": uid}) or {}).get("photo") or "")
+        if request.form.get("remove_photo") == "1":
+            photo = ""
+        elif not photo:
+            photo = current_photo
+        payload = {"bio": bio, "status_text": status_text, "facebook_url": fb, "youtube_url": yt,
+                   "whatsapp": wa, "photo": photo if photo.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")) else "",
+                   "is_public": request.form.get("public") == "1", "updated_at": utc_now()}
+        if first_row(PROFILE_TABLE, {"user_id": uid}):
+            _r, err = db_update(PROFILE_TABLE, {"user_id": uid}, payload)
+        else:
+            _r, err = db_insert(PROFILE_TABLE, dict(payload, user_id=uid))
+        flash("Could not save your profile. Please try again." if err else "Profile saved.", "warning" if err else "success")
+        return redirect(url_for("account_profile"))
+    details = first_row(PROFILE_TABLE, {"user_id": uid}) or {}
+    updates = db_select(PROFILE_UPDATES_TABLE, filters={"user_id": uid}, order="created_at.desc", limit=50) or []
+    photos = db_select(PROFILE_PHOTOS_TABLE, filters={"user_id": uid}, order="created_at.desc", limit=PROFILE_PHOTOS_MAX) or []
+    return render_page("My profile", PROFILE_HTML, d=details, updates=updates, uid=uid, photos=photos, photos_max=PROFILE_PHOTOS_MAX,
+                       public=_profile_is_public(details), max_update=PROFILE_UPDATE_MAX, max_bio=PROFILE_BIO_MAX)
+
+
+PROFILE_PHOTOS_TABLE = "koja_profile_photos"
+PROFILE_PHOTOS_MAX = 12
+PROFILE_PHOTO_CAPTION_MAX = 140
+
+
+@app.route("/account/profile/photos", methods=["POST"])
+@login_required
+def account_profile_photo_add():
+    uid = str((current_user() or {}).get("id") or "")
+    data_url, err = _cv_read_photo(request.files.get("gallery_photo"))
+    if err:
+        flash(err, "warning")
+        return redirect(url_for("account_profile"))
+    if not data_url:
+        flash("Choose a photo to add.", "warning")
+        return redirect(url_for("account_profile"))
+    if len(db_select(PROFILE_PHOTOS_TABLE, filters={"user_id": uid}, limit=PROFILE_PHOTOS_MAX + 1) or []) >= PROFILE_PHOTOS_MAX:
+        flash("You can have up to %d photos. Delete one to add another." % PROFILE_PHOTOS_MAX, "warning")
+        return redirect(url_for("account_profile"))
+    caption = " ".join(str(request.form.get("caption") or "").split())[:PROFILE_PHOTO_CAPTION_MAX]
+    _r, db_err = db_insert(PROFILE_PHOTOS_TABLE, {"id": str(uuid.uuid4()), "user_id": uid, "data": data_url,
+                                                  "caption": caption, "created_at": utc_now()})
+    flash("Could not save the photo. Please try again." if db_err else "Photo added.", "warning" if db_err else "success")
+    return redirect(url_for("account_profile"))
+
+
+@app.route("/account/profile/photos/<pid>/delete", methods=["POST"])
+@login_required
+def account_profile_photo_delete(pid):
+    uid = str((current_user() or {}).get("id") or "")
+    if not CV_ID_RE.match(str(pid or "")) or not first_row(PROFILE_PHOTOS_TABLE, {"id": pid, "user_id": uid}):
+        abort(404)
+    db_delete(PROFILE_PHOTOS_TABLE, {"id": pid, "user_id": uid})
+    flash("Photo deleted.", "success")
+    return redirect(url_for("account_profile"))
+
+
+@app.route("/account/profile/updates", methods=["POST"])
+@login_required
+def account_profile_update_add():
+    uid = str((current_user() or {}).get("id") or "")
+    if _rate_limited("profile:%s" % uid, 10, 600):
+        flash("You have posted several updates. Please wait a few minutes.", "warning")
+        return redirect(url_for("account_profile"))
+    body = " ".join(str(request.form.get("body") or "").split())[:PROFILE_UPDATE_MAX]
+    if len(body) < 2:
+        flash("Write a short update first.", "warning")
+        return redirect(url_for("account_profile"))
+    _r, err = db_insert(PROFILE_UPDATES_TABLE, {"id": str(uuid.uuid4()), "user_id": uid, "body": body, "created_at": utc_now()})
+    flash("Could not post your update. Please try again." if err else "Update posted.", "warning" if err else "success")
+    return redirect(url_for("account_profile"))
+
+
+@app.route("/account/profile/updates/<upd>/delete", methods=["POST"])
+@login_required
+def account_profile_update_delete(upd):
+    uid = str((current_user() or {}).get("id") or "")
+    if not CV_ID_RE.match(str(upd or "")):
+        abort(404)
+    if not first_row(PROFILE_UPDATES_TABLE, {"id": upd, "user_id": uid}):
+        abort(404)
+    db_delete(PROFILE_UPDATES_TABLE, {"id": upd, "user_id": uid})
+    flash("Update deleted.", "success")
+    return redirect(url_for("account_profile"))
+
+
+@app.route("/profile/<uid>")
+def profile_public(uid):
+    """Public profile. Shown only when the owner has made it public; otherwise a 404."""
+    if not CV_ID_RE.match(str(uid or "")):
+        abort(404)
+    d = first_row(PROFILE_TABLE, {"user_id": uid})
+    if not d or not _profile_is_public(d):
+        abort(404)
+    person = first_row("profiles", {"id": uid}) or {}
+    updates = db_select(PROFILE_UPDATES_TABLE, filters={"user_id": uid}, order="created_at.desc", limit=30) or []
+    photos = db_select(PROFILE_PHOTOS_TABLE, filters={"user_id": uid}, order="created_at.desc", limit=PROFILE_PHOTOS_MAX) or []
+    wa = re.sub(r"[^0-9]", "", str(d.get("whatsapp") or ""))
+    return render_page("Profile", PROFILE_PUBLIC_HTML, d=d, updates=updates, photos=photos,
+                       name=str(person.get("name") or "KOJA member")[:120], wa_link=("https://wa.me/" + wa) if wa else "")
+
+
+PROFILE_HTML = r"""
+<div class="hero"><h2>My profile</h2><p>Your bio, status, social links and community updates. Your profile stays private until you make it public.</p></div>
+<div class="card"><h3>Profile details</h3>
+<form method="post" action="{{ url_for('account_profile') }}" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<label>Profile picture (JPG or PNG, under 300 KB)</label>
+{% if d.photo %}<div style="margin:6px 0"><img src="{{ d.photo }}" alt="Your profile picture" style="width:120px;height:120px;object-fit:cover;border-radius:50%"> <label><input type="checkbox" name="remove_photo" value="1"> Remove picture</label></div>{% endif %}
+<input type="file" name="photo" accept="image/jpeg,image/png">
+<label>Bio (up to {{ max_bio }} characters)</label><textarea name="bio" rows="4" maxlength="{{ max_bio }}">{{ d.bio or '' }}</textarea>
+<label>Status (up to 160 characters)</label><input name="status" maxlength="160" value="{{ d.status_text or '' }}" placeholder="e.g. Open to collaboration">
+<label>Facebook link</label><input name="facebook" maxlength="300" value="{{ d.facebook_url or '' }}" placeholder="https://facebook.com/yourname">
+<label>YouTube channel link</label><input name="youtube" maxlength="300" value="{{ d.youtube_url or '' }}" placeholder="https://youtube.com/@yourchannel">
+<label>WhatsApp number (with country code)</label><input name="whatsapp" maxlength="25" value="{{ d.whatsapp or '' }}" placeholder="e.g. +260 971 234567">
+<label style="display:block;margin-top:10px"><input type="checkbox" name="public" value="1" {% if public %}checked{% endif %}> Make my profile public. Anyone with the link can see my bio, status, links and updates.</label>
+<button class="btn" type="submit" style="margin-top:10px">Save profile</button>
+</form>
+{% if public %}<p class="small">Your public link: <a href="{{ url_for('profile_public', uid=uid) }}" target="_blank" rel="noopener">{{ url_for('profile_public', uid=uid) }}</a></p>{% endif %}
+</div>
+<div class="card"><h3>My photos ({{ photos|length }} of {{ photos_max }})</h3>
+<p class="small">JPG or PNG under 300 KB each. Photos show on your public profile when it is public.</p>
+<form method="post" action="{{ url_for('account_profile_photo_add') }}" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<input type="file" name="gallery_photo" accept="image/jpeg,image/png">
+<input name="caption" maxlength="140" placeholder="Caption (optional)" style="margin-top:6px">
+<button class="btn secondary" type="submit" style="margin-top:8px">Add photo</button></form>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-top:12px">
+{% for p in photos %}<div><img src="{{ p.data }}" alt="{{ p.caption or 'Photo' }}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px">
+<div class="small">{{ p.caption or '' }}</div>
+<form method="post" action="{{ url_for('account_profile_photo_delete', pid=p.id) }}" onsubmit="return confirm('Delete this photo?')"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger" type="submit" style="width:100%">Delete</button></form></div>
+{% endfor %}</div></div>
+<div class="card"><h3>Community updates</h3>
+<form method="post" action="{{ url_for('account_profile_update_add') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<label>Share an update (up to {{ max_update }} characters)</label><textarea name="body" rows="2" maxlength="{{ max_update }}"></textarea>
+<button class="btn secondary" type="submit" style="margin-top:8px">Post update</button></form>
+{% for u in updates %}<div class="card" style="margin:10px 0"><div style="white-space:pre-wrap">{{ u.body }}</div>
+<p class="small">{{ (u.created_at or '')|string|truncate(16, True, '') }}</p>
+<form method="post" action="{{ url_for('account_profile_update_delete', upd=u.id) }}" onsubmit="return confirm('Delete this update?')"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger" type="submit">Delete</button></form></div>
+{% else %}<p>No updates yet.</p>{% endfor %}
+</div>
+"""
+
+PROFILE_PUBLIC_HTML = r"""
+<div class="card"><h2>{{ name }}</h2>
+{% if d.photo %}<img src="{{ d.photo }}" alt="{{ name }}" style="width:120px;height:120px;object-fit:cover;border-radius:50%;margin-bottom:10px">{% endif %}
+{% if d.status_text %}<p><strong>{{ d.status_text }}</strong></p>{% endif %}
+{% if d.bio %}<div style="white-space:pre-wrap">{{ d.bio }}</div>{% endif %}
+<div class="actions" style="margin-top:12px">
+{% if d.facebook_url %}<a class="btn secondary" href="{{ d.facebook_url }}" target="_blank" rel="noopener nofollow">Facebook</a>{% endif %}
+{% if d.youtube_url %}<a class="btn secondary" href="{{ d.youtube_url }}" target="_blank" rel="noopener nofollow">YouTube</a>{% endif %}
+{% if wa_link %}<a class="btn secondary" href="{{ wa_link }}" target="_blank" rel="noopener nofollow">WhatsApp</a>{% endif %}
+</div></div>
+{% if photos %}<div class="card"><h3>Photos</h3><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">{% for p in photos %}<figure style="margin:0"><img src="{{ p.data }}" alt="{{ p.caption or 'Photo' }}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px">{% if p.caption %}<figcaption class="small">{{ p.caption }}</figcaption>{% endif %}</figure>{% endfor %}</div></div>{% endif %}
+{% for u in updates %}<div class="card" style="margin:10px 0"><div style="white-space:pre-wrap">{{ u.body }}</div>
+<p class="small">{{ (u.created_at or '')|string|truncate(16, True, '') }}</p></div>{% endfor %}
+"""
 
 
 # ============================================================
