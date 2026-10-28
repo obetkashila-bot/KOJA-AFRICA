@@ -96,7 +96,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
-RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:", "cvcoach:", "profile:")
+RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:", "cvcoach:", "profile:", "2fa:")
 
 def _rate_limited(key, limit, window=60):
     # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
@@ -442,7 +442,7 @@ def safe_next_url(value):
         return url_for('home')
     return value
 
-def login_user(user, auth_session=None):
+def login_user(user):
     session.clear()
     session["user"] = {
         "id": str(user.get("id")),
@@ -995,7 +995,7 @@ BASE_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="description" content="{{ meta_description or 'KOJA AFRICA — research, assignments, documents, professional services and delivery services.' }}">
+<meta name="description" content="{{ meta_description or 'Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.' }}">
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
@@ -1003,20 +1003,23 @@ BASE_HTML = r"""
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='favicon-192.png') }}">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192.png') }}">
+<link rel="manifest" href="{{ url_for('web_manifest') }}">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="KOJA">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta property="og:description" content="{{ meta_description or 'KOJA AFRICA — research, assignments, documents, professional services and delivery services.' }}">
+<meta property="og:description" content="{{ meta_description or 'Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.' }}">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta name="twitter:description" content="{{ meta_description or 'KOJA AFRICA — research, assignments, documents, professional services and delivery services.' }}">
+<meta name="twitter:description" content="{{ meta_description or 'Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.' }}">
 <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
 <meta name="author" content="KOJA AFRICA">
 <meta name="application-name" content="KOJA AFRICA">
 <meta name="csrf-token" content="{{ csrf_token() }}">
 <meta name="theme-color" content="#000000">
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
-<title>{{ title or "KOJA AFRICA" }}</title>
+<title>{{ "KOJA AFRICA | Jobs, Scholarships, Study Materials, AI Tools & Business" if not title or title == "KOJA AFRICA" else title ~ " | KOJA AFRICA" }}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" onload="this.onload=null;this.rel='stylesheet'"><noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"></noscript>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -1628,7 +1631,7 @@ def render_page(title, body_template, **context):
     theme = prefs.get("theme", "system") if prefs.get("theme") in ("system", "light", "dark", "black") else "system"
     wp = (sum(ord(ch) for ch in str(title or "KOJA")) % 10) + 1
     descriptions = {
-        "KOJA AFRICA": "KOJA AFRICA — research, assignments, documents, professional services and delivery services.",
+        "KOJA AFRICA": "Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.",
         "Research": "KOJA AFRICA Research Engine — search web information, scholarly literature and KOJA documents and create structured research notes and citations.",
         "Assignments": "KOJA AFRICA assignments — ask questions, upload assignments and access academic resources.",
         "Documents": "KOJA AFRICA documents and research resources for learning and academic work.",
@@ -1642,14 +1645,14 @@ def render_page(title, body_template, **context):
     seo_jsonld = ""
     if request.path in public_paths:
         page_title = title or "KOJA AFRICA"
-        page_description = descriptions.get(title, "KOJA AFRICA — research, academic resources, professional services and delivery services.")
+        page_description = descriptions.get(title, "Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.")
         graph = [
             {
                 "@type": "Organization",
                 "@id": SITE_URL + "#organization",
                 "name": "KOJA AFRICA",
                 "url": SITE_URL,
-                "description": "Knowledge, research, academic resources, professional services and delivery services."
+                "description": "KOJA AFRICA connects people with study resources, AI tools, jobs, scholarships, CV support, research, business opportunities and digital services across Africa."
             },
             {
                 "@type": "WebPage",
@@ -1684,7 +1687,7 @@ def render_page(title, body_template, **context):
         graph.insert(0, website)
         seo_jsonld = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False)
 
-    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, wallpaper=wp, meta_description=descriptions.get(title, "KOJA AFRICA — research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
+    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, wallpaper=wp, meta_description=descriptions.get(title, "Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa."), seo_jsonld=seo_jsonld)
 
 # ============================================================
 # USER SETTINGS
@@ -1767,7 +1770,7 @@ def settings():
 <div class="grid">
 <div class="card"><h3>Account</h3><p><strong>Name:</strong> {{ user.name or "KOJA User" }}</p><p><strong>Email:</strong> {{ user.email or "Not provided" }}</p><p><strong>Role:</strong> {{ user.role or "student" }}</p><p class="small">KOJA Identity protects account identity, verification and security across connected services.</p><button class="btn secondary" type="button" onclick="activateEngine('identity',this)">Activate KOJA Identity</button></div>
 <div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option><option value="black" {% if prefs.theme == 'black' %}selected{% endif %}>Black</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form><form method="post" style="margin-top:6px"><input type="hidden" name="action" value="reset"><button class="btn secondary" type="submit">Reset to defaults</button></form></div>
-<div class="card"><h3>My profile</h3><p class="small">Your bio, status, social links and community updates. Private unless you make it public.</p><a class="btn" href="{{ url_for('account_profile') }}">Open my profile</a></div>
+<div class="card"><h3>Two-step login</h3><p class="small">Ask for a code from an authenticator app each time you sign in.</p><a class="btn secondary" href="{{ url_for('account_2fa') }}">Set up two-step login</a></div><div class="card"><h3>My profile</h3><p class="small">Your bio, status, social links and community updates. Private unless you make it public.</p><a class="btn" href="{{ url_for('account_profile') }}">Open my profile</a></div>
 <div class="card"><h3>Wallpaper</h3><p class="small">Each page has its own wallpaper by default. Choose one to use everywhere on this device. Wallpapers and photos are saved on this device only.</p><select id="kojaWallpaper" onchange="kojaSetWallpaper(this.value)"><option value="auto">Automatic (different per page)</option><option value="1">Wallpaper 1</option><option value="2">Wallpaper 2</option><option value="3">Wallpaper 3</option><option value="4">Wallpaper 4</option><option value="5">Wallpaper 5</option><option value="6">Wallpaper 6</option><option value="7">Wallpaper 7</option><option value="8">Wallpaper 8</option><option value="9">Wallpaper 9</option><option value="10">Wallpaper 10</option><option value="custom">My photo</option></select><div style="margin-top:12px"><label>Use a photo from your phone or library</label><input type="file" id="kojaWpFile" accept="image/*" onchange="kojaUploadWallpaper(this)" style="padding:8px"><p class="small" id="kojaWpMsg"></p><button class="btn secondary" type="button" onclick="kojaRemoveWallpaper()">Remove my photo</button></div><script>(function(){var s=document.getElementById("kojaWallpaper");try{var w=localStorage.getItem("koja_wallpaper");s.value=(w&&/^(10|[1-9]|custom)$/.test(w))?w:"auto";}catch(e){}})();function kojaMsg(t){var m=document.getElementById("kojaWpMsg");if(m)m.textContent=t;}function kojaSetWallpaper(v){if(v==="custom"){window.kojaWp.get().then(function(d){if(!d){kojaMsg("Upload a photo first.");document.getElementById("kojaWallpaper").value="auto";return;}try{localStorage.setItem("koja_wallpaper","custom");}catch(e){}location.reload();});return;}try{if(v==="auto"){localStorage.removeItem("koja_wallpaper");}else{localStorage.setItem("koja_wallpaper",v);}}catch(e){}location.reload();}function kojaUploadWallpaper(input){var f=input.files&&input.files[0];if(!f)return;kojaMsg("Saving photo…");window.kojaWp.compress(f).then(function(d){return window.kojaWp.put(d);}).then(function(){try{localStorage.setItem("koja_wallpaper","custom");}catch(e){}location.reload();}).catch(function(e){kojaMsg((e&&e.message)||"Could not save the photo on this device.");});}function kojaRemoveWallpaper(){window.kojaWp.del().then(function(){try{localStorage.removeItem("koja_wallpaper");}catch(e){}location.reload();}).catch(function(){kojaMsg("Could not remove the photo.");});}</script></div>
 <div class="card"><h3>Notifications</h3><p>Choose which updates you receive and how: in the app, push, email or SMS.</p><a class="btn" href="{{ url_for('notification_settings') }}">Notification settings</a></div>
 <div class="card"><h3>Privacy and your data</h3><p>Read how KOJA uses your data, or request deletion of your account and data.</p><div class="actions"><a class="btn secondary" href="{{ url_for('public_privacy') }}">Privacy Policy</a><a class="btn secondary" href="{{ url_for('public_data_deletion') }}">Data deletion</a></div></div>
@@ -2519,6 +2522,9 @@ def register():
     if request.method == "POST":
         if _rate_limited("register:" + (request.remote_addr or "unknown"), 8, 600):
             return "Too many registration attempts. Please wait and try again.", 429
+        if not _captcha_ok(request.form.get("cf-turnstile-response")):
+            flash("Please complete the security check and try again.", "danger")
+            return redirect(url_for("register"))
         full_name = clean(request.form.get("full_name"))
         email = clean(request.form.get("email")).lower()
         phone = clean(request.form.get("phone"))
@@ -2596,7 +2602,7 @@ def register():
 <label style="display:flex;align-items:flex-start;gap:10px;margin:14px 0;line-height:1.45"><input type="checkbox" name="terms_agreed" value="1" required style="width:auto;margin:3px 0 0"> <span>I agree to the <a href="{{ url_for('public_terms') }}" target="_blank" rel="noopener">KOJA AFRICA Terms &amp; Conditions</a> and applicable laws and regulations.</span></label>
 <label style="display:flex;align-items:flex-start;gap:10px;margin:10px 0;line-height:1.45"><input type="checkbox" name="sms_opt_in" value="1" style="width:auto;margin:3px 0 0"> <span>Send me KOJA messages by SMS (optional)</span></label>
 <label style="display:flex;align-items:flex-start;gap:10px;margin:10px 0;line-height:1.45"><input type="checkbox" name="whatsapp_opt_in" value="1" style="width:auto;margin:3px 0 0"> <span>Send me KOJA messages on WhatsApp (optional)</span></label>
-<button type="submit">Create Account</button>
+{{ captcha_widget() }}<button type="submit">Create Account</button>
 </form>
 <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
 </div>
@@ -2607,6 +2613,9 @@ def login():
     if request.method == "POST":
         if _rate_limited("login:" + (request.remote_addr or "unknown"), 12, 300):
             return "Too many login attempts. Please wait a few minutes and try again.", 429
+        if not _captcha_ok(request.form.get("cf-turnstile-response")):
+            flash("Please complete the security check and try again.", "danger")
+            return redirect(url_for("login"))
         identifier = clean(request.form.get("identifier") or request.form.get("email")).strip()
         email = identifier.lower()
         password = request.form.get("password","")
@@ -2623,6 +2632,8 @@ def login():
             if user.get("is_active") is False:
                 flash("This account is inactive.","danger")
                 return redirect(url_for("login"))
+            if _two_factor_enabled(user.get("id")):
+                return _two_factor_challenge(user, request.args.get("next") or "")
             login_user(user)
             log_activity("login","User logged into KOJA.")
             if _terms_required_for_user(user):
@@ -2639,6 +2650,8 @@ def login():
                     au.get("id"), au.get("email") or email,
                     au.get("user_metadata",{}).get("full_name","")
                 )
+            if _two_factor_enabled(profile.get("id")):
+                return _two_factor_challenge(profile, request.args.get("next") or "")
             login_user(profile, auth)
             log_activity("login","User logged in through Supabase Auth.")
             if _terms_required_for_user(profile):
@@ -2661,12 +2674,168 @@ def login():
 <form method="post">
 <label>Email or username</label><input name="identifier" autocomplete="username" required>
 <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-<button type="submit">Login with Email</button>
+{{ captcha_widget() }}<button type="submit">Login with Email</button>
 </form>
 <p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
 <p class="small"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_terms') }}">Terms of Service</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
 </div>
 """)
+
+# =================== TWO-STEP LOGIN (authenticator app codes) ===================
+TWO_FACTOR_TABLE = "koja_two_factor"
+TWO_FACTOR_PENDING_SECONDS = 300
+
+
+def _totp_new_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def _totp_at(secret, counter):
+    import hashlib as _hl, struct as _st
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
+    digest = hmac.new(key, _st.pack(">Q", counter), _hl.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = _st.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return "%06d" % (value % 1000000)
+
+
+def _totp_check(secret, code, last_counter=None):
+    """Returns the matched time step (for replay protection) or None. Allows one step either side for clock drift."""
+    code = re.sub(r"\s", "", str(code or ""))
+    if not re.fullmatch(r"\d{6}", code):
+        return None
+    now_step = int(time.time()) // 30
+    for step in (now_step - 1, now_step, now_step + 1):
+        if last_counter is not None and step <= int(last_counter):
+            continue
+        if hmac.compare_digest(_totp_at(secret, step), code):
+            return step
+    return None
+
+
+def _two_factor_row(uid):
+    return first_row(TWO_FACTOR_TABLE, {"user_id": str(uid)})
+
+
+def _two_factor_enabled(uid):
+    row = _two_factor_row(uid) if uid else None
+    return bool(row and as_bool(row.get("enabled")))
+
+
+def _two_factor_challenge(user, next_url=""):
+    """Holds the sign-in until the code is entered. Nothing is signed in yet."""
+    session.clear()
+    session["pending_2fa"] = {"id": str(user.get("id")), "at": int(time.time()), "next": next_url or ""}
+    return redirect(url_for("login_2fa"))
+
+
+@app.route("/account/2fa", methods=["GET", "POST"])
+@login_required
+def account_2fa():
+    user = current_user()
+    uid = str(user.get("id"))
+    row = _two_factor_row(uid)
+    enabled = bool(row and as_bool(row.get("enabled")))
+    if request.method == "POST":
+        if _rate_limited("2fa:" + uid, 8, 600):
+            flash("Too many attempts. Please wait a few minutes.", "warning")
+            return redirect(url_for("account_2fa"))
+        action, code = request.form.get("action"), request.form.get("code", "")
+        if action == "enable" and not enabled and row:
+            step = _totp_check(row.get("secret"), code)
+            if step is None:
+                flash("That code is not right. Check the code in your app and try again.", "danger")
+            else:
+                db_update(TWO_FACTOR_TABLE, {"user_id": uid}, {"enabled": True, "last_counter": step, "updated_at": utc_now()})
+                log_activity("security", "Two-step login turned on.")
+                flash("Two-step login is on. You will enter a code from your app each time you sign in.", "success")
+            return redirect(url_for("account_2fa"))
+        if action == "disable" and enabled:
+            step = _totp_check(row.get("secret"), code, row.get("last_counter"))
+            if step is None:
+                flash("That code is not right. Enter the current code from your app.", "danger")
+            else:
+                db_delete(TWO_FACTOR_TABLE, {"user_id": uid})
+                log_activity("security", "Two-step login turned off.")
+                flash("Two-step login is off.", "success")
+            return redirect(url_for("account_2fa"))
+        flash("Nothing to change.", "info")
+        return redirect(url_for("account_2fa"))
+    secret = None
+    if not enabled:
+        if row:
+            secret = row.get("secret")
+        else:
+            secret = _totp_new_secret()
+            _, err = db_insert(TWO_FACTOR_TABLE, {"user_id": uid, "secret": secret, "enabled": False, "created_at": utc_now(), "updated_at": utc_now()})
+            if err:
+                flash("Could not start two-step login. Please try again.", "danger")
+                return redirect(url_for("settings"))
+    grouped = " ".join(secret[i:i + 4] for i in range(0, len(secret or ""), 4)) if secret else ""
+    return render_page("Two-step login", r"""<div class="hero"><h2>Two-step login</h2><p>Ask for a code from an authenticator app each time you sign in.</p></div>
+<div class="card" style="max-width:560px">
+{% if enabled %}
+<h3>On</h3><p class="small">Enter the current 6-digit code to turn it off.</p>
+<form method="post">{{ csrf }}<input type="hidden" name="action" value="disable"><label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required><button class="btn danger" type="submit">Turn off two-step login</button></form>
+{% else %}
+<h3>Set it up</h3>
+<ol><li>Install an authenticator app (Google Authenticator, Microsoft Authenticator or Authy).</li>
+<li>In the app, add an account and choose "enter a setup key".</li>
+<li>Type this key: <strong style="font-family:monospace;letter-spacing:1px">{{ grouped }}</strong> (time-based, 6 digits).</li>
+<li>Enter the 6-digit code the app shows now.</li></ol>
+<form method="post">{{ csrf }}<input type="hidden" name="action" value="enable"><label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required><button type="submit">Turn on two-step login</button></form>
+{% endif %}
+<p class="small">If you lose your phone, contact KOJA support to have two-step login reset.</p>
+</div>""", enabled=enabled, grouped=grouped)
+
+
+@app.route("/login/2fa", methods=["GET", "POST"])
+def login_2fa():
+    pending = session.get("pending_2fa") or {}
+    if not pending or int(time.time()) - int(pending.get("at") or 0) > TWO_FACTOR_PENDING_SECONDS:
+        session.pop("pending_2fa", None)
+        flash("Please sign in again.", "warning")
+        return redirect(url_for("login"))
+    uid = str(pending.get("id"))
+    if request.method == "POST":
+        if _rate_limited("2fa:" + uid, 8, 600):
+            return "Too many attempts. Please wait a few minutes and try again.", 429
+        row = _two_factor_row(uid)
+        step = _totp_check(row.get("secret"), request.form.get("code", ""), row.get("last_counter")) if row and as_bool(row.get("enabled")) else None
+        if step is None:
+            flash("That code is not right. Use the newest code in your app.", "danger")
+            return redirect(url_for("login_2fa"))
+        db_update(TWO_FACTOR_TABLE, {"user_id": uid}, {"last_counter": step, "updated_at": utc_now()})
+        profile = find_user_by_id(uid)
+        if not profile or profile.get("is_active") is False:
+            session.clear()
+            flash("This account is not available.", "danger")
+            return redirect(url_for("login"))
+        session.pop("pending_2fa", None)
+        next_url = pending.get("next") or ""
+        login_user(profile)
+        log_activity("login", "User signed in with two-step login.")
+        if _terms_required_for_user(profile):
+            return redirect(url_for("public_terms", required=1, next=next_url or url_for("dashboard")))
+        return redirect(safe_next_url(next_url) if next_url else url_for("dashboard"))
+    return render_page("Two-step login", r"""<div class="card" style="max-width:460px;margin:auto"><h2>Enter your code</h2>
+<p class="small">Open your authenticator app and type the 6-digit code for KOJA.</p>
+<form method="post">{{ csrf }}<label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required><button type="submit">Confirm and sign in</button></form></div>""")
+
+
+@app.route("/admin/2fa/reset", methods=["POST"])
+@admin_required
+def admin_two_factor_reset():
+    """For a user who lost their phone: removes two-step login so they can sign in and set it up again."""
+    uid = clean(request.form.get("user_id"))
+    if not CV_ID_RE.match(uid):
+        flash("Enter a valid user ID.", "warning")
+        return redirect(url_for("admin"))
+    db_delete(TWO_FACTOR_TABLE, {"user_id": uid})
+    log_activity("security", "Admin reset two-step login for a user.")
+    flash("Two-step login was reset for that user.", "success")
+    return redirect(url_for("admin"))
+
 
 @app.route("/logout")
 def logout():
@@ -9317,19 +9486,19 @@ def provider_location(provider_id):
 # GOOGLE SEARCH & DISTRIBUTION
 # ============================================================
 
+# Only include pages that are publicly reachable without signing in.
+# Authenticated workspaces (documents, professionals, doctors and teachers)
+# must never be advertised to crawlers in the public sitemap.
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/news/live",
+    "/news/channels",
     "/business-directory",
     "/industries",
     "/research",
     "/research/notes",
-    "/documents",
     "/marketplace",
     "/market",
-    "/professionals",
-    "/doctors",
-    "/teachers",
 ]
 
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
@@ -9590,11 +9759,21 @@ def robots_txt():
 
 @app.route("/sitemap.xml")
 def sitemap_xml():
+    # Do not emit a synthetic lastmod timestamp: it would falsely imply every
+    # page changed whenever Google fetched the sitemap. Keep only public URLs.
     urls = []
-    lastmod = datetime.now(timezone.utc).date().isoformat()
     for route in PUBLIC_INDEX_ROUTES:
-        urls.append(f"<url><loc>{SITE_URL}{route}</loc><lastmod>{lastmod}</lastmod><changefreq>weekly</changefreq><priority>{'1.0' if route == '/' else '0.7'}</priority></url>")
-    xml = '<?xml version="1.0" encoding="UTF-8"?>' + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(urls) + '</urlset>'
+        priority = "1.0" if route == "/" else "0.7"
+        urls.append(
+            f"<url><loc>{SITE_URL}{route}</loc>"
+            f"<changefreq>weekly</changefreq><priority>{priority}</priority></url>"
+        )
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        + ''.join(urls)
+        + '</urlset>'
+    )
     return (xml, 200, {"Content-Type": "application/xml; charset=utf-8"})
 
 # ============================================================
@@ -13952,7 +14131,14 @@ def oauth_session():
                     return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
         if profile.get('is_active') is False:
             return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
-        login_user(profile, {'user':au,'access_token':token})
+        if _two_factor_enabled(profile.get('id')):
+            session.clear()
+            session['pending_2fa'] = {'id': str(profile.get('id')), 'at': int(time.time()), 'next': ''}
+            return jsonify({'ok':True,'terms_required':True,'terms_url':url_for('login_2fa')})
+        # The access token is used only to validate the provider identity above.
+        # KOJA establishes its own Flask session and deliberately does not retain
+        # Supabase access/refresh tokens in the client-side session cookie.
+        login_user(profile)
         log_activity('login','User logged in through social authentication.')
         needs_terms = _terms_required_for_user(profile)
         return jsonify({'ok':True,'terms_required':bool(needs_terms),'terms_url':url_for('public_terms', required=1, next=url_for('dashboard')) if needs_terms else url_for('dashboard')})
@@ -15035,6 +15221,77 @@ def _koja_live_now():
     return rooms
 
 app.jinja_env.globals['koja_live_now'] = _koja_live_now
+
+
+# =================== SECURITY CHECK (Cloudflare Turnstile) and ERROR MONITORING ===================
+# Both stay off until their keys are set on the server, so nothing changes until then.
+TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY", "").strip()
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "").strip()
+
+
+def _captcha_widget():
+    if not TURNSTILE_SITE_KEY:
+        return Markup("")
+    return Markup('<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>'
+                  '<div class="cf-turnstile" data-sitekey="%s" style="margin:10px 0"></div>' % escape(TURNSTILE_SITE_KEY))
+
+
+def _captcha_ok(token):
+    """True when the check passes, or when it is switched off. Fails closed if the check service cannot be reached."""
+    if not TURNSTILE_SECRET_KEY:
+        return True
+    if not token:
+        return False
+    try:
+        rr = _HTTP.post("https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                        data={"secret": TURNSTILE_SECRET_KEY, "response": token, "remoteip": request.remote_addr or ""}, timeout=10)
+        return bool(json_or_empty(rr).get("success"))
+    except Exception:
+        logger.exception("security check could not be verified")
+        return False
+
+
+app.jinja_env.globals['captcha_widget'] = _captcha_widget
+
+
+def _init_error_monitoring():
+    """Sends server errors to Sentry when SENTRY_DSN is set and the sentry-sdk package is installed."""
+    dsn = os.getenv("SENTRY_DSN", "").strip()
+    if not dsn:
+        return
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=dsn, traces_sample_rate=0.0, send_default_pii=False)
+        logger.info("Error monitoring is on.")
+    except Exception as exc:
+        logger.warning("Error monitoring could not start: %s", exc)
+
+
+_init_error_monitoring()
+
+
+@app.route("/manifest.webmanifest")
+def web_manifest():
+    """Web app manifest: lets a phone install KOJA to its home screen and open it full screen."""
+    data = {
+        "name": "KOJA AFRICA",
+        "short_name": "KOJA",
+        "description": "Research, assignments, documents, professional services, delivery and KOJA Market.",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait-primary",
+        "background_color": "#000000",
+        "theme_color": "#000000",
+        "icons": [
+            {"src": url_for("static", filename="favicon.svg"), "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+            {"src": url_for("static", filename="favicon-192.png"), "sizes": "192x192", "type": "image/png", "purpose": "any"},
+        ],
+    }
+    resp = jsonify(data)
+    resp.mimetype = "application/manifest+json"
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
 
 # ---- Header and menu icons (Lucide-style line icons, drawn inline; no external files) ----
 from markupsafe import Markup as _NavMarkup
