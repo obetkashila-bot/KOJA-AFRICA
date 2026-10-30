@@ -442,7 +442,7 @@ def safe_next_url(value):
         return url_for('home')
     return value
 
-def login_user(user):
+def login_user(user, auth_session=None):
     session.clear()
     session["user"] = {
         "id": str(user.get("id")),
@@ -1261,6 +1261,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 <div class="dropdown" id="moreMenu" role="menu">
 <a role="menuitem" href="{{ url_for('questions') }}">{{ nav_icon('help') }}<span class="nav-label">Questions</span></a>
 <a role="menuitem" href="{{ url_for('assignments') }}">{{ nav_icon('clipboard') }}<span class="nav-label">Assignments</span></a>
+<a role="menuitem" href="{{ url_for('ac_home') }}">{{ nav_icon('book') }}<span class="nav-label">KOJA Academic</span></a>
 {% if user %}<a role="menuitem" href="{{ url_for('pb_dashboard') }}">{{ nav_icon('filetext') }}<span class="nav-label">Proposal Builder</span></a>{% endif %}
 <a role="menuitem" href="{{ url_for('public_feed') }}">{{ nav_icon('globe') }}<span class="nav-label">Public</span></a>
 <a role="menuitem" href="{{ url_for('news_nextgen') }}">{{ nav_icon('newspaper') }}<span class="nav-label">News</span></a>
@@ -9486,9 +9487,6 @@ def provider_location(provider_id):
 # GOOGLE SEARCH & DISTRIBUTION
 # ============================================================
 
-# Only include pages that are publicly reachable without signing in.
-# Authenticated workspaces (documents, professionals, doctors and teachers)
-# must never be advertised to crawlers in the public sitemap.
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/news/live",
@@ -9775,6 +9773,7 @@ def sitemap_xml():
         + '</urlset>'
     )
     return (xml, 200, {"Content-Type": "application/xml; charset=utf-8"})
+
 
 # ============================================================
 
@@ -14135,10 +14134,7 @@ def oauth_session():
             session.clear()
             session['pending_2fa'] = {'id': str(profile.get('id')), 'at': int(time.time()), 'next': ''}
             return jsonify({'ok':True,'terms_required':True,'terms_url':url_for('login_2fa')})
-        # The access token is used only to validate the provider identity above.
-        # KOJA establishes its own Flask session and deliberately does not retain
-        # Supabase access/refresh tokens in the client-side session cookie.
-        login_user(profile)
+        login_user(profile, {'user':au,'access_token':token})
         log_activity('login','User logged in through social authentication.')
         needs_terms = _terms_required_for_user(profile)
         return jsonify({'ok':True,'terms_required':bool(needs_terms),'terms_url':url_for('public_terms', required=1, next=url_for('dashboard')) if needs_terms else url_for('dashboard')})
@@ -22168,42 +22164,71 @@ def _ac_room_token(room, user, can_publish=True):
 
 
 # ---- find a teacher (marketplace) -------------------------------------------------
-@app.route("/live-tutoring")
-@app.route("/tutoring")
-def ac_tutoring_shortcut():
-    """Friendly direct entry point for KOJA's existing live tutoring module."""
-    return redirect(url_for("ac_home"))
-
-
 @app.route("/academic")
 @login_required
 def ac_home():
+    '''Find a tutor: keyword, subject, grade, price and sort. Subject buttons show what is available.'''
     q, subject = clean(request.args.get("q")), clean(request.args.get("subject"))
+    grade = clean(request.args.get("grade"))
     max_rate = _ac_num(request.args.get("max_rate"), 0)
-    teachers = _ac_rows("koja_academic_teachers", {"status": "verified"}, order="rating_avg.desc", limit=200)
-    if q or subject or max_rate:
+    sort = clean(request.args.get("sort")) or "rating"
+    teachers = _ac_rows("koja_academic_teachers", {"status": "verified"}, order="rating_avg.desc", limit=500)
+    subjects = sorted({x.strip() for t in teachers for x in str(t.get("subjects") or "").split(",") if x.strip()}, key=str.lower)
+    if subject:
+        teachers = [t for t in teachers if subject.lower() in str(t.get("subjects") or "").lower()]
+    if grade:
+        teachers = [t for t in teachers if grade.lower() in str(t.get("grade_levels") or "").lower()]
+    if max_rate:
+        teachers = [t for t in teachers if float(t.get("hourly_rate") or 0) <= max_rate]
+    if q:
+        # Keep only tutors whose subjects, levels or profile contain a keyword; best matches first.
+        words = set(w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) >= 2)
         for t in teachers:
-            t["_score"] = _ac_match_score(t, q, subject, max_rate)
-        teachers = sorted([t for t in teachers if t["_score"] > 0 or not (q or subject)], key=lambda t: -t["_score"])
-        if max_rate:
-            teachers = [t for t in teachers if float(t.get("hourly_rate") or 0) <= max_rate]
+            text = " ".join(str(t.get(k) or "") for k in ("full_name", "subjects", "grade_levels", "bio", "qualification")).lower()
+            t["_hits"] = sum(1 for w in words if w in text)
+        teachers = [t for t in teachers if t["_hits"] > 0]
+        teachers.sort(key=lambda t: (-t["_hits"], -float(t.get("rating_avg") or 0)))
+    elif sort == "price_low":
+        teachers.sort(key=lambda t: float(t.get("hourly_rate") or 0))
+    elif sort == "price_high":
+        teachers.sort(key=lambda t: -float(t.get("hourly_rate") or 0))
+    elif sort == "reviews":
+        teachers.sort(key=lambda t: -int(t.get("rating_count") or 0))
     mine = _ac_teacher_for_user()
     # _ac_rows hides database errors, so an admin is told directly when the Academic tables are missing.
     if (current_user() or {}).get("is_admin") and not table_exists("koja_academic_teachers"):
         flash("KOJA Academic tables are missing on this database. Run koja_academic_migration.sql, then koja_assignment_answers.sql if needed.", "warning")
-    return _ac_page("KOJA Academic", r'''
-<div class="hero"><h2>KOJA Academic</h2><p>Verified teachers, one-to-one tutoring and live group classes.</p>
-<div class="actions"><a class="btn" href="{{ url_for('ac_classes') }}">Group classes</a>
+    return _ac_page("Find a tutor", r'''
+<div class="hero"><h2>Find a tutor</h2><p>Verified teachers for one-to-one lessons and live group classes.</p>
+<div class="actions"><a class="btn" href="{{ url_for('ac_classes') }}">Find a group class</a>
 <a class="btn secondary" href="{{ url_for('ac_my_sessions') }}">My lessons</a>
 {% if mine %}<a class="btn secondary" href="{{ url_for('ac_teacher_dashboard') }}">Teacher dashboard</a>{% else %}<a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Become a teacher</a>{% endif %}</div></div>
-<form method="get" class="card"><input name="q" value="{{ q }}" placeholder="What do you need help with?"><input name="subject" value="{{ subject }}" placeholder="Subject (e.g. Mathematics)">
-<input name="max_rate" type="number" min="0" step="0.01" value="{{ max_rate or '' }}" placeholder="Max hourly rate"><button class="btn">Find a teacher</button></form>
-<div class="grid">{% for t in teachers %}<div class="card"><h3>{{ t.full_name }} <small>✔ Verified</small></h3>
+<form method="get" class="card" style="display:grid;gap:8px">
+<input name="q" value="{{ q }}" placeholder="What do you need help with? (e.g. algebra, English essays)" aria-label="Keyword">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<input name="subject" value="{{ subject }}" placeholder="Subject" aria-label="Subject" list="ac-subjects" style="flex:1;min-width:160px">
+<input name="grade" value="{{ grade }}" placeholder="Grade or level (e.g. Grade 10)" aria-label="Grade" style="flex:1;min-width:160px">
+<input name="max_rate" type="number" min="0" step="0.01" value="{{ max_rate or '' }}" placeholder="Max price per hour" aria-label="Maximum price per hour" style="flex:1;min-width:140px">
+<select name="sort" aria-label="Sort" style="flex:1;min-width:140px">
+<option value="rating" {% if sort=='rating' %}selected{% endif %}>Best rated</option>
+<option value="reviews" {% if sort=='reviews' %}selected{% endif %}>Most reviews</option>
+<option value="price_low" {% if sort=='price_low' %}selected{% endif %}>Lowest price</option>
+<option value="price_high" {% if sort=='price_high' %}selected{% endif %}>Highest price</option></select>
+</div>
+<datalist id="ac-subjects">{% for x in subjects %}<option value="{{ x }}">{% endfor %}</datalist>
+<div style="display:flex;gap:8px"><button class="btn">Search tutors</button>{% if q or subject or grade or max_rate %}<a class="btn secondary" href="{{ url_for('ac_home') }}">Clear</a>{% endif %}</div>
+</form>
+{% if subjects %}<div class="card" style="display:flex;gap:8px;flex-wrap:wrap" aria-label="Browse by subject">
+<strong style="width:100%">Browse by subject</strong>
+{% for x in subjects[:30] %}<a class="btn secondary" href="{{ url_for('ac_home', subject=x) }}">{{ x }}</a>{% endfor %}</div>{% endif %}
+<p class="small" aria-live="polite">{{ teachers|length }} verified teacher{{ '' if teachers|length == 1 else 's' }} found</p>
+<div class="grid">{% for t in teachers %}<div class="card"><h3>{{ t.full_name }} <small>Verified</small></h3>
 <p><strong>Subjects:</strong> {{ t.subjects }}</p><p><strong>Grades:</strong> {{ t.grade_levels or '—' }}</p>
-<p>⭐ {{ '%.1f'|format(t.rating_avg or 0) }} ({{ t.rating_count or 0 }}) · {{ money(t.hourly_rate, t.currency or 'ZMW') }}/hour</p>
+<p>Rated {{ '%.1f'|format(t.rating_avg or 0) }} ({{ t.rating_count or 0 }} review{{ '' if (t.rating_count or 0) == 1 else 's' }}) · {{ money(t.hourly_rate, t.currency or 'ZMW') }}/hour</p>
 <a class="btn" href="{{ url_for('ac_teacher_profile', tid=t.id) }}">View &amp; book</a></div>
-{% else %}<div class="card"><p>No verified teachers match yet.</p></div>{% endfor %}</div>''',
-                    teachers=teachers, q=q, subject=subject, max_rate=max_rate, mine=mine)
+{% else %}<div class="card"><p>No verified teacher matches these filters yet.</p>
+<p class="small">Try a broader subject, remove the price limit, or <a href="{{ url_for('ac_classes') }}">look at group classes</a>.</p></div>{% endfor %}</div>''',
+                    teachers=teachers, q=q, subject=subject, grade=grade, max_rate=max_rate, sort=sort, subjects=subjects, mine=mine)
 
 
 # ---- teacher application / profile ------------------------------------------------
@@ -22416,20 +22441,63 @@ def ac_teacher_dashboard():
 @app.route("/academic/classes")
 @login_required
 def ac_classes():
-    classes = [c for c in _ac_rows("koja_academic_classes", {"status": "open"}, order="scheduled_date.asc", limit=100)]
+    '''Find a group class: keyword, subject, price, date and sort. Upcoming classes first.'''
+    q, subject = clean(request.args.get("q")), clean(request.args.get("subject"))
+    max_price = _ac_num(request.args.get("max_price"), 0)
+    date_from = clean(request.args.get("date_from"))
+    sort = clean(request.args.get("sort")) or "date"
+    try:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("Africa/Lusaka")).date().isoformat()
+    except Exception:
+        today = datetime.now(timezone.utc).date().isoformat()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_from or ""):
+        date_from = today
+    classes = _ac_rows("koja_academic_classes", {"status": "open", "scheduled_date": "gte." + date_from}, order="scheduled_date.asc", limit=500)
     class_ids = [str(c["id"]) for c in classes if c.get("id")]
     taken = {}
     if class_ids:
-        for e in _ac_rows("koja_academic_enrollments", {"class_id": "in.(" + ",".join(class_ids) + ")"}, limit=5000):
+        for e in _ac_rows("koja_academic_enrollments", {"class_id": "in.(" + ",".join(class_ids) + ")"}, limit=10000):
             key = str(e.get("class_id"))
             taken[key] = taken.get(key, 0) + 1
     for c in classes:
         c["_seats"] = max(0, int(c.get("capacity") or 0) - taken.get(str(c.get("id")), 0))
-    return _ac_page("Group classes", r'''
-<div class="hero"><h2>Live group classes</h2></div>
-{% for c in classes %}<div class="card"><h3>{{ c.title }}</h3><p>{{ c.subject }} · {{ c.scheduled_date }} {{ c.start_time }} · {{ c.duration_minutes }} min</p>
-<p>{{ money(c.price_per_student, c.currency or 'ZMW') }} per student · {{ c._seats }} seats left</p><a class="btn" href="{{ url_for('ac_class', cid=c.id) }}">Details</a></div>
-{% else %}<div class="card"><p>No open classes right now.</p></div>{% endfor %}''', classes=classes)
+    if subject:
+        classes = [c for c in classes if subject.lower() in str(c.get("subject") or "").lower()]
+    if q:
+        words = [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 2]
+        classes = [c for c in classes if any(w in " ".join(str(c.get(k) or "") for k in ("title", "subject", "description")).lower() for w in words)]
+    if max_price:
+        classes = [c for c in classes if float(c.get("price_per_student") or 0) <= max_price]
+    if sort == "price_low":
+        classes.sort(key=lambda c: float(c.get("price_per_student") or 0))
+    elif sort == "seats":
+        classes.sort(key=lambda c: -int(c.get("_seats") or 0))
+    subjects = sorted({str(c.get("subject")).strip() for c in classes if c.get("subject")}, key=str.lower)
+    return _ac_page("Find a group class", r'''
+<div class="hero"><h2>Find a group class</h2><p>Live classes you can join with other students. Upcoming classes are shown first.</p>
+<div class="actions"><a class="btn secondary" href="{{ url_for('ac_home') }}">Find a tutor</a></div></div>
+<form method="get" class="card" style="display:grid;gap:8px">
+<input name="q" value="{{ q }}" placeholder="Search classes (e.g. physics, exam revision)" aria-label="Search classes">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<input name="subject" value="{{ subject }}" placeholder="Subject" aria-label="Subject" list="ac-class-subjects" style="flex:1;min-width:160px">
+<input name="max_price" type="number" min="0" step="0.01" value="{{ max_price or '' }}" placeholder="Max price per student" aria-label="Maximum price per student" style="flex:1;min-width:150px">
+<input name="date_from" type="date" value="{{ date_from }}" aria-label="Classes from this date" style="flex:1;min-width:150px">
+<select name="sort" aria-label="Sort" style="flex:1;min-width:140px">
+<option value="date" {% if sort=='date' %}selected{% endif %}>Soonest first</option>
+<option value="price_low" {% if sort=='price_low' %}selected{% endif %}>Lowest price</option>
+<option value="seats" {% if sort=='seats' %}selected{% endif %}>Most seats left</option></select>
+</div>
+<datalist id="ac-class-subjects">{% for x in subjects %}<option value="{{ x }}">{% endfor %}</datalist>
+<div style="display:flex;gap:8px"><button class="btn">Search classes</button><a class="btn secondary" href="{{ url_for('ac_classes') }}">Clear</a></div>
+</form>
+<p class="small" aria-live="polite">{{ classes|length }} class{{ '' if classes|length == 1 else 'es' }} found from {{ date_from }}</p>
+{% for c in classes %}<div class="card"><h3>{{ c.title }}</h3><p>{{ c.subject or 'General' }} · {{ c.scheduled_date }} at {{ c.start_time }} · {{ c.duration_minutes }} min</p>
+<p>{{ money(c.price_per_student, c.currency or 'ZMW') }} per student · <strong>{{ c._seats }} seat{{ '' if c._seats == 1 else 's' }} left</strong></p>
+<a class="btn" href="{{ url_for('ac_class', cid=c.id) }}">Details</a></div>
+{% else %}<div class="card"><p>No open classes match these filters.</p>
+<p class="small">Try a later date or remove the price limit, or <a href="{{ url_for('ac_home') }}">find a tutor</a> for one-to-one lessons.</p></div>{% endfor %}''',
+                    classes=classes, q=q, subject=subject, max_price=max_price, date_from=date_from, sort=sort, subjects=subjects)
 
 
 @app.route("/academic/class/new", methods=["GET", "POST"])
@@ -22452,7 +22520,7 @@ def ac_class_new():
         _, err = db_insert("koja_academic_classes", {
             "id": cid, "teacher_id": t["id"], "teacher_user_id": _ac_uid(), "title": title, "subject": clean(f.get("subject"))[:160],
             "description": clean(f.get("description"))[:2000], "scheduled_date": str(day), "start_time": start.strftime("%H:%M"),
-            "duration_minutes": int(_ac_num(f.get("duration_minutes"), 60, 15, 240)), "capacity": int(_ac_num(f.get("capacity"), 500, 2, 5000)),
+            "duration_minutes": int(_ac_num(f.get("duration_minutes"), 60, 15, 240)), "capacity": int(_ac_num(f.get("capacity"), 20, 1, 500)),
             "price_per_student": _ac_num(f.get("price_per_student"), 0), "currency": t.get("currency") or "ZMW", "status": "open",
             "room_name": "koja-ac-class-" + cid[:10], "created_at": utc_now()})
         flash("Class created." if not err else "Could not create the class.", "success" if not err else "danger")
@@ -22460,7 +22528,7 @@ def ac_class_new():
     return _ac_page("New class", r'''
 <div class="card"><h2>New group class</h2><form method="post">{{ csrf }}<label>Title</label><input name="title" required><label>Subject</label><input name="subject">
 <label>Description</label><textarea name="description" rows="4"></textarea><label>Date</label><input type="date" name="scheduled_date" required><label>Start time</label><input type="time" name="start_time" required>
-<label>Duration (minutes)</label><input type="number" name="duration_minutes" value="60" min="15" max="240"><label>Student capacity</label><input type="number" name="capacity" value="500" min="2" max="5000"><p class="small">Large lecture classes support up to 5,000 enrolments in KOJA. Actual live attendance depends on the configured LiveKit service plan and infrastructure.</p>
+<label>Duration (minutes)</label><input type="number" name="duration_minutes" value="60" min="15" max="240"><label>Capacity</label><input type="number" name="capacity" value="20" min="1">
 <label>Price per student</label><input type="number" name="price_per_student" min="0" step="0.01" value="0"><button class="btn">Create class</button></form></div>''')
 
 
@@ -22472,9 +22540,9 @@ def ac_class(cid):
         abort(404)
     uid = _ac_uid()
     is_teacher = str(c.get("teacher_user_id")) == uid
-    enrolments = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000)
+    enrolments = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500)
     mine = next((e for e in enrolments if str(e.get("student_id")) == uid), None)
-    att = {str(a.get("student_id")): a for a in _ac_rows("koja_academic_attendance", {"class_id": cid}, limit=10000)}
+    att = {str(a.get("student_id")): a for a in _ac_rows("koja_academic_attendance", {"class_id": cid}, limit=1000)}
     for e in enrolments:
         e["_name"] = (find_user_by_id(e.get("student_id")) or {}).get("full_name") or "Student"
         e["_present"] = (att.get(str(e.get("student_id"))) or {}).get("present")
@@ -22500,7 +22568,7 @@ def ac_enroll(cid):
     uid = _ac_uid()
     if not c or str(c.get("teacher_user_id")) == uid:
         abort(404)
-    es = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000)
+    es = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500)
     if any(str(e.get("student_id")) == uid for e in es):
         flash("You are already enrolled.", "info")
     elif len(es) >= int(c.get("capacity") or 0):
@@ -22538,7 +22606,7 @@ def ac_attendance(cid):
     if not c:
         abort(403)
     present = set(request.form.getlist("present"))
-    for e in _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000):
+    for e in _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500):
         sid = str(e.get("student_id"))
         row = {"present": sid in present, "marked_at": utc_now()}
         old = first_row("koja_academic_attendance", {"class_id": cid, "student_id": sid})
@@ -22597,7 +22665,7 @@ const st=document.getElementById('ac-status');
 const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');
 cx.lineWidth=2;cx.lineCap='round';cx.strokeStyle='#111';
 const box=document.getElementById('ac-videos');
-const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }},CAN_PUBLISH={{ (kind == 'session' or is_teacher)|tojson }};
+const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }};
 let room=null;
 function setStatus(t){st.textContent=t}
 function drawStroke(pts){if(!pts||pts.length<2)return;cx.beginPath();cx.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)cx.lineTo(pts[i][0],pts[i][1]);cx.stroke()}
@@ -22631,15 +22699,14 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     await room.connect(d.url,d.token);
     setStatus('Connected.');
     room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>attach(x.track)));
-    if(CAN_PUBLISH){try{await room.localParticipant.enableCameraAndMicrophone()}
-    catch(e){setStatus('Connected. Your camera or microphone is blocked. Allow access in your browser and reload.')}}
-    else {setStatus('Connected to the large-class lecture. Your microphone and camera are off to protect class quality. Use the shared whiteboard and class materials.')}
+    try{await room.localParticipant.enableCameraAndMicrophone()}
+    catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}
   }catch(e){setStatus('Could not join the live room: '+e.message)}
 })();
 })();
 </script>''',
                     token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid),
-                    back_url=back_url, is_teacher=is_teacher, kind=kind)
+                    back_url=back_url, is_teacher=is_teacher)
 
 
 @app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
@@ -22690,7 +22757,7 @@ def ac_room_token(kind, rid):
     if not obj:
         return jsonify({"error": "Not allowed to join this room."}), 403
     try:
-        return jsonify({"token": _ac_room_token(obj.get("room_name"), current_user(), can_publish=(kind == "session" or is_teacher)), "url": _livekit_server_url(), "role": ("teacher" if is_teacher else ("participant" if kind == "session" else "viewer"))})
+        return jsonify({"token": _ac_room_token(obj.get("room_name"), current_user(), can_publish=True), "url": _livekit_server_url()})
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 503
 
