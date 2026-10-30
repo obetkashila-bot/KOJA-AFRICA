@@ -7763,7 +7763,8 @@ def flutterwave_webhook():
     b2b_orders=db_select('koja_b2b_v4_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
     gift_row=first_row('koja_live_gifts',{'payment_reference':tx_ref})
     assignment_payment=first_row('koja_assignment_payments',{'tx_ref':tx_ref}) if tx_ref.startswith('KOJA-ANS-') else None
-    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders and not gift_row and not assignment_payment:
+    academic_payment=first_row('koja_academic_payments',{'tx_ref':tx_ref}) if tx_ref.startswith('KOJA-LES-') else None
+    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders and not gift_row and not assignment_payment and not academic_payment:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
@@ -7773,6 +7774,8 @@ def flutterwave_webhook():
         logger.info('KOJA assignment payment finalization tx_ref=%s result=%s',tx_ref,ok)
         results.append('assignment:'+('finalized' if ok else 'not_applied'))
         assignment_failed=not ok
+    if academic_payment:
+        results.append('academic:'+('finalized' if _finalize_academic_payment(academic_payment,tx) else 'not_applied'))
     if gift_row:
         results.append('live_gift:'+('finalized' if _finalize_live_gift(gift_row,tx) else 'not_applied'))
     if market_orders:
@@ -22296,7 +22299,9 @@ def ac_teacher_profile(tid):
 <form method="post" action="{{ url_for('ac_book', tid=t.id) }}">{{ csrf }}<label>Subject</label><input name="subject" required>
 <label>Date</label><input type="date" name="scheduled_date" required><label>Start time</label><input type="time" name="start_time" required>
 <label>Duration</label><select name="duration_minutes"><option value="30">30 min</option><option value="60" selected>60 min</option><option value="90">90 min</option><option value="120">120 min</option></select>
-<label>Notes</label><textarea name="notes" maxlength="1000"></textarea><button class="btn">Request lesson</button></form></div>{% endif %}
+<label>Notes</label><textarea name="notes" maxlength="1000"></textarea>
+<label>Pay now (optional)</label><select name="network"><option value="">Pay later from My lessons</option>{% for o in academic_pay_networks() %}<option value="{{ o.value }}">{{ o.country }} · {{ o.label }}</option>{% endfor %}</select>
+<label>Mobile-money number</label><input name="phone" inputmode="tel" placeholder="e.g. 0971234567"><button class="btn">Book lesson</button></form></div>{% endif %}
 <div class="card"><h3>Reviews</h3>{% for r in reviews %}<p>{{ '⭐' * (r.rating|int) }} — {{ r.comment or '' }}</p>{% else %}<p>No reviews yet.</p>{% endfor %}</div>''',
                     t=t, reviews=reviews, me=_ac_uid())
 
@@ -22338,6 +22343,12 @@ def ac_book(tid):
     else:
         notify_user(t.get("user_id"), "New lesson request", "%s requested a %d-minute lesson on %s." % ((current_user() or {}).get("full_name") or "A student", dur, day), "/academic/teacher/dashboard")
         flash("Lesson booked. Pay to unlock the live room; the teacher has been notified.", "success")
+        choice = clean(f.get("network"))
+        if choice:
+            redirect_url, pay_error = _academic_checkout(current_user() or {}, first_row("koja_academic_sessions", {"id": sid}) or {}, choice, clean(f.get("phone")))
+            if not pay_error:
+                return redirect(redirect_url)
+            flash("Your lesson is booked, but payment did not start: " + pay_error + " You can pay from My lessons.", "warning")
     return redirect(url_for("ac_my_sessions"))
 
 
@@ -22355,12 +22366,153 @@ def ac_my_sessions():
 <div class="hero"><h2>My lessons</h2></div>
 {% for s in sessions %}<div class="card"><h3>{{ s.subject }} with {{ s._teacher }}</h3><p>{{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.price, s.currency) }}</p>
 <p>Status: <strong>{{ s.status }}</strong> · Payment: <strong>{{ s.payment_status }}</strong></p>
-{% if s.status == 'accepted' and s.payment_status == 'paid' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Join live room</a>{% elif s.status == 'accepted' %}<p>The live room opens once payment is recorded.</p>{% endif %}
+{% if s.status == 'accepted' and s.payment_status == 'paid' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Join live room</a>{% elif s.status == 'accepted' %}<form method="post" action="{{ url_for('ac_session_pay', sid=s.id) }}">{{ csrf }}<label>Pay with mobile money</label><select name="network" required>{% for o in academic_pay_networks() %}<option value="{{ o.value }}">{{ o.country }} · {{ o.label }}</option>{% endfor %}</select><input name="phone" required inputmode="tel" placeholder="Mobile-money number"><button class="btn">Pay {{ money(s.price, s.currency) }} to open the live room</button></form>{% endif %}
 {% if s.status in ['requested','accepted'] %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='cancel') }}" style="display:inline">{{ csrf }}<button class="btn secondary">Cancel</button></form>{% endif %}
 {% if s.status == 'completed' and not s._reviewed %}<form method="post" action="{{ url_for('ac_review', sid=s.id) }}">{{ csrf }}<select name="rating"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select><input name="comment" maxlength="500" placeholder="How was the lesson?"><button class="btn">Review</button></form>{% endif %}</div>
 {% else %}<div class="card"><p>No lessons yet.</p></div>{% endfor %}
 <h3>My group classes</h3>{% for c in classes %}<div class="card"><a href="{{ url_for('ac_class', cid=c.id) }}">{{ c.title }}</a> · {{ c.scheduled_date }} {{ c.start_time }}</div>{% else %}<div class="card"><p>Not enrolled in any class.</p></div>{% endfor %}''',
                     sessions=sessions, classes=classes)
+
+
+ACADEMIC_PAY_PREFIX = "KOJA-LES-"
+
+
+def _academic_pay_networks():
+    """Country and network choices for paying a lesson (same charge types as assignment answers)."""
+    return [{"value": code + ":" + net, "country": spec["name"], "label": label}
+            for code, spec in ASSIGNMENT_PAYMENT_COUNTRIES.items() for net, label in spec["networks"].items()]
+
+
+app.jinja_env.globals["academic_pay_networks"] = _academic_pay_networks
+
+
+def _academic_checkout(user, s, choice, phone):
+    """Start a Flutterwave mobile-money charge for one lesson. Returns (redirect_url, error)."""
+    if not FLW_SECRET_KEY:
+        return None, "Payments are not configured yet. Please try again later."
+    email = clean(user.get("email")).lower()
+    if not email:
+        return None, "Your account needs an email address before payment."
+    country, _sep, network = clean(choice).upper().partition(":")
+    spec = ASSIGNMENT_PAYMENT_COUNTRIES.get(country)
+    if not spec or network not in spec["networks"] or not clean(phone):
+        return None, "Choose a country and network, and enter the mobile-money number."
+    currency = spec["currency"]
+    amount = _assignment_local_amount(s.get("price") or 0, currency)
+    if amount is None:
+        return None, "Payments in " + currency + " are not available right now."
+    tx_ref = ACADEMIC_PAY_PREFIX + uuid.uuid4().hex[:24]
+    _, err = db_insert("koja_academic_payments", {
+        "id": str(uuid.uuid4()), "tx_ref": tx_ref, "session_id": str(s.get("id")), "buyer_id": str(user.get("id")),
+        "teacher_user_id": str(s.get("teacher_user_id")), "amount": amount, "currency": currency, "network": network,
+        "status": "pending", "created_at": utc_now()})
+    if err:
+        logger.error("KOJA academic payment row could not be created: %s", err)
+        return None, "Payment could not be started. Please try again."
+    payload = {
+        "tx_ref": tx_ref, "amount": amount, "currency": currency, "email": email,
+        "fullname": first_nonempty(user.get("name"), user.get("full_name"), email), "phone_number": clean(phone),
+        "redirect_url": url_for("ac_payment_callback", _external=True),
+        "meta": {"koja_session_id": str(s.get("id"))},
+    }
+    if spec["send_network"]:
+        payload["network"] = network
+    try:
+        r = _HTTP.post(FLW_BASE_URL + "/charges?type=" + spec["charge_type"],
+                       headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json", "Accept": "application/json"},
+                       json=payload, timeout=30)
+        body = json_or_empty(r)
+        redirect_url = ((body.get("meta") or {}).get("authorization") or {}).get("redirect") if isinstance(body, dict) else None
+        if r.ok and str(body.get("status") or "").lower() == "success" and redirect_url:
+            return redirect_url, None
+        logger.error("KOJA academic checkout failed: %s %s", r.status_code, str(body)[:1200])
+    except Exception:
+        logger.exception("KOJA academic checkout error")
+    db_update("koja_academic_payments", {"tx_ref": tx_ref}, {"status": "failed"})
+    return None, "Checkout could not be started. Please try again."
+
+
+def _academic_payment_tx_ok(tx, payment):
+    """A verified Flutterwave transaction that matches this lesson payment: reference, status, amount and lesson."""
+    if not tx or not payment:
+        return False
+    if not _flutterwave_payment_valid(tx, str(payment.get("tx_ref") or ""), payment.get("amount"), payment.get("currency")):
+        return False
+    if abs(_money2(tx.get("amount")) - _money2(payment.get("amount"))) > 0.01:
+        return False
+    tx_currency = str(tx.get("currency") or "").upper()
+    if tx_currency and tx_currency != str(payment.get("currency") or "").upper():
+        return False
+    meta = tx.get("meta")
+    if isinstance(meta, dict):
+        ref = clean(meta.get("koja_session_id"))
+        if ref and ref != str(payment.get("session_id")):
+            return False
+    return True
+
+
+def _finalize_academic_payment(payment, tx):
+    """Record a verified lesson payment and open the live room. Shared by the return page and the webhook. Idempotent."""
+    if not payment or not tx:
+        return False
+    if str(payment.get("status") or "").lower() == "paid":
+        return True
+    if not _academic_payment_tx_ok(tx, payment):
+        return False
+    now = utc_now()
+    updated, _err = db_update("koja_academic_payments", {"id": payment.get("id")},
+                              {"status": "paid", "transaction_id": str(tx.get("id") or ""), "paid_at": now})
+    if not updated:
+        current = first_row("koja_academic_payments", {"id": payment.get("id")}) or {}
+        if str(current.get("status") or "").lower() != "paid":
+            return False
+    s = first_row("koja_academic_sessions", {"id": payment.get("session_id")})
+    if not s:
+        return True
+    if s.get("payment_status") != "paid":
+        db_update("koja_academic_sessions", {"id": s.get("id")}, {"payment_status": "paid", "paid_at": now, "updated_at": now})
+        notify_user(s.get("teacher_user_id"), "Lesson paid", "A student has paid for the %s lesson on %s. The live room is open." % (s.get("subject"), s.get("scheduled_date")), "/academic/teacher/dashboard")
+    if s.get("status") == "completed":
+        _ac_credit_teacher(s, "session")
+    return True
+
+
+@app.route("/academic/payment/callback")
+@login_required
+def ac_payment_callback():
+    tx_ref = clean(request.args.get("tx_ref") or request.args.get("reference"))
+    tid = clean(request.args.get("transaction_id") or request.args.get("id"))
+    user = current_user()
+    payment = first_row("koja_academic_payments", {"tx_ref": tx_ref, "buyer_id": str(user.get("id"))}) if tx_ref else None
+    if not payment:
+        flash("Payment not found.", "danger")
+        return redirect(url_for("ac_my_sessions"))
+    if str(payment.get("status") or "").lower() != "paid":
+        tx = _flutterwave_verify(tid, tx_ref) if tid else _flutterwave_verify(tx_ref=tx_ref)
+        if tx and _academic_payment_tx_ok(tx, payment):
+            _finalize_academic_payment(payment, tx)
+    current = first_row("koja_academic_payments", {"id": payment.get("id")}) or {}
+    if str(current.get("status") or "").lower() == "paid":
+        flash("Payment received. The live room is open for your lesson.", "success")
+    else:
+        flash("Your payment is being confirmed. Refresh My lessons in a minute; the room opens as soon as it is confirmed.", "info")
+    return redirect(url_for("ac_my_sessions"))
+
+
+@app.route("/academic/session/<sid>/pay", methods=["POST"])
+@login_required
+def ac_session_pay(sid):
+    s = first_row("koja_academic_sessions", {"id": sid, "student_id": _ac_uid()})
+    if not s:
+        abort(404)
+    if s.get("status") != "accepted" or s.get("payment_status") == "paid":
+        flash("This lesson does not need payment right now.", "info")
+        return redirect(url_for("ac_my_sessions"))
+    redirect_url, error = _academic_checkout(current_user() or {}, s, clean(request.form.get("network")), clean(request.form.get("phone")))
+    if error:
+        flash(error, "danger")
+        return redirect(url_for("ac_my_sessions"))
+    return redirect(redirect_url)
 
 
 @app.route("/academic/session/<sid>/<action>", methods=["POST"])
@@ -22430,16 +22582,24 @@ def ac_teacher_dashboard():
     sessions = _ac_rows("koja_academic_sessions", {"teacher_user_id": _ac_uid()}, order="scheduled_date.desc", limit=100)
     classes = _ac_rows("koja_academic_classes", {"teacher_id": t["id"]}, order="scheduled_date.desc", limit=100)
     earned, paid, balance = _ac_balance(_ac_uid())
+    today = datetime.now(timezone.utc).date().isoformat()
+    open_lessons = sorted([x for x in sessions if x.get("status") == "accepted" and x.get("payment_status") == "paid" and str(x.get("scheduled_date")) >= today], key=lambda x: str(x.get("scheduled_date")))
+    open_classes = sorted([c for c in classes if str(c.get("scheduled_date")) >= today], key=lambda c: str(c.get("scheduled_date")))
+    go_live = None
+    if open_lessons:
+        go_live = {"url": url_for("ac_room", kind="session", rid=open_lessons[0]["id"]), "title": (open_lessons[0].get("subject") or "lesson") + " lesson"}
+    elif open_classes:
+        go_live = {"url": url_for("ac_room", kind="class", rid=open_classes[0]["id"]), "title": open_classes[0].get("title") or "class"}
     return _ac_page("Teacher dashboard", r'''
 <div class="hero"><h2>Teacher dashboard</h2><p>Status: <strong>{{ t.status }}</strong> · Commission: {{ pct }}%</p>
-<div class="actions"><a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Edit profile</a>{% if t.status == 'verified' %}<a class="btn" href="{{ url_for('ac_class_new') }}">New group class</a>{% endif %}</div></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Edit profile</a>{% if go_live %}<a class="btn" href="{{ go_live.url }}">● Go live: {{ go_live.title }}</a>{% endif %}{% if t.status == 'verified' %}<a class="btn" href="{{ url_for('ac_class_new') }}">New group class</a>{% endif %}</div></div>
 <div class="grid"><div class="card"><h3>Earned</h3>{{ money(earned, t.currency or 'ZMW') }}</div><div class="card"><h3>Paid out</h3>{{ money(paid, t.currency or 'ZMW') }}</div><div class="card"><h3>Wallet balance</h3>{{ money(balance, t.currency or 'ZMW') }}</div></div>
 <h3>Lesson requests</h3>{% for s in sessions %}<div class="card"><strong>{{ s.subject }}</strong> · {{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.teacher_earning, s.currency) }} after fee<br>Status: {{ s.status }} · Payment: {{ s.payment_status }}
 <div class="actions">{% if s.status == 'requested' %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='accept') }}">{{ csrf }}<button class="btn">Accept</button></form><form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='decline') }}">{{ csrf }}<button class="btn secondary">Decline</button></form>{% endif %}
 {% if s.status == 'accepted' and s.payment_status == 'paid' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Start live room</a>{% elif s.status == 'accepted' %}<span>Live room opens once payment is recorded.</span>{% endif %}{% if s.status == 'accepted' %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='complete') }}">{{ csrf }}<button class="btn secondary">Mark completed</button></form>{% endif %}</div></div>
 {% else %}<div class="card"><p>No lesson requests yet.</p></div>{% endfor %}
 <h3>My classes</h3>{% for c in classes %}<div class="card"><a href="{{ url_for('ac_class', cid=c.id) }}">{{ c.title }}</a> · {{ c.scheduled_date }} {{ c.start_time }}</div>{% else %}<div class="card"><p>No classes yet.</p></div>{% endfor %}''',
-                    t=t, sessions=sessions, classes=classes, earned=earned, paid=paid, balance=balance, pct=ACADEMIC_COMMISSION_PCT)
+                    t=t, sessions=sessions, classes=classes, earned=earned, paid=paid, balance=balance, pct=ACADEMIC_COMMISSION_PCT, go_live=go_live)
 
 
 # ---- group classes: create, enrol, materials, attendance --------------------------
