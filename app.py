@@ -22194,11 +22194,16 @@ def ac_home():
         teachers.sort(key=lambda t: -float(t.get("hourly_rate") or 0))
     elif sort == "reviews":
         teachers.sort(key=lambda t: -int(t.get("rating_count") or 0))
+    live_now = _ac_live_rows()
+    live_by_teacher = {str(x.get("teacher_user_id")): x for x in live_now}
+    for t in teachers:
+        t["_live"] = live_by_teacher.get(str(t.get("user_id")))
     mine = _ac_teacher_for_user()
     # _ac_rows hides database errors, so an admin is told directly when the Academic tables are missing.
     if (current_user() or {}).get("is_admin") and not table_exists("koja_academic_teachers"):
         flash("KOJA Academic tables are missing on this database. Run koja_academic_migration.sql, then koja_assignment_answers.sql if needed.", "warning")
     return _ac_page("Find a tutor", r'''
+{% if live_now %}<div class="card" aria-label="Teachers live now"><h3>● Live now</h3>{% for x in live_now %}<p><strong>{{ x.teacher_name or 'Teacher' }}</strong> · {{ x.title or 'Live lesson' }} · <a class="btn" href="{{ url_for('ac_room', kind=x.kind, rid=x.rid) }}">Join live room</a></p>{% endfor %}</div>{% endif %}
 <div class="hero"><h2>Find a tutor</h2><p>Verified teachers for one-to-one lessons and live group classes.</p>
 <div class="actions"><a class="btn" href="{{ url_for('ac_classes') }}">Find a group class</a>
 <a class="btn secondary" href="{{ url_for('ac_my_sessions') }}">My lessons</a>
@@ -22225,10 +22230,10 @@ def ac_home():
 <div class="grid">{% for t in teachers %}<div class="card"><h3>{{ t.full_name }} <small>Verified</small></h3>
 <p><strong>Subjects:</strong> {{ t.subjects }}</p><p><strong>Grades:</strong> {{ t.grade_levels or '—' }}</p>
 <p>Rated {{ '%.1f'|format(t.rating_avg or 0) }} ({{ t.rating_count or 0 }} review{{ '' if (t.rating_count or 0) == 1 else 's' }}) · {{ money(t.hourly_rate, t.currency or 'ZMW') }}/hour</p>
-<a class="btn" href="{{ url_for('ac_teacher_profile', tid=t.id) }}">View &amp; book</a></div>
+{% if t._live %}<p><strong>● Live now</strong></p>{% endif %}<a class="btn" href="{{ url_for('ac_teacher_profile', tid=t.id) }}">View &amp; book</a></div>
 {% else %}<div class="card"><p>No verified teacher matches these filters yet.</p>
 <p class="small">Try a broader subject, remove the price limit, or <a href="{{ url_for('ac_classes') }}">look at group classes</a>.</p></div>{% endfor %}</div>''',
-                    teachers=teachers, q=q, subject=subject, grade=grade, max_rate=max_rate, sort=sort, subjects=subjects, mine=mine)
+                    teachers=teachers, q=q, subject=subject, grade=grade, max_rate=max_rate, sort=sort, subjects=subjects, mine=mine, live_now=live_now)
 
 
 # ---- teacher application / profile ------------------------------------------------
@@ -22259,9 +22264,9 @@ def ac_teacher_apply():
                 flash("Profile updated.", "success")
             db_update("koja_academic_teachers", {"id": existing["id"]}, data)
         else:
-            data.update(id=str(uuid.uuid4()), user_id=_ac_uid(), status="pending", rating_avg=0, rating_count=0, created_at=utc_now())
+            data.update(id=str(uuid.uuid4()), user_id=_ac_uid(), status="verified", rating_avg=0, rating_count=0, created_at=utc_now())
             _, err = db_insert("koja_academic_teachers", data)
-            flash("Application submitted. KOJA will verify your credentials." if not err else "Could not save (run the Academic migration).",
+            flash("You are now a KOJA teacher. Students can book you straight away. KOJA may check your credentials afterwards." if not err else "Could not save (run the Academic migration).",
                   "success" if not err else "danger")
         return redirect(url_for("ac_teacher_dashboard"))
     return _ac_page("Teacher profile", r'''
@@ -22323,16 +22328,16 @@ def ac_book(tid):
     fee, earning = _ac_split(price)
     sid = str(uuid.uuid4())
     _, err = db_insert("koja_academic_sessions", {
-        "id": sid, "teacher_id": tid, "teacher_user_id": t.get("user_id"), "student_id": _ac_uid(),
+        "id": sid, "teacher_id": tid, "teacher_user_id": t.get("user_id"), "student_id": _ac_uid(), "learner_user_id": _ac_uid(),
         "subject": clean(f.get("subject"))[:160], "scheduled_date": str(day), "start_time": start.strftime("%H:%M"),
         "duration_minutes": dur, "notes": clean(f.get("notes"))[:1000], "price": price, "currency": t.get("currency") or "ZMW",
-        "commission": fee, "teacher_earning": earning, "status": "requested", "payment_status": "unpaid",
+        "commission": fee, "teacher_earning": earning, "status": "accepted", "payment_status": "unpaid",
         "room_name": "koja-ac-" + sid[:12], "created_at": utc_now(), "updated_at": utc_now()})
     if err:
         flash("Could not create the booking.", "danger")
     else:
         notify_user(t.get("user_id"), "New lesson request", "%s requested a %d-minute lesson on %s." % ((current_user() or {}).get("full_name") or "A student", dur, day), "/academic/teacher/dashboard")
-        flash("Lesson requested. You will be notified when the teacher responds.", "success")
+        flash("Lesson booked. Pay to unlock the live room; the teacher has been notified.", "success")
     return redirect(url_for("ac_my_sessions"))
 
 
@@ -22473,6 +22478,9 @@ def ac_classes():
         classes.sort(key=lambda c: float(c.get("price_per_student") or 0))
     elif sort == "seats":
         classes.sort(key=lambda c: -int(c.get("_seats") or 0))
+    live_class_ids = {str(x.get("rid")) for x in _ac_live_rows() if x.get("kind") == "class"}
+    for c in classes:
+        c["_live"] = str(c.get("id")) in live_class_ids
     subjects = sorted({str(c.get("subject")).strip() for c in classes if c.get("subject")}, key=str.lower)
     return _ac_page("Find a group class", r'''
 <div class="hero"><h2>Find a group class</h2><p>Live classes you can join with other students. Upcoming classes are shown first.</p>
@@ -22494,7 +22502,7 @@ def ac_classes():
 <p class="small" aria-live="polite">{{ classes|length }} class{{ '' if classes|length == 1 else 'es' }} found from {{ date_from }}</p>
 {% for c in classes %}<div class="card"><h3>{{ c.title }}</h3><p>{{ c.subject or 'General' }} · {{ c.scheduled_date }} at {{ c.start_time }} · {{ c.duration_minutes }} min</p>
 <p>{{ money(c.price_per_student, c.currency or 'ZMW') }} per student · <strong>{{ c._seats }} seat{{ '' if c._seats == 1 else 's' }} left</strong></p>
-<a class="btn" href="{{ url_for('ac_class', cid=c.id) }}">Details</a></div>
+{% if c._live %}<p><strong>● Live now</strong></p>{% endif %}<a class="btn" href="{{ url_for('ac_class', cid=c.id) }}">Details</a></div>
 {% else %}<div class="card"><p>No open classes match these filters.</p>
 <p class="small">Try a later date or remove the price limit, or <a href="{{ url_for('ac_home') }}">find a tutor</a> for one-to-one lessons.</p></div>{% endfor %}''',
                     classes=classes, q=q, subject=subject, max_price=max_price, date_from=date_from, sort=sort, subjects=subjects)
@@ -22643,6 +22651,35 @@ def _ac_board_key(kind, rid):
     return "%s:%s" % (kind, rid)
 
 
+AC_LIVE_TABLE = "koja_academic_live"
+AC_LIVE_WINDOW_SECONDS = 180  # a teacher counts as live for 3 minutes after their last heartbeat
+
+
+def _ac_live_rows():
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=AC_LIVE_WINDOW_SECONDS)).isoformat()
+    return _ac_rows(AC_LIVE_TABLE, {"last_seen": "gte." + cutoff}, order="last_seen.desc", limit=500)
+
+
+@app.route("/academic/live/heartbeat", methods=["POST"])
+@login_required
+def ac_live_heartbeat():
+    """Sent by the teacher's room page every minute while it is open. Only the teacher of that room can send it."""
+    data = request.get_json(silent=True) or request.form
+    kind, rid = clean(data.get("kind")), clean(data.get("rid"))
+    if kind not in ("session", "class") or not CV_ID_RE.match(rid or ""):
+        return jsonify({"ok": False}), 400
+    obj, is_teacher = _ac_room_access(kind, rid)
+    if not obj or not is_teacher:
+        return jsonify({"ok": False}), 403
+    uid = _ac_uid()
+    teacher = first_row("koja_academic_teachers", {"user_id": uid}) or {}
+    title = obj.get("subject") if kind == "session" else obj.get("title")
+    db_delete(AC_LIVE_TABLE, {"teacher_user_id": uid})
+    db_insert(AC_LIVE_TABLE, {"teacher_user_id": uid, "teacher_name": clean(teacher.get("full_name"))[:120], "kind": kind, "rid": rid,
+                              "title": clean(title)[:160], "last_seen": utc_now()})
+    return jsonify({"ok": True})
+
+
 @app.route("/academic/room/<kind>/<rid>")
 @login_required
 def ac_room(kind, rid):
@@ -22658,6 +22695,7 @@ def ac_room(kind, rid):
 <h3>Whiteboard</h3>
 <canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
 {% if is_teacher %}<div class="actions"><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div>{% endif %}</div>
+{% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <script>
 (function(){
@@ -22705,7 +22743,7 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
 })();
 })();
 </script>''',
-                    token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid),
+                    token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid), kind=kind, rid=rid,
                     back_url=back_url, is_teacher=is_teacher)
 
 
