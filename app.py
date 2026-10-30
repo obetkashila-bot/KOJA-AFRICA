@@ -22168,6 +22168,13 @@ def _ac_room_token(room, user, can_publish=True):
 
 
 # ---- find a teacher (marketplace) -------------------------------------------------
+@app.route("/live-tutoring")
+@app.route("/tutoring")
+def ac_tutoring_shortcut():
+    """Friendly direct entry point for KOJA's existing live tutoring module."""
+    return redirect(url_for("ac_home"))
+
+
 @app.route("/academic")
 @login_required
 def ac_home():
@@ -22445,7 +22452,7 @@ def ac_class_new():
         _, err = db_insert("koja_academic_classes", {
             "id": cid, "teacher_id": t["id"], "teacher_user_id": _ac_uid(), "title": title, "subject": clean(f.get("subject"))[:160],
             "description": clean(f.get("description"))[:2000], "scheduled_date": str(day), "start_time": start.strftime("%H:%M"),
-            "duration_minutes": int(_ac_num(f.get("duration_minutes"), 60, 15, 240)), "capacity": int(_ac_num(f.get("capacity"), 20, 1, 500)),
+            "duration_minutes": int(_ac_num(f.get("duration_minutes"), 60, 15, 240)), "capacity": int(_ac_num(f.get("capacity"), 500, 2, 5000)),
             "price_per_student": _ac_num(f.get("price_per_student"), 0), "currency": t.get("currency") or "ZMW", "status": "open",
             "room_name": "koja-ac-class-" + cid[:10], "created_at": utc_now()})
         flash("Class created." if not err else "Could not create the class.", "success" if not err else "danger")
@@ -22453,7 +22460,7 @@ def ac_class_new():
     return _ac_page("New class", r'''
 <div class="card"><h2>New group class</h2><form method="post">{{ csrf }}<label>Title</label><input name="title" required><label>Subject</label><input name="subject">
 <label>Description</label><textarea name="description" rows="4"></textarea><label>Date</label><input type="date" name="scheduled_date" required><label>Start time</label><input type="time" name="start_time" required>
-<label>Duration (minutes)</label><input type="number" name="duration_minutes" value="60" min="15" max="240"><label>Capacity</label><input type="number" name="capacity" value="20" min="1">
+<label>Duration (minutes)</label><input type="number" name="duration_minutes" value="60" min="15" max="240"><label>Student capacity</label><input type="number" name="capacity" value="500" min="2" max="5000"><p class="small">Large lecture classes support up to 5,000 enrolments in KOJA. Actual live attendance depends on the configured LiveKit service plan and infrastructure.</p>
 <label>Price per student</label><input type="number" name="price_per_student" min="0" step="0.01" value="0"><button class="btn">Create class</button></form></div>''')
 
 
@@ -22465,9 +22472,9 @@ def ac_class(cid):
         abort(404)
     uid = _ac_uid()
     is_teacher = str(c.get("teacher_user_id")) == uid
-    enrolments = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500)
+    enrolments = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000)
     mine = next((e for e in enrolments if str(e.get("student_id")) == uid), None)
-    att = {str(a.get("student_id")): a for a in _ac_rows("koja_academic_attendance", {"class_id": cid}, limit=1000)}
+    att = {str(a.get("student_id")): a for a in _ac_rows("koja_academic_attendance", {"class_id": cid}, limit=10000)}
     for e in enrolments:
         e["_name"] = (find_user_by_id(e.get("student_id")) or {}).get("full_name") or "Student"
         e["_present"] = (att.get(str(e.get("student_id"))) or {}).get("present")
@@ -22493,7 +22500,7 @@ def ac_enroll(cid):
     uid = _ac_uid()
     if not c or str(c.get("teacher_user_id")) == uid:
         abort(404)
-    es = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500)
+    es = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000)
     if any(str(e.get("student_id")) == uid for e in es):
         flash("You are already enrolled.", "info")
     elif len(es) >= int(c.get("capacity") or 0):
@@ -22531,7 +22538,7 @@ def ac_attendance(cid):
     if not c:
         abort(403)
     present = set(request.form.getlist("present"))
-    for e in _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500):
+    for e in _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000):
         sid = str(e.get("student_id"))
         row = {"present": sid in present, "marked_at": utc_now()}
         old = first_row("koja_academic_attendance", {"class_id": cid, "student_id": sid})
@@ -22590,7 +22597,7 @@ const st=document.getElementById('ac-status');
 const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');
 cx.lineWidth=2;cx.lineCap='round';cx.strokeStyle='#111';
 const box=document.getElementById('ac-videos');
-const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }};
+const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }},CAN_PUBLISH={{ (kind == 'session' or is_teacher)|tojson }};
 let room=null;
 function setStatus(t){st.textContent=t}
 function drawStroke(pts){if(!pts||pts.length<2)return;cx.beginPath();cx.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)cx.lineTo(pts[i][0],pts[i][1]);cx.stroke()}
@@ -22624,14 +22631,15 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     await room.connect(d.url,d.token);
     setStatus('Connected.');
     room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>attach(x.track)));
-    try{await room.localParticipant.enableCameraAndMicrophone()}
-    catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}
+    if(CAN_PUBLISH){try{await room.localParticipant.enableCameraAndMicrophone()}
+    catch(e){setStatus('Connected. Your camera or microphone is blocked. Allow access in your browser and reload.')}}
+    else {setStatus('Connected to the large-class lecture. Your microphone and camera are off to protect class quality. Use the shared whiteboard and class materials.')}
   }catch(e){setStatus('Could not join the live room: '+e.message)}
 })();
 })();
 </script>''',
                     token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid),
-                    back_url=back_url, is_teacher=is_teacher)
+                    back_url=back_url, is_teacher=is_teacher, kind=kind)
 
 
 @app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
@@ -22682,7 +22690,7 @@ def ac_room_token(kind, rid):
     if not obj:
         return jsonify({"error": "Not allowed to join this room."}), 403
     try:
-        return jsonify({"token": _ac_room_token(obj.get("room_name"), current_user(), can_publish=True), "url": _livekit_server_url()})
+        return jsonify({"token": _ac_room_token(obj.get("room_name"), current_user(), can_publish=(kind == "session" or is_teacher)), "url": _livekit_server_url(), "role": ("teacher" if is_teacher else ("participant" if kind == "session" else "viewer"))})
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 503
 
