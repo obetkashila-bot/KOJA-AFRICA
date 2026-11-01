@@ -98,24 +98,60 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 _rate_hits = {}
 RATE_LIMITED_PREFIXES = ("login:", "register:", "receiver:", "pickup:", "complaint:", "adminunlock:", "pbgen:", "resrun:", "ldgen:", "cvai:", "cvcoach:", "profile:", "2fa:")
 
+RATE_TABLE = "koja_rate_hits"
+
+
+def _rate_store(key, bucket, row):
+    """Saves the hits in the shared table. Memory still keeps the same counts if the database is unreachable."""
+    try:
+        payload = {"hits": json.dumps(bucket[-50:]), "updated_at": utc_now()}
+        if row:
+            db_update(RATE_TABLE, {"key": str(key)}, payload)
+        else:
+            db_insert(RATE_TABLE, dict(payload, key=str(key)))
+    except Exception:
+        pass
+
+
 def _rate_limited(key, limit, window=60):
     # Only sign-in, registration and code-entry limits are active. Other limits stay off by request.
     if not str(key).startswith(RATE_LIMITED_PREFIXES):
         return False
     now = datetime.now(timezone.utc).timestamp()
-    bucket = _rate_hits.get(key, [])
-    bucket = [t for t in bucket if now - t < window]
-    if len(bucket) >= limit:
-        _rate_hits[key] = bucket
-        return True
-    bucket.append(now)
+    try:
+        row = first_row(RATE_TABLE, {"key": str(key)})
+        db_bucket = json.loads((row or {}).get("hits") or "[]") if row else []
+    except Exception:
+        row, db_bucket = None, []
+    mem_bucket = _rate_hits.get(key, [])
+    # The longer history wins, so a limit is never weaker than the shared or local record.
+    bucket = [t for t in max(mem_bucket, db_bucket, key=len) if now - t < window]
+    limited = len(bucket) >= limit
+    if not limited:
+        bucket.append(now)
     _rate_hits[key] = bucket
+    _rate_store(key, bucket, row)
     # Prevent unbounded memory growth on long-running instances.
     if len(_rate_hits) > 5000:
         oldest = sorted(_rate_hits.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)[:1000]
         for k, _ in oldest:
             _rate_hits.pop(k, None)
-    return False
+    return limited
+
+
+_TTL_CACHE = {}
+
+
+def _ttl_cache(key, ttl, fn):
+    """Keeps a copy of a read-only list for ttl seconds on this instance."""
+    import copy as _copy
+    now = time.time()
+    hit = _TTL_CACHE.get(key)
+    if hit and now - hit[0] < ttl:
+        return _copy.deepcopy(hit[1])
+    value = fn()
+    _TTL_CACHE[key] = (now, value)
+    return _copy.deepcopy(value)
 
 # KOJA MUSIC: music videos/audio are far larger than documents, so the
 # upload route gets its own limit. Registered early so it runs before any
@@ -2723,6 +2759,37 @@ def _two_factor_enabled(uid):
     return bool(row and as_bool(row.get("enabled")))
 
 
+BACKUP_CODE_COUNT = 10
+
+
+def _backup_hash(code):
+    import hashlib as _hashlib
+    return _hashlib.sha256(re.sub(r"[^A-Z0-9]", "", str(code or "").upper()).encode("utf-8")).hexdigest()
+
+
+def _backup_new():
+    import secrets as _secrets
+    return ["%s-%s" % (_secrets.token_hex(2).upper(), _secrets.token_hex(2).upper()) for _ in range(BACKUP_CODE_COUNT)]
+
+
+def _two_factor_store_codes(uid, codes):
+    db_update(TWO_FACTOR_TABLE, {"user_id": str(uid)}, {"backup_codes": json.dumps([_backup_hash(c) for c in codes]), "updated_at": utc_now()})
+
+
+def _two_factor_use_backup(row, code):
+    """Accepts one unused backup code and retires it. Returns True when the code was valid."""
+    try:
+        hashes = json.loads((row or {}).get("backup_codes") or "[]")
+    except ValueError:
+        return False
+    h = _backup_hash(code)
+    if not h or h not in hashes:
+        return False
+    hashes.remove(h)
+    db_update(TWO_FACTOR_TABLE, {"user_id": str(row.get("user_id"))}, {"backup_codes": json.dumps(hashes), "updated_at": utc_now()})
+    return True
+
+
 def _two_factor_challenge(user, next_url=""):
     """Holds the sign-in until the code is entered. Nothing is signed in yet."""
     session.clear()
@@ -2748,8 +2815,22 @@ def account_2fa():
                 flash("That code is not right. Check the code in your app and try again.", "danger")
             else:
                 db_update(TWO_FACTOR_TABLE, {"user_id": uid}, {"enabled": True, "last_counter": step, "updated_at": utc_now()})
+                codes = _backup_new()
+                _two_factor_store_codes(uid, codes)
+                session["show_backup_codes"] = codes
                 log_activity("security", "Two-step login turned on.")
                 flash("Two-step login is on. You will enter a code from your app each time you sign in.", "success")
+            return redirect(url_for("account_2fa"))
+        if action == "regenerate" and enabled:
+            step = _totp_check(row.get("secret"), code, row.get("last_counter"))
+            if step is None:
+                flash("That code is not right. Enter the current code from your app.", "danger")
+            else:
+                db_update(TWO_FACTOR_TABLE, {"user_id": uid}, {"last_counter": step, "updated_at": utc_now()})
+                codes = _backup_new()
+                _two_factor_store_codes(uid, codes)
+                session["show_backup_codes"] = codes
+                log_activity("security", "Two-step login backup codes were replaced.")
             return redirect(url_for("account_2fa"))
         if action == "disable" and enabled:
             step = _totp_check(row.get("secret"), code, row.get("last_counter"))
@@ -2762,6 +2843,7 @@ def account_2fa():
             return redirect(url_for("account_2fa"))
         flash("Nothing to change.", "info")
         return redirect(url_for("account_2fa"))
+    shown_codes = session.pop("show_backup_codes", None)
     secret = None
     if not enabled:
         if row:
@@ -2775,8 +2857,11 @@ def account_2fa():
     grouped = " ".join(secret[i:i + 4] for i in range(0, len(secret or ""), 4)) if secret else ""
     return render_page("Two-step login", r"""<div class="hero"><h2>Two-step login</h2><p>Ask for a code from an authenticator app each time you sign in.</p></div>
 <div class="card" style="max-width:560px">
+{% if backup_codes %}<h3>Your backup codes</h3><p class="small">Each code works once if you lose your phone. Save them now. They will not be shown again.</p><ul>{% for c in backup_codes %}<li><code style="font-size:1.1em">{{ c }}</code></li>{% endfor %}</ul><p class="small">Keep them somewhere safe, such as a password manager or paper in a drawer.</p>{% endif %}
 {% if enabled %}
 <h3>On</h3><p class="small">Enter the current 6-digit code to turn it off.</p>
+<h3>Backup codes</h3><p class="small">Creating new codes makes the old ones stop working.</p>
+<form method="post">{{ csrf }}<input type="hidden" name="action" value="regenerate"><label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required><button class="btn secondary">Create new backup codes</button></form>
 <form method="post">{{ csrf }}<input type="hidden" name="action" value="disable"><label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required><button class="btn danger" type="submit">Turn off two-step login</button></form>
 {% else %}
 <h3>Set it up</h3>
@@ -2786,8 +2871,8 @@ def account_2fa():
 <li>Enter the 6-digit code the app shows now.</li></ol>
 <form method="post">{{ csrf }}<input type="hidden" name="action" value="enable"><label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required><button type="submit">Turn on two-step login</button></form>
 {% endif %}
-<p class="small">If you lose your phone, contact KOJA support to have two-step login reset.</p>
-</div>""", enabled=enabled, grouped=grouped)
+<p class="small">If you lose your phone and your backup codes, contact KOJA support to have two-step login reset.</p>
+</div>""", enabled=enabled, grouped=grouped, backup_codes=shown_codes)
 
 
 @app.route("/login/2fa", methods=["GET", "POST"])
@@ -2802,11 +2887,14 @@ def login_2fa():
         if _rate_limited("2fa:" + uid, 8, 600):
             return "Too many attempts. Please wait a few minutes and try again.", 429
         row = _two_factor_row(uid)
-        step = _totp_check(row.get("secret"), request.form.get("code", ""), row.get("last_counter")) if row and as_bool(row.get("enabled")) else None
-        if step is None:
-            flash("That code is not right. Use the newest code in your app.", "danger")
+        enabled_2fa = bool(row and as_bool(row.get("enabled")))
+        code = request.form.get("code", "")
+        step = _totp_check(row.get("secret"), code, row.get("last_counter")) if enabled_2fa else None
+        if step is not None:
+            db_update(TWO_FACTOR_TABLE, {"user_id": uid}, {"last_counter": step, "updated_at": utc_now()})
+        elif not (enabled_2fa and _two_factor_use_backup(row, code)):
+            flash("That code is not right. Use the newest code in your app, or one of your backup codes.", "danger")
             return redirect(url_for("login_2fa"))
-        db_update(TWO_FACTOR_TABLE, {"user_id": uid}, {"last_counter": step, "updated_at": utc_now()})
         profile = find_user_by_id(uid)
         if not profile or profile.get("is_active") is False:
             session.clear()
@@ -2820,8 +2908,142 @@ def login_2fa():
             return redirect(url_for("public_terms", required=1, next=next_url or url_for("dashboard")))
         return redirect(safe_next_url(next_url) if next_url else url_for("dashboard"))
     return render_page("Two-step login", r"""<div class="card" style="max-width:460px;margin:auto"><h2>Enter your code</h2>
-<p class="small">Open your authenticator app and type the 6-digit code for KOJA.</p>
-<form method="post">{{ csrf }}<label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required><button type="submit">Confirm and sign in</button></form></div>""")
+<p class="small">Open your authenticator app and type the 6-digit code for KOJA, or enter one of your backup codes.</p>
+<form method="post">{{ csrf }}<label>Code</label><input name="code" autocomplete="one-time-code" maxlength="16" required><button type="submit">Confirm and sign in</button></form></div>""")
+
+
+REFUNDS_TPL = r"""<div class="hero"><h2>Refunds for cancelled lessons</h2><p>Pay the student back through your payment provider, then mark the refund here. Refunds are never sent automatically.</p></div>
+{% for r in rows %}<div class="card"><strong>{{ r.amount }} {{ r.currency }}</strong> · {{ r.reason }} · <span>{{ r.status }}</span>{% if r.reference %} · Reference: {{ r.reference }}{% endif %}<br><span class="small">Requested {{ r.created_at }}{% if r.refunded_at %} · Refunded {{ r.refunded_at }}{% endif %}</span>
+{% if r.status == 'requested' %}<form method="post" action="{{ url_for('ac_admin_refund_done', rid=r.id) }}">{{ csrf }}<label>Payment reference (optional)</label><input name="reference" maxlength="120"><button class="btn">Mark refunded</button></form>{% endif %}</div>
+{% else %}<div class="card"><p>No refund requests yet.</p></div>{% endfor %}
+<div class="card"><a href="{{ url_for('ac_admin') }}">← Academic admin</a></div>
+"""
+
+
+@app.route("/academic/admin/refunds")
+@admin_required
+def ac_admin_refunds():
+    rows = _ac_rows(ACADEMIC_REFUNDS_TABLE, {}, order="created_at.desc", limit=500)
+    return _ac_page("Academic refunds", REFUNDS_TPL, rows=rows)
+
+
+@app.route("/academic/admin/refunds/<rid>/refunded", methods=["POST"])
+@admin_required
+def ac_admin_refund_done(rid):
+    row = first_row(ACADEMIC_REFUNDS_TABLE, {"id": rid})
+    if not row:
+        abort(404)
+    if row.get("status") == "refunded":
+        flash("That refund is already marked as sent.", "info")
+        return redirect(url_for("ac_admin_refunds"))
+    _, err = db_update(ACADEMIC_REFUNDS_TABLE, {"id": rid}, {
+        "status": "refunded", "refunded_at": utc_now(), "refunded_by": str((current_user() or {}).get("id")),
+        "reference": clean(request.form.get("reference"))[:120]})
+    if err:
+        flash("Could not save the refund.", "danger")
+    else:
+        notify_user(str(row.get("buyer_id")), "Refund sent",
+                    "Your refund of %s %s for a cancelled lesson has been sent." % (row.get("amount"), row.get("currency") or ""),
+                    "/academic/my-lessons")
+        flash("Marked as refunded.", "success")
+    return redirect(url_for("ac_admin_refunds"))
+
+
+# ---- KOJA AI knowledge sources: licence register (checked before any book is used) ----
+# commercial: "no" = commercial use not allowed; "permission" = written permission needed first;
+# "yes" = commercial use allowed under the stated licence; "check" = licence differs per item, check each one.
+KNOWLEDGE_SOURCES = [
+    {"name": "OpenStax textbooks", "url": "https://openstax.org/subjects", "subjects": "Biology, chemistry, physics, maths, economics, statistics",
+     "licence": "CC BY-NC-SA 4.0", "commercial": "permission", "status": "verified",
+     "note": "Non-commercial only. Request commercial permission through OpenStax's content reuse form."},
+    {"name": "Think Python (Green Tea Press)", "url": "https://greenteapress.com/thinkpython/thinkpython.html", "subjects": "Programming (Python)",
+     "licence": "CC BY-NC 3.0", "commercial": "no", "status": "verified",
+     "note": "Commercial use is not allowed. Do not index for KOJA AI without permission from the author."},
+    {"name": "Dive into Deep Learning", "url": "https://d2l.ai/", "subjects": "AI and machine learning",
+     "licence": "Reported as CC BY-SA 4.0", "commercial": "check", "status": "unverified",
+     "note": "Confirm the licence on the book's own page before use."},
+    {"name": "Introduction to Algorithms (CLRS)", "url": "https://mitpress.mit.edu/", "subjects": "Algorithms",
+     "licence": "Copyrighted (MIT Press)", "commercial": "no", "status": "unverified",
+     "note": "Commercial book. Do not copy or index it without a licence from the publisher."},
+    {"name": "Project Gutenberg", "url": "https://www.gutenberg.org/", "subjects": "Classic texts, some science",
+     "licence": "Mostly public domain in the US; copyrighted items are marked in each book", "commercial": "check", "status": "verified",
+     "note": "Checked on Project Gutenberg's permission page: most books can be reused, including commercially. Copyrighted books need the rights holder's permission. The Project Gutenberg name is a trademark, so commercial use that trades on the name needs a royalty. The rules differ outside the US."},
+    {"name": "Internet Archive", "url": "https://archive.org/details/texts", "subjects": "Mixed",
+     "licence": "Varies per item", "commercial": "check", "status": "unverified",
+     "note": "Check each item's rights statement before use."},
+    {"name": "Wikibooks", "url": "https://www.wikibooks.org/", "subjects": "Computing, science, maths",
+     "licence": "Reported as CC BY-SA 4.0", "commercial": "check", "status": "unverified",
+     "note": "Confirm the licence on each page."},
+    {"name": "DOAB (Directory of Open Access Books)", "url": "https://www.doabooks.org/", "subjects": "University-level academic books",
+     "licence": "Varies per book (usually a Creative Commons licence)", "commercial": "check", "status": "unverified",
+     "note": "Check each book's licence on its record."},
+    {"name": "National Academies Press", "url": "https://nap.nationalacademies.org/", "subjects": "Science, engineering, medicine, policy",
+     "licence": "Varies per publication", "commercial": "check", "status": "unverified",
+     "note": "Check each publication's reuse conditions."},
+    {"name": "PhET Interactive Simulations", "url": "https://phet.colorado.edu/", "subjects": "Physics, chemistry, biology, maths",
+     "licence": "CC BY 4.0 (historical HTML simulations, published before 29 March 2026)", "commercial": "yes", "status": "verified",
+     "note": "Commercial use allowed with attribution. Keep the PhET credit and logo visible. Promotional use of PhET's name or logo needs a separate agreement. Simulations published after 29 March 2026 are covered by PhET's licensing page, so check them there."},
+    {"name": "OER Africa", "url": "https://www.oerafrica.org/", "subjects": "African educational materials",
+     "licence": "Varies per resource", "commercial": "check", "status": "unverified",
+     "note": "Check each resource's licence."},
+    {"name": "World Bank Open Knowledge Repository", "url": "https://openknowledge.worldbank.org/", "subjects": "African economic and development research",
+     "licence": "Varies per publication", "commercial": "check", "status": "unverified",
+     "note": "Check each publication's licence."},
+    {"name": "UNESCO Digital Library", "url": "https://unesdoc.unesco.org/", "subjects": "Education, culture, science",
+     "licence": "Varies per publication", "commercial": "check", "status": "unverified",
+     "note": "Check each publication's licence."},
+    {"name": "FAO publications", "url": "https://www.fao.org/publications/", "subjects": "Agriculture, food security, environment",
+     "licence": "Varies per publication", "commercial": "check", "status": "unverified",
+     "note": "Check each publication's licence."},
+    {"name": "arXiv", "url": "https://arxiv.org/", "subjects": "Mathematics, physics, computing, AI research",
+     "licence": "Varies per paper (author chooses)", "commercial": "check", "status": "unverified",
+     "note": "Check the licence shown on each paper."},
+    {"name": "DOAJ (open-access journals)", "url": "https://doaj.org/", "subjects": "Academic journals",
+     "licence": "Varies per article (often CC BY)", "commercial": "check", "status": "unverified",
+     "note": "Check each article's licence."},
+    {"name": "Zenodo", "url": "https://zenodo.org/", "subjects": "Research papers, datasets, scientific materials",
+     "licence": "Varies per record", "commercial": "check", "status": "unverified",
+     "note": "Check each record's licence."},
+    {"name": "CORE (open-access research)", "url": "https://core.ac.uk/", "subjects": "Research discovery",
+     "licence": "Varies per record", "commercial": "check", "status": "unverified",
+     "note": "Search and link only; check each record's licence before reuse."},
+    {"name": "LibreTexts", "url": "https://www.libretexts.org/", "subjects": "Science and engineering textbooks",
+     "licence": "Varies per resource", "commercial": "check", "status": "unverified",
+     "note": "Check each resource's licence."},
+    {"name": "OER Commons", "url": "https://www.oercommons.org/", "subjects": "Educational resources",
+     "licence": "Varies per resource (filter by reuse licence)", "commercial": "check", "status": "unverified",
+     "note": "Use the reuse-licence filter, then check each resource."},
+    {"name": "Open Textbook Library", "url": "https://open.umn.edu/opentextbooks/", "subjects": "College textbooks",
+     "licence": "Varies per book", "commercial": "check", "status": "unverified",
+     "note": "Check each book's licence."},
+    {"name": "MIT OpenCourseWare", "url": "https://ocw.mit.edu/", "subjects": "University courses and materials",
+     "licence": "Reported as CC BY-NC-SA", "commercial": "no", "status": "unverified",
+     "note": "Non-commercial licence as reported in the document. Not for unrestricted commercial reuse."},
+    {"name": "NCBI Bookshelf", "url": "https://www.ncbi.nlm.nih.gov/books/", "subjects": "Biomedical and life-science books",
+     "licence": "Varies per book", "commercial": "check", "status": "unverified",
+     "note": "Check each book's licence."},
+]
+
+KNOWLEDGE_POLICY = ("Only a source marked 'yes' can be used to build KOJA AI's knowledge. 'permission' needs written permission first. "
+                    "'no' and 'check' sources must not be copied, indexed or trained on until the licence is confirmed. "
+                    "Nothing in this list is downloaded or trained on automatically.")
+
+KNOWLEDGE_TPL = r"""<div class="hero"><h2>KOJA AI knowledge sources</h2><p>{{ policy }}</p><div class="actions"><a class="btn secondary" href="{{ url_for('ac_admin') }}">Academic admin</a></div></div>
+<div class="card"><h3>Summary</h3><p>{{ counts.yes }} usable now · {{ counts.permission }} need permission · {{ counts.check }} to check · {{ counts.no }} not allowed</p></div>
+{% for src in sources %}<div class="card"><h3><a href="{{ src.url }}" target="_blank" rel="noopener noreferrer">{{ src.name }}</a></h3>
+<p><strong>Licence:</strong> {{ src.licence }} · <strong>Commercial use:</strong> {{ src.commercial_label }} · <strong>Checked:</strong> {{ 'yes, on the official page' if src.status == 'verified' else 'not yet' }}</p>
+<p class="small">Subjects: {{ src.subjects }}</p><p class="small">{{ src.note }}</p></div>{% endfor %}
+"""
+
+KNOWLEDGE_LABELS = {"yes": "allowed", "permission": "needs written permission", "no": "not allowed", "check": "check each item"}
+
+
+@app.route("/admin/knowledge-sources")
+@admin_required
+def admin_knowledge_sources():
+    sources = [dict(src, commercial_label=KNOWLEDGE_LABELS.get(src["commercial"], src["commercial"])) for src in KNOWLEDGE_SOURCES]
+    counts = {k: sum(1 for x in KNOWLEDGE_SOURCES if x["commercial"] == k) for k in KNOWLEDGE_LABELS}
+    return render_page("KOJA AI knowledge sources", KNOWLEDGE_TPL, sources=sources, counts=counts, policy=KNOWLEDGE_POLICY)
 
 
 @app.route("/admin/2fa/reset", methods=["POST"])
@@ -3782,6 +4004,41 @@ def ai_status():
     })
 
 
+def _ai_chat_system(response_style=""):
+    """Instructions for KOJA AI chat answers: honest, clear, well shaped, and in the user's language."""
+    return (
+        "You are KOJA AI, the general AI assistant inside KOJA AFRICA. "
+        "Give answers that are clear, accurate and useful to the reader. "
+        "Lead with the direct answer in the first sentence, then explain only as much as the question needs. "
+        "Match the length to the question: a short factual question gets a short answer; a complex question gets a structured one. "
+        "For how-to questions, give numbered steps in order. For maths, science and calculations, show the working step by step, "
+        "with units and the final answer stated clearly. For comparisons, use a short table or a few parallel points. "
+        "Use plain language, define any technical term the first time it appears, and avoid jargon the reader has not used. "
+        "Do not open with filler such as 'Great question' or 'Certainly', and do not repeat the question back. "
+        "Reply in the same language the user writes in. "
+        "Do not invent citations, facts, names, prices, laws, medical diagnoses, or current events. "
+        "If information is uncertain or needs live verification, say so plainly and say what would confirm it. "
+        "Maintain continuity using the supplied conversation. "
+        "When the user asks the same or nearly the same question again, vary the wording, structure, examples, or level of explanation naturally, "
+        "but keep the underlying facts, conclusion, and important numbers consistent. Never change a fact merely to sound different. "
+        "Do not mention that you are varying the response. "
+        "For physics, maths and chemistry problems, reason in this order and show it: "
+        "(1) list the given values with units and what must be found; "
+        "(2) state any assumption the problem needs (for example no air resistance, ideal gas, complete reaction) and say what changes if it is false; "
+        "(3) choose a method, name the law or rule behind it, and say why it applies here; "
+        "(4) work each step, keeping units and significant figures consistent; "
+        "(5) check the result before stating it: units match, the size is sensible, the sign is sensible, the answer fits a simple limiting case, "
+        "maths answers are substituted back into the equation, and chemistry equations balance for atoms and charge; "
+        "(6) state the final answer clearly, with its unit. "
+        "If the problem is ambiguous or missing data, say exactly what is missing rather than guessing. "
+        "Think critically: do not accept a conclusion the user suggests without testing it, point out a mistake in the user's working plainly and politely, "
+        "and say when two methods give different answers and which one fits the question. "
+        + (response_style + " " if response_style else "") +
+        "KOJA has separate Research, Documents, Assignments, Professional Services, Marketplace and Delivery modules. "
+        "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
+    )
+
+
 @app.route("/ai", methods=["GET", "POST"])
 @login_required
 def ai_assistant():
@@ -3836,17 +4093,7 @@ def ai_assistant():
             "Use a clear, friendly explanation with different wording from a previous answer if the question repeats.",
         ]
         response_style = secrets.choice(response_styles)
-        system = (
-            "You are KOJA AI, the general AI assistant inside KOJA AFRICA. Answer clearly and practically. "
-            "Do not invent citations, facts, names, prices, laws, medical diagnoses, or current events. "
-            "If information is uncertain or requires live verification, say so. Maintain continuity using the supplied conversation. "
-            "When the user asks the same or nearly the same question again, vary the wording, structure, examples, or level of explanation naturally, "
-            "but keep the underlying facts, conclusion, and important numbers consistent. Never change a fact merely to sound different. "
-            "Avoid repetitive stock openings and do not mention that you are varying the response. "
-            "" + response_style + " "
-            "KOJA has separate Research, Documents, Assignments, Professional Services, Marketplace and Delivery modules. "
-            "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
-        )
+        system = _ai_chat_system(response_style)
         full_prompt = "Conversation history:\n" + ("\n".join(context_lines) if context_lines else "(none)") + "\n\nUSER: " + prompt
         answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=20)
         if not answer:
@@ -4213,6 +4460,7 @@ def services():
 
 <div class="service-section"><h3>Learning and Research</h3><p>Academic questions, assignments, documents, research and document intelligence.</p></div>
 <div class="service-grid">
+<div class="service-card"><h4>Help desk</h4><p>Ask for help with university applications, bursaries, tax number registration, result verification, computer and phone help, forms and more.</p><div class="service-links"><a class="btn" href="{{ url_for('service_catalog') }}">Ask for help</a><a class="btn secondary" href="{{ url_for('service_my_requests') }}">My requests</a></div></div>
 <div class="service-card"><h4>Questions & Assignments</h4><p>Academic questions, assignments and learning workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn secondary" href="{{ url_for('assignments') }}">Assignments</a></div></div>
 <div class="service-card"><h4>Documents & Research</h4><p>Document intelligence, research and connected knowledge.</p><div class="service-links"><a class="btn" href="{{ url_for('documents') }}">Documents</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 </div>
@@ -7757,6 +8005,9 @@ def flutterwave_webhook():
     if verified_ref != tx_ref:
         logger.error('Flutterwave webhook rejected: reference mismatch webhook=%s verified=%s',tx_ref,verified_ref)
         return jsonify({'status':'ignored','reason':'reference_mismatch'}),200
+    if tx_ref.startswith(HELP_DESK_PAY_PREFIX):
+        _svc_webhook_payment(tx_ref, tx)
+        return jsonify({'status':'ok'}),200
     market_orders=db_select('koja_market_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
@@ -22167,6 +22418,692 @@ def _ac_room_token(room, user, can_publish=True):
 
 
 # ---- find a teacher (marketplace) -------------------------------------------------
+LIVE_TOOLS_MACRO = r"""
+{% macro tools(kind, rid) -%}
+<div class="actions"><a class="btn" href="{{ url_for('ac_room', kind=kind, rid=rid) }}">Live room</a>
+<a class="btn secondary" href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Materials and equipment</a>
+<a class="btn secondary" href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a>
+<a class="btn secondary" href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></div>
+{%- endmacro %}
+"""
+
+LIVE_TOOLS_TPL = LIVE_TOOLS_MACRO + r"""
+<div class="hero"><h2>Live tutoring tools</h2><p>Everything for live lessons and classes in one place: the live room, materials and equipment, the live demonstration, the maths and physics board, and the virtual labs.</p>
+<div class="actions"><a class="btn secondary" href="{{ url_for('ac_labs_index') }}">Virtual labs</a><a class="btn secondary" href="{{ url_for('ac_passport') }}">My learning passport</a>{% if teacher %}<a class="btn secondary" href="{{ url_for('ac_teacher_dashboard') }}">Teacher dashboard</a>{% endif %}</div></div>
+{% if teacher %}
+<h3>Lessons you teach</h3>
+{% for s in lessons %}<div class="card"><h3>{{ s.subject }} lesson</h3><p>{{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min</p>{{ tools('session', s.id) }}</div>
+{% else %}<div class="card"><p>No paid lessons coming up.</p></div>{% endfor %}
+<h3>Classes you teach</h3>
+{% for c in classes %}<div class="card"><h3>{{ c.title or 'Group class' }}</h3><p>{{ c.subject }} · {{ c.scheduled_date }}</p>{{ tools('class', c.id) }}</div>
+{% else %}<div class="card"><p>No classes coming up.</p></div>{% endfor %}
+{% endif %}
+<h3>Your lessons</h3>
+{% for s in my_lessons %}<div class="card"><h3>{{ s.subject }} lesson</h3><p>{{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min</p>{{ tools('session', s.id) }}</div>
+{% else %}<div class="card"><p>No paid lessons coming up.</p></div>{% endfor %}
+<h3>Your classes</h3>
+{% for c in my_classes %}<div class="card"><h3>{{ c.title or 'Group class' }}</h3><p>{{ c.subject }} · {{ c.scheduled_date }}</p>{{ tools('class', c.id) }}</div>
+{% else %}<div class="card"><p>No classes coming up.</p></div>{% endfor %}
+"""
+
+
+PASSPORT_TPL = r"""
+<style>@media print{.noprint{display:none!important}.card{box-shadow:none;border:0}}</style>
+<div class="hero"><h2>My learning passport</h2><p>Your private record of lessons, classes and quizzes on KOJA Academic. Only you can see this page.</p>
+<div class="actions noprint"><button class="btn secondary" type="button" onclick="window.print()">Print or save as PDF</button><a class="btn secondary" href="{{ url_for('ac_live_tools') }}">Live tutoring tools</a></div></div>
+<div class="grid">
+<div class="card"><h3>Lessons completed</h3><p style="font-size:1.8em;margin:0">{{ p.lessons }}</p></div>
+<div class="card"><h3>Hours learned</h3><p style="font-size:1.8em;margin:0">{{ p.hours }}</p></div>
+<div class="card"><h3>Classes attended</h3><p style="font-size:1.8em;margin:0">{{ p.classes }}</p></div>
+<div class="card"><h3>Quiz answers</h3><p style="font-size:1.8em;margin:0">{{ p.correct }} of {{ p.answered }} correct</p></div>
+</div>
+<div class="card"><h3>Subjects studied</h3>{% for name, n in p.subjects %}<p>{{ name }} · {{ n }} lesson{{ '' if n == 1 else 's' }}</p>{% else %}<p>No completed lessons yet.</p>{% endfor %}</div>
+"""
+
+
+def _passport_data(uid):
+    """Counts for one student. Only that student's own records are read."""
+    from collections import Counter
+    today = datetime.now(timezone.utc).date().isoformat()
+    sessions = _ac_rows("koja_academic_sessions", {"student_id": uid}, limit=2000)
+    done = [x for x in sessions if x.get("status") == "completed"]
+    minutes = sum(int(x.get("duration_minutes") or 0) for x in done)
+    subjects = Counter((x.get("subject") or "Other") for x in done)
+    enr = _ac_rows("koja_academic_enrollments", {"student_id": uid}, limit=2000)
+    class_ids = [str(e.get("class_id")) for e in enr if e.get("class_id")]
+    past_classes = 0
+    if class_ids:
+        past_classes = len([c for c in _ac_rows("koja_academic_classes", {"id": "in.(" + ",".join(class_ids) + ")"}, limit=2000)
+                            if str(c.get("scheduled_date")) < today])
+    answers = _ac_rows(QUIZ_ANS_TABLE, {"user_id": uid}, limit=5000)
+    correct = 0
+    if answers:
+        quiz_ids = sorted({str(a.get("quiz_id")) for a in answers})
+        quizzes = {str(q["id"]): q for q in _ac_rows(QUIZ_TABLE, {"id": "in.(" + ",".join(quiz_ids) + ")"}, limit=5000)}
+        correct = sum(1 for a in answers if str((quizzes.get(str(a.get("quiz_id"))) or {}).get("correct_index")) == str(a.get("choice")))
+    return {"lessons": len(done), "hours": round(minutes / 60, 1), "classes": past_classes,
+            "subjects": subjects.most_common(), "answered": len(answers), "correct": correct}
+
+
+# ---- KOJA help desk: people ask for help, and the request is tracked to the end ----
+# KOJA prepares, sends and tracks requests. Official decisions and registrations are made by the
+# university, funder, tax authority, examining body or device owner, never by KOJA.
+# Display helpers for the help desk: readable Lusaka time and clean amounts.
+def _svc_dt(value):
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return str(value or "")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone(timedelta(hours=2))).strftime("%d %b %Y, %H:%M")
+
+
+def _svc_amount(value):
+    if value is None or value == "":
+        return ""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return ("%d" % v) if v.is_integer() else ("%.2f" % v)
+
+
+app.jinja_env.filters["svc_dt"] = _svc_dt
+app.jinja_env.filters["svc_amount"] = _svc_amount
+
+
+SERVICE_REQUESTS_TABLE = "koja_service_requests"
+SERVICE_MESSAGES_TABLE = "koja_service_messages"
+SERVICE_UPLOAD_EXT = {"pdf", "jpg", "jpeg", "png", "webp", "doc", "docx"}
+SERVICE_PHONE_RE = re.compile(r"^\+?[0-9 ()-]{7,20}$")
+SERVICE_STATUSES = {
+    "new": "Received",
+    "in_review": "Being reviewed",
+    "waiting_user": "Waiting for you",
+    "in_progress": "In progress",
+    "done": "Completed",
+    "cancelled": "Cancelled",
+}
+SERVICE_OPEN = ("new", "in_review", "waiting_user", "in_progress")
+SERVICE_CONSENT = "The information I give is true, and any documents I send are mine or shared with my permission."
+SERVICE_CATALOG = [
+    {"key": "help", "name": "General help and questions", "category": "Help",
+     "summary": "Ask about any step, form, deadline or document. We reply here in the app.",
+     "needs": "Your question, and anything that helps us understand it", "confirm": ""},
+    {"key": "university_application", "name": "University application help", "category": "Education",
+     "summary": "We help you prepare and send an application to a university or college. The institution decides admission.",
+     "needs": "National ID or passport, certificates or results slip, any photo the institution asks for", "confirm": ""},
+    {"key": "bursary_application", "name": "Bursary and scholarship help", "category": "Education",
+     "summary": "We help you find, prepare and submit a bursary or scholarship application. The funder decides who is awarded.",
+     "needs": "National ID, proof of admission or enrolment, household income proof if the funder asks", "confirm": ""},
+    {"key": "tax_number", "name": "Tax number (TPIN/TPN) registration help", "category": "Government forms",
+     "summary": "We help you prepare a tax number registration. The tax authority issues the number, not KOJA.",
+     "needs": "National ID, proof of address, employment or business details", "confirm": ""},
+    {"key": "result_verification", "name": "Result verification help", "category": "Education",
+     "summary": "We ask the issuing school, college or examining body to confirm that a result is genuine. We never change or create results.",
+     "needs": "Copy of the result slip or certificate, index or registration number, exam year and centre",
+     "confirm": "This result is mine, or I am acting for its owner, who knows about this request."},
+    {"key": "forms_and_typing", "name": "Online forms and typing", "category": "Office",
+     "summary": "We type or fill in online forms, applications and documents from information you give us.",
+     "needs": "The form or its link, and the information to enter", "confirm": ""},
+    {"key": "printing_scanning", "name": "Printing, scanning and binding", "category": "Office",
+     "summary": "Printing, scanning and binding of documents you send us.",
+     "needs": "The document file, or a clear description of what to print", "confirm": ""},
+    {"key": "pc_maintenance", "name": "Computer repair and maintenance", "category": "Technology",
+     "summary": "Cleaning, software installation, virus removal, speed fixes and data backup. Tell us the make, model and the problem.",
+     "needs": "Make and model, what happens, and any error message (a photo helps)", "confirm": ""},
+    {"key": "phone_repair", "name": "Phone flashing and software repair", "category": "Technology",
+     "summary": "Reinstalling or repairing software on a phone you own. Flashing can erase data, so back up first.",
+     "needs": "Phone make and model, what is wrong, and whether you have a backup",
+     "confirm": "This phone belongs to me. I understand flashing can erase data, and KOJA will not remove any lock or ownership protection."},
+    {"key": "job_application", "name": "Job application and CV help", "category": "Careers",
+     "summary": "We help you write or improve a CV and cover letter, and apply for jobs you choose.",
+     "needs": "Your current CV or work history, and the job you want", "confirm": ""},
+]
+
+
+def _svc_item(key):
+    return next((x for x in SERVICE_CATALOG if x["key"] == key), None)
+
+
+def _svc_owned(rid):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row or str(row.get("user_id")) != _ac_uid():
+        abort(404)
+    return row
+
+
+def _svc_can_read(row):
+    user = current_user() or {}
+    return str(row.get("user_id")) == str(user.get("id")) or bool(user.get("is_admin"))
+
+
+def _svc_notify(row, title, body):
+    notify_user(str(row.get("user_id")), title, body, "system", str(row.get("id")),
+                "/help-desk/requests/%s" % row.get("id"))
+
+
+@app.route("/help-desk")
+def service_catalog():
+    groups = {}
+    for item in SERVICE_CATALOG:
+        groups.setdefault(item["category"], []).append(item)
+    return _ac_page("Help desk", SERVICE_CATALOG_TPL, groups=groups)
+
+
+@app.route("/help-desk/request/<key>", methods=["GET", "POST"])
+@login_required
+def service_request_new(key):
+    item = _svc_item(key)
+    if not item:
+        abort(404)
+    uid = _ac_uid()
+    if request.method == "GET":
+        return _ac_page("Request help: " + item["name"], SERVICE_FORM_TPL, item=item, consent=SERVICE_CONSENT,
+                        upload_ext=sorted(SERVICE_UPLOAD_EXT))
+    if _rate_limited("svc:" + uid, 10, 3600):
+        flash("You have sent many requests in the last hour. Please try again later.", "warning")
+        return redirect(url_for("service_request_new", key=key))
+    full_name = clean(request.form.get("full_name"))[:120]
+    phone = clean(request.form.get("phone"))[:30]
+    email = clean(request.form.get("email"))[:160]
+    details = clean(request.form.get("details"))[:4000]
+    problems = []
+    if len(full_name) < 2:
+        problems.append("Enter your full name.")
+    if not SERVICE_PHONE_RE.match(phone):
+        problems.append("Enter a valid phone number, with the country code.")
+    if len(details) < 10:
+        problems.append("Describe what you need in a few words.")
+    if request.form.get("consent") != "yes":
+        problems.append("Please tick the confirmation: " + SERVICE_CONSENT)
+    if item["confirm"] and request.form.get("confirm_item") != "yes":
+        problems.append("Please tick the confirmation: " + item["confirm"])
+    if problems:
+        for p in problems:
+            flash(p, "danger")
+        return redirect(url_for("service_request_new", key=key))
+    info = None
+    f = request.files.get("document")
+    if f and f.filename:
+        info, err = upload_storage(f, folder="help-desk", public=False, max_mb=8, allowed=SERVICE_UPLOAD_EXT)
+        if err:
+            flash("Document not uploaded: " + str(err)[:200], "danger")
+            return redirect(url_for("service_request_new", key=key))
+    rid = uuid.uuid4().hex
+    now = utc_now()
+    _, err = db_insert(SERVICE_REQUESTS_TABLE, {
+        "id": rid, "user_id": uid, "service_key": key, "service_name": item["name"], "category": item["category"],
+        "full_name": full_name, "phone": phone, "email": email or None, "details": details,
+        "attachment_path": info["path"] if info else None,
+        "attachment_name": info["file_name"] if info else None,
+        "attachment_mime": info["mime_type"] if info else None,
+        "status": "new", "created_at": now, "updated_at": now})
+    if err:
+        if info:
+            delete_storage(info["path"])
+        flash("Could not save your request. Please try again.", "danger")
+        return redirect(url_for("service_request_new", key=key))
+    log_activity("help-desk", "Help request sent: " + key, uid)
+    _svc_alert_staff(item["name"], full_name, rid, "new")
+    notify_user(uid, "Request received", "We received your request for %s and will reply here." % item["name"],
+                "system", rid, "/help-desk/requests/%s" % rid)
+    flash("Your request was sent. You can follow it below.", "success")
+    return redirect(url_for("service_request_detail", rid=rid))
+
+
+@app.route("/help-desk/my")
+@login_required
+def service_my_requests():
+    rows = _ac_rows(SERVICE_REQUESTS_TABLE, {"user_id": _ac_uid()}, order="created_at.desc", limit=200)
+    return _ac_page("My help requests", SERVICE_MY_TPL, rows=rows, statuses=SERVICE_STATUSES)
+
+
+@app.route("/help-desk/requests/<rid>")
+@login_required
+def service_request_detail(rid):
+    row = _svc_owned(rid)
+    msgs = [m for m in _ac_rows(SERVICE_MESSAGES_TABLE, {"request_id": rid}, order="created_at.asc", limit=500)
+            if m.get("sender_role") != "note"]
+    return _ac_page(row.get("service_name") or "Help request", SERVICE_DETAIL_TPL, r=row, msgs=msgs, statuses=SERVICE_STATUSES, pay_enabled=bool(FLW_SECRET_KEY), networks=HELP_DESK_NETWORKS)
+
+
+@app.route("/help-desk/requests/<rid>/message", methods=["POST"])
+@login_required
+def service_request_message(rid):
+    row = _svc_owned(rid)
+    if row.get("status") in ("done", "cancelled"):
+        flash("This request is closed. Send a new request to ask more.", "warning")
+        return redirect(url_for("service_request_detail", rid=rid))
+    body = clean(request.form.get("body"))[:2000]
+    if not body:
+        flash("Write a message first.", "danger")
+        return redirect(url_for("service_request_detail", rid=rid))
+    _, err = db_insert(SERVICE_MESSAGES_TABLE, {
+        "id": uuid.uuid4().hex, "request_id": rid, "sender_id": _ac_uid(), "sender_role": "user",
+        "body": body, "created_at": utc_now()})
+    if err:
+        flash("Could not send your message.", "danger")
+    else:
+        patch = {"updated_at": utc_now()}
+        if row.get("status") == "waiting_user":
+            patch["status"] = "in_review"
+        db_update(SERVICE_REQUESTS_TABLE, {"id": rid}, patch)
+        flash("Message sent.", "success")
+    return redirect(url_for("service_request_detail", rid=rid))
+
+
+@app.route("/help-desk/requests/<rid>/cancel", methods=["POST"])
+@login_required
+def service_request_cancel(rid):
+    row = _svc_owned(rid)
+    if row.get("status") not in SERVICE_OPEN:
+        flash("This request can no longer be cancelled.", "warning")
+        return redirect(url_for("service_request_detail", rid=rid))
+    _, err = db_update(SERVICE_REQUESTS_TABLE, {"id": rid}, {"status": "cancelled", "updated_at": utc_now()})
+    flash("Request cancelled." if not err else "Could not cancel the request.", "success" if not err else "danger")
+    return redirect(url_for("service_my_requests"))
+
+
+@app.route("/help-desk/requests/<rid>/file")
+@login_required
+def service_request_file(rid):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row or not row.get("attachment_path") or not _svc_can_read(row):
+        abort(404)
+    try:
+        r = _HTTP.get(sb_storage_url(row["attachment_path"]), headers=sb_headers(), timeout=60, stream=True)
+    except Exception:
+        logger.exception("Help desk file download failed")
+        abort(404)
+    if not r.ok:
+        r.close()
+        abort(404)
+    name = secure_filename(row.get("attachment_name") or "document") or "document"
+    return Response(stream_with_context(r.iter_content(65536)),
+                    mimetype=row.get("attachment_mime") or "application/octet-stream",
+                    headers={"Content-Disposition": 'attachment; filename="%s"' % name,
+                             "Cache-Control": "private, no-store"})
+
+
+@app.route("/admin/help-desk")
+@admin_required
+def admin_service_requests():
+    which = clean(request.args.get("status")) or "open"
+    me = clean((current_user() or {}).get("name") or (current_user() or {}).get("full_name"))
+    all_rows = _ac_rows(SERVICE_REQUESTS_TABLE, {}, order="created_at.desc", limit=1000)
+    counts = {k: sum(1 for r in all_rows if r.get("status") == k) for k in SERVICE_STATUSES}
+    overdue_ids = {r.get("id") for r in all_rows if _svc_overdue(r)}
+    rows = all_rows
+    if which == "open":
+        rows = [r for r in rows if r.get("status") in SERVICE_OPEN]
+    elif which == "overdue":
+        rows = [r for r in rows if r.get("id") in overdue_ids]
+    elif which == "mine":
+        rows = [r for r in rows if me and r.get("assigned_to") == me and r.get("status") in SERVICE_OPEN]
+    elif which in SERVICE_STATUSES:
+        rows = [r for r in rows if r.get("status") == which]
+    else:
+        which = "all"
+    return _ac_page("Help desk requests", ADMIN_SERVICES_TPL, rows=rows, which=which, counts=counts,
+                    statuses=SERVICE_STATUSES, overdue_ids=overdue_ids, overdue_count=len(overdue_ids), overdue_hours=SERVICE_OVERDUE_HOURS)
+
+
+@app.route("/admin/help-desk/<rid>")
+@admin_required
+def admin_service_request(rid):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row:
+        abort(404)
+    msgs = _ac_rows(SERVICE_MESSAGES_TABLE, {"request_id": rid}, order="created_at.asc", limit=500)
+    return _ac_page("Help request", ADMIN_SERVICE_TPL, r=row, msgs=msgs, statuses=SERVICE_STATUSES,
+                    item=_svc_item(row.get("service_key")) or {})
+
+
+@app.route("/admin/help-desk/<rid>/update", methods=["POST"])
+@admin_required
+def admin_service_update(rid):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row:
+        abort(404)
+    status = clean(request.form.get("status"))
+    if status not in SERVICE_STATUSES:
+        flash("Choose a valid status.", "danger")
+        return redirect(url_for("admin_service_request", rid=rid))
+    quote = None
+    quote_raw = clean(request.form.get("quote_amount"))
+    if quote_raw:
+        try:
+            quote = round(float(quote_raw), 2)
+        except ValueError:
+            quote = None
+        if quote is None or not (0 <= quote < 1e12):
+            flash("The quote must be a positive number.", "danger")
+            return redirect(url_for("admin_service_request", rid=rid))
+    now = utc_now()
+    _, err = db_update(SERVICE_REQUESTS_TABLE, {"id": rid}, {
+        "status": status, "assigned_to": clean(request.form.get("assigned_to"))[:80] or None,
+        "quote_amount": quote, "currency": (clean(request.form.get("currency")) or "ZMW").upper()[:3],
+        "updated_at": now, "completed_at": now if status == "done" else None})
+    if err:
+        flash("Could not save the update.", "danger")
+    else:
+        if status != row.get("status"):
+            _svc_notify(row, "Request update", "Your %s request is now: %s." % (row.get("service_name"), SERVICE_STATUSES[status]))
+        log_activity("help-desk", "Help request updated to " + status)
+        flash("Request updated.", "success")
+    return redirect(url_for("admin_service_request", rid=rid))
+
+
+def _admin_service_post(rid, role):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row:
+        abort(404)
+    body = clean(request.form.get("body"))[:2000]
+    if not body:
+        flash("Write a message first.", "danger")
+        return redirect(url_for("admin_service_request", rid=rid))
+    _, err = db_insert(SERVICE_MESSAGES_TABLE, {
+        "id": uuid.uuid4().hex, "request_id": rid, "sender_id": str((current_user() or {}).get("id")),
+        "sender_role": role, "body": body, "created_at": utc_now()})
+    if err:
+        flash("Could not save that.", "danger")
+    elif role == "staff":
+        db_update(SERVICE_REQUESTS_TABLE, {"id": rid}, {"status": "waiting_user", "updated_at": utc_now()})
+        _svc_notify(row, "New reply on your request", "The KOJA team replied to your %s request. Open it to read the reply." % row.get("service_name"))
+        flash("Reply sent.", "success")
+    else:
+        flash("Internal note saved. The person cannot see it.", "success")
+    return redirect(url_for("admin_service_request", rid=rid))
+
+
+@app.route("/admin/help-desk/<rid>/reply", methods=["POST"])
+@admin_required
+def admin_service_reply(rid):
+    return _admin_service_post(rid, "staff")
+
+
+@app.route("/admin/help-desk/<rid>/note", methods=["POST"])
+@admin_required
+def admin_service_note(rid):
+    return _admin_service_post(rid, "note")
+
+
+# ---- help desk: staff alerts and mobile-money payment of quotes ----
+HELP_DESK_ALERT_EMAILS = [e.strip() for e in os.getenv("HELP_DESK_ALERT_EMAILS", "").split(",") if e.strip()]
+HELP_DESK_ALERT_PHONE = os.getenv("HELP_DESK_ALERT_PHONE", "").strip()
+HELP_DESK_PAY_PREFIX = "KOJA-HLP-"
+HELP_DESK_NETWORKS = ("MTN", "AIRTEL", "ZAMTEL")
+
+
+def _svc_alert_staff(service_name, person, rid, kind):
+    """Tells the staff team by email and SMS (when configured). Runs in the background and never blocks the request."""
+    if kind == "paid":
+        subject = "Help desk: payment received"
+        text = "A quote was paid for %s (%s)." % (service_name, person)
+    else:
+        subject = "Help desk: new request"
+        text = "New %s request from %s." % (service_name, person)
+    text += " Open /admin/help-desk/%s to read it." % rid
+
+    def send():
+        for to in HELP_DESK_ALERT_EMAILS:
+            try:
+                send_plain_email(to, subject, text)
+            except Exception:
+                logger.exception("Help desk staff email failed")
+        if HELP_DESK_ALERT_PHONE:
+            try:
+                send_sms_message(HELP_DESK_ALERT_PHONE, "KOJA help desk: " + text[:140])
+            except Exception:
+                logger.exception("Help desk staff SMS failed")
+    _bg(send)
+
+
+def _svc_mark_paid(row, tx):
+    if row.get("payment_status") == "paid":
+        return
+    now = utc_now()
+    db_update(SERVICE_REQUESTS_TABLE, {"id": row["id"]}, {
+        "payment_status": "paid", "payment_transaction_id": str(tx.get("id") or ""),
+        "paid_at": now, "updated_at": now})
+    _svc_notify(row, "Payment received", "We received your payment for %s. Thank you." % row.get("service_name"))
+    _svc_alert_staff(row.get("service_name"), row.get("full_name"), row.get("id"), "paid")
+
+
+@app.route("/help-desk/requests/<rid>/pay", methods=["POST"])
+@login_required
+def service_request_pay(rid):
+    row = _svc_owned(rid)
+    detail = url_for("service_request_detail", rid=rid)
+    if row.get("status") == "cancelled":
+        flash("This request is cancelled.", "warning")
+        return redirect(detail)
+    if row.get("payment_status") == "paid":
+        flash("This quote is already paid.", "info")
+        return redirect(detail)
+    if row.get("quote_amount") is None or float(row.get("quote_amount") or 0) <= 0:
+        flash("The team has not set a quote for this request yet.", "warning")
+        return redirect(detail)
+    if not FLW_SECRET_KEY:
+        flash("Online payment is not set up yet. The team will confirm another way to pay.", "warning")
+        return redirect(detail)
+    user = current_user() or {}
+    email = clean(user.get("email")).lower()
+    if not email:
+        flash("Your account needs an email address before payment can start.", "warning")
+        return redirect(detail)
+    network = clean(request.form.get("network")).upper()
+    phone = clean(request.form.get("phone"))
+    if network not in HELP_DESK_NETWORKS or not SERVICE_PHONE_RE.match(phone):
+        flash("Choose your mobile-money network and enter the phone number that will approve the payment.", "warning")
+        return redirect(detail)
+    currency = (row.get("currency") or "ZMW").upper()
+    tx_ref = HELP_DESK_PAY_PREFIX + uuid.uuid4().hex[:24]
+    _, err = db_update(SERVICE_REQUESTS_TABLE, {"id": rid}, {
+        "payment_status": "pending", "payment_reference": tx_ref, "updated_at": utc_now()})
+    if err:
+        flash("Could not start the payment. Please try again.", "danger")
+        return redirect(detail)
+    payload = {
+        "tx_ref": tx_ref, "amount": int(round(float(row.get("quote_amount")))), "currency": currency,
+        "email": email, "fullname": first_nonempty(user.get("name"), user.get("full_name"), email),
+        "phone_number": phone, "network": network,
+        "redirect_url": url_for("service_payment_callback", _external=True, tx_ref=tx_ref),
+        "meta": {"koja_request_id": str(rid)},
+    }
+    try:
+        r = _HTTP.post(FLW_BASE_URL + "/charges?type=mobile_money_zambia",
+                       headers={"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json", "Accept": "application/json"},
+                       json=payload, timeout=30)
+        data = json_or_empty(r)
+        authorization = ((data.get("meta") or {}).get("authorization") or {}) if isinstance(data, dict) else {}
+        checkout = authorization.get("redirect")
+        if r.ok and str(data.get("status") or "").lower() == "success" and checkout:
+            return redirect(checkout)
+        logger.error("Help desk payment charge failed: %s %s", r.status_code, str(data)[:1500])
+    except Exception as exc:
+        logger.exception("Help desk payment error: %s", exc)
+    db_update(SERVICE_REQUESTS_TABLE, {"id": rid}, {"payment_status": "unpaid", "payment_reference": None, "updated_at": utc_now()})
+    flash("The payment could not be started. Please try again.", "danger")
+    return redirect(detail)
+
+
+@app.route("/help-desk/payment/callback")
+@login_required
+def service_payment_callback():
+    tx_ref = clean(request.args.get("tx_ref"))
+    transaction_id = clean(request.args.get("transaction_id"))
+    row = first_row(SERVICE_REQUESTS_TABLE, {"payment_reference": tx_ref}) if tx_ref.startswith(HELP_DESK_PAY_PREFIX) else None
+    if not row or not _svc_can_read(row):
+        abort(404)
+    detail = url_for("service_request_detail", rid=row["id"])
+    if row.get("payment_status") == "paid":
+        flash("Payment already received. Thank you.", "success")
+        return redirect(detail)
+    tx = _flutterwave_verify(transaction_id, tx_ref) if transaction_id else _flutterwave_verify(tx_ref=tx_ref)
+    if tx and _flutterwave_payment_valid(tx, tx_ref, row.get("quote_amount"), row.get("currency")):
+        _svc_mark_paid(row, tx)
+        flash("Payment received. Thank you.", "success")
+    else:
+        flash("We cannot confirm the payment yet. If money left your phone, it will be confirmed shortly. Check this page again later.", "warning")
+    return redirect(detail)
+
+
+def _svc_webhook_payment(tx_ref, tx):
+    """Called by /webhook/flutterwave for help desk payments. Only a verified, matching payment marks a quote paid."""
+    row = first_row(SERVICE_REQUESTS_TABLE, {"payment_reference": tx_ref})
+    if row and row.get("payment_status") != "paid" and _flutterwave_payment_valid(tx, tx_ref, row.get("quote_amount"), row.get("currency")):
+        _svc_mark_paid(row, tx)
+    return True
+
+
+# ---- help desk: overdue requests, "assigned to me", CSV export ----
+SERVICE_OVERDUE_HOURS = 48
+SERVICE_EXPORT_COLUMNS = ["id", "service_name", "category", "status", "full_name", "phone", "email",
+                          "created_at", "updated_at", "assigned_to", "quote_amount", "currency",
+                          "payment_status", "paid_at"]
+
+
+def _svc_parse(value):
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _svc_overdue(row):
+    """A request is overdue when it needs staff action and nothing has happened on it for SERVICE_OVERDUE_HOURS."""
+    if row.get("status") not in ("new", "in_review", "in_progress"):
+        return False
+    last = _svc_parse(row.get("updated_at") or row.get("created_at"))
+    return bool(last) and (datetime.now(timezone.utc) - last).total_seconds() > SERVICE_OVERDUE_HOURS * 3600
+
+
+def _csv_safe(value):
+    """Stops spreadsheet programs from running a cell as a formula."""
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
+@app.route("/admin/help-desk/export.csv")
+@admin_required
+def admin_service_export():
+    import csv
+    rows = _ac_rows(SERVICE_REQUESTS_TABLE, {}, order="created_at.desc", limit=10000)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(SERVICE_EXPORT_COLUMNS)
+    for r in rows:
+        writer.writerow([_csv_safe(r.get(c)) for c in SERVICE_EXPORT_COLUMNS])
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="help-desk-requests.csv"',
+                             "Cache-Control": "private, no-store"})
+
+
+SERVICE_CATALOG_TPL = r"""<div class="hero"><h2>KOJA help desk</h2><p>Ask for help with university applications, bursaries, tax number registration, result verification, computer and phone help, forms and more. Send a request, then follow it and reply in the same place.</p><p class="small">KOJA prepares and tracks each request. Decisions and official registrations are made by the university, funder, tax authority, examining body or device owner.</p></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('service_my_requests') }}">My requests</a></div>
+{% for cat, items in groups.items() %}<h3>{{ cat }}</h3>
+{% for it in items %}<div class="card"><strong>{{ it.name }}</strong><p>{{ it.summary }}</p><a class="btn" href="{{ url_for('service_request_new', key=it.key) }}">Ask for help</a></div>
+{% endfor %}{% endfor %}
+<div class="card small">Never send passwords, PINs or one-time codes to KOJA. We will never ask for them.</div>
+"""
+
+SERVICE_FORM_TPL = r"""<div class="hero"><h2>{{ item.name }}</h2><p>{{ item.summary }}</p><p class="small"><strong>Have ready:</strong> {{ item.needs }}</p></div>
+<div class="card"><form method="post" enctype="multipart/form-data" action="{{ url_for('service_request_new', key=item.key) }}">{{ csrf }}
+<label>Full name</label><input name="full_name" maxlength="120" required>
+<label>Phone number (with country code)</label><input name="phone" maxlength="30" required placeholder="+260 97 000 0000">
+<label>Email (optional)</label><input name="email" type="email" maxlength="160">
+<label>What do you need?</label><textarea name="details" rows="6" maxlength="4000" required></textarea>
+<label>Document (optional, up to 8 MB: {{ upload_ext|join(', ') }})</label><input name="document" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx">
+{% if item.confirm %}<label><input type="checkbox" name="confirm_item" value="yes" style="width:auto"> {{ item.confirm }}</label>{% endif %}
+<label><input type="checkbox" name="consent" value="yes" style="width:auto"> {{ consent }}</label>
+<button class="btn">Send request</button></form></div>
+<div class="card small">Do not send passwords, PINs or one-time codes.</div>
+<div class="card"><a href="{{ url_for('service_catalog') }}">← All help</a></div>
+"""
+
+SERVICE_MY_TPL = r"""<div class="hero"><h2>My help requests</h2></div>
+<div class="actions"><a class="btn" href="{{ url_for('service_catalog') }}">New request</a></div>
+{% for r in rows %}<div class="card"><strong>{{ r.service_name }}</strong> · <span>{{ statuses.get(r.status, r.status) }}</span><br><span class="small">Sent {{ r.created_at|svc_dt }}</span><br><a href="{{ url_for('service_request_detail', rid=r.id) }}">Open</a></div>
+{% else %}<div class="card"><p>You have not sent any requests yet.</p></div>{% endfor %}
+"""
+
+SERVICE_DETAIL_TPL = r"""<div class="hero"><h2>{{ r.service_name }}</h2><p>Status: <strong>{{ statuses.get(r.status, r.status) }}</strong></p>{% if r.quote_amount is not none %}<p>Quote: <strong>{{ r.quote_amount|svc_amount }} {{ r.currency }}</strong></p>{% endif %}</div>
+{% if r.quote_amount is not none and r.status != 'cancelled' %}<div class="card"><h3>Payment</h3>
+{% if r.payment_status == 'paid' %}<p>Paid on {{ r.paid_at|svc_dt }}. Thank you.</p>
+{% elif pay_enabled %}{% if r.payment_status == 'pending' %}<p>A payment is waiting for your approval on your phone. If you did not get the prompt, you can start it again.</p>{% endif %}<form method="post" action="{{ url_for('service_request_pay', rid=r.id) }}">{{ csrf }}<label>Mobile-money network</label><select name="network" required><option value="">Select network</option>{% for n in networks %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select><label>Phone that will approve the payment</label><input name="phone" required inputmode="tel" placeholder="+260 97 000 0000"><button class="btn">Pay {{ r.quote_amount|svc_amount }} {{ r.currency }}</button></form><p class="small">You will get a prompt on your phone to approve the payment.</p>
+{% else %}<p class="small">Online payment is not set up yet. The team will confirm how to pay.</p>{% endif %}
+</div>{% endif %}
+<div class="card"><p>{{ r.details }}</p><span class="small">Sent {{ r.created_at|svc_dt }}</span>{% if r.attachment_path %}<br><a href="{{ url_for('service_request_file', rid=r.id) }}">Download the document you sent</a>{% endif %}</div>
+{% for m in msgs %}<div class="card"><strong>{% if m.sender_role == 'staff' %}KOJA team{% else %}You{% endif %}</strong> <span class="small">{{ m.created_at|svc_dt }}</span><p>{{ m.body }}</p></div>
+{% endfor %}
+{% if r.status in ['done', 'cancelled'] %}<div class="card small">This request is closed. Send a new request to ask more.</div>
+{% else %}<div class="card"><form method="post" action="{{ url_for('service_request_message', rid=r.id) }}">{{ csrf }}<label>Message</label><textarea name="body" rows="3" maxlength="2000" required></textarea><button class="btn">Send message</button></form></div>
+<form method="post" action="{{ url_for('service_request_cancel', rid=r.id) }}">{{ csrf }}<button class="btn secondary">Cancel request</button></form>
+{% endif %}
+<div class="card"><a href="{{ url_for('service_my_requests') }}">← My requests</a></div>
+"""
+
+ADMIN_SERVICES_TPL = r"""<div class="hero"><h2>Help desk requests</h2><p>Work through the queue. Each status change tells the person.</p></div>
+<div class="card small">{% for k, lab in statuses.items() %}<a href="{{ url_for('admin_service_requests', status=k) }}">{{ lab }} ({{ counts[k] }})</a> · {% endfor %}<a href="{{ url_for('admin_service_requests', status='open') }}">Open</a> · <a href="{{ url_for('admin_service_requests', status='overdue') }}">Overdue ({{ overdue_count }})</a> · <a href="{{ url_for('admin_service_requests', status='mine') }}">Assigned to me</a> · <a href="{{ url_for('admin_service_requests', status='all') }}">All</a> · <a href="{{ url_for('admin_service_export') }}">Download CSV</a> · showing: {{ which }}</div>
+{% for r in rows %}<div class="card"><strong>{{ r.service_name }}</strong> · {{ r.full_name }} · {{ r.phone }}<br><span class="small">{{ statuses.get(r.status, r.status) }} · sent {{ r.created_at|svc_dt }}{% if r.assigned_to %} · assigned to {{ r.assigned_to }}{% endif %}{% if r.id in overdue_ids %} · <strong style="color:#b00020">overdue: no activity for {{ overdue_hours }}+ hours</strong>{% endif %}</span><br><a href="{{ url_for('admin_service_request', rid=r.id) }}">Open</a></div>
+{% else %}<div class="card"><p>No requests here.</p></div>{% endfor %}
+<div class="card"><a href="{{ url_for('admin') }}">← Admin</a></div>
+"""
+
+ADMIN_SERVICE_TPL = r"""<div class="hero"><h2>{{ r.service_name }}</h2><p>{{ r.full_name }} · {{ r.phone }}{% if r.email %} · {{ r.email }}{% endif %} · status: <strong>{{ statuses.get(r.status, r.status) }}</strong>{% if r.quote_amount is not none %} · payment: <strong>{{ 'paid' if r.payment_status == 'paid' else ('pending' if r.payment_status == 'pending' else 'not paid') }}</strong>{% endif %}</p>{% if item %}<p class="small">Expected documents: {{ item.needs }}</p>{% endif %}</div>
+<div class="card"><p>{{ r.details }}</p>{% if r.attachment_path %}<a href="{{ url_for('service_request_file', rid=r.id) }}">Download {{ r.attachment_name }}</a>{% endif %}</div>
+<div class="card"><h3>Conversation</h3>
+{% for m in msgs %}<div class="card"><strong>{% if m.sender_role == 'user' %}Person{% elif m.sender_role == 'staff' %}KOJA team{% else %}Internal note{% endif %}</strong> <span class="small">{{ m.created_at|svc_dt }}</span><p>{{ m.body }}</p></div>
+{% else %}<p>No messages yet.</p>{% endfor %}
+<form method="post" action="{{ url_for('admin_service_reply', rid=r.id) }}">{{ csrf }}<label>Reply to the person</label><textarea name="body" rows="3" maxlength="2000"></textarea><button class="btn">Send reply</button></form>
+<form method="post" action="{{ url_for('admin_service_note', rid=r.id) }}">{{ csrf }}<label>Internal note (the person cannot see this)</label><textarea name="body" rows="2" maxlength="2000"></textarea><button class="btn secondary">Save note</button></form>
+</div>
+<div class="card"><h3>Update</h3><form method="post" action="{{ url_for('admin_service_update', rid=r.id) }}">{{ csrf }}
+<label>Status</label><select name="status">{% for k, lab in statuses.items() %}<option value="{{ k }}" {{ 'selected' if k == r.status else '' }}>{{ lab }}</option>{% endfor %}</select>
+<label>Assigned to</label><input name="assigned_to" maxlength="80" value="{{ r.assigned_to or '' }}">
+<label>Quote amount (optional, shown to the person)</label><input name="quote_amount" value="{{ r.quote_amount|svc_amount }}">
+<label>Currency</label><input name="currency" maxlength="3" value="{{ r.currency or 'ZMW' }}">
+<button class="btn">Save update</button></form></div>
+<div class="card"><a href="{{ url_for('admin_service_requests') }}">← Help desk queue</a></div>
+"""
+
+
+@app.route("/academic/passport")
+@login_required
+def ac_passport():
+    return _ac_page("My learning passport", PASSPORT_TPL, p=_passport_data(_ac_uid()))
+
+
+@app.route("/live-tutoring")
+@app.route("/tutoring")
+@app.route("/academic/live-tools")
+@login_required
+def ac_live_tools():
+    """One place for the live tools of every lesson and class the user teaches or attends."""
+    uid = _ac_uid()
+    today = datetime.now(timezone.utc).date().isoformat()
+    teacher = _ac_teacher_for_user()
+
+    def upcoming(rows):
+        return sorted([r for r in rows if str(r.get("scheduled_date")) >= today], key=lambda r: str(r.get("scheduled_date")))
+
+    def paid_lessons(filters):
+        return upcoming([x for x in _ac_rows("koja_academic_sessions", filters, order="scheduled_date.asc", limit=200)
+                         if x.get("status") == "accepted" and x.get("payment_status") == "paid"])
+
+    lessons = paid_lessons({"teacher_user_id": uid}) if teacher else []
+    classes = upcoming(_ac_rows("koja_academic_classes", {"teacher_id": teacher["id"]}, order="scheduled_date.asc", limit=200)) if teacher else []
+    my_lessons = paid_lessons({"student_id": uid})
+    enr = _ac_rows("koja_academic_enrollments", {"student_id": uid}, limit=200)
+    my_classes = upcoming([c for c in (first_row("koja_academic_classes", {"id": e.get("class_id")}) for e in enr) if c])
+    return _ac_page("Live tutoring tools", LIVE_TOOLS_TPL, teacher=teacher, lessons=lessons, classes=classes,
+                    my_lessons=my_lessons, my_classes=my_classes)
+
+
 @app.route("/academic")
 @login_required
 def ac_home():
@@ -22175,7 +23112,7 @@ def ac_home():
     grade = clean(request.args.get("grade"))
     max_rate = _ac_num(request.args.get("max_rate"), 0)
     sort = clean(request.args.get("sort")) or "rating"
-    teachers = _ac_rows("koja_academic_teachers", {"status": "verified"}, order="rating_avg.desc", limit=500)
+    teachers = _ttl_cache("ac_verified_teachers", 60, lambda: _ac_rows("koja_academic_teachers", {"status": "verified"}, order="rating_avg.desc", limit=500))
     subjects = sorted({x.strip() for t in teachers for x in str(t.get("subjects") or "").split(",") if x.strip()}, key=str.lower)
     if subject:
         teachers = [t for t in teachers if subject.lower() in str(t.get("subjects") or "").lower()]
@@ -22210,6 +23147,7 @@ def ac_home():
 <div class="hero"><h2>Find a tutor</h2><p>Verified teachers for one-to-one lessons and live group classes.</p>
 <div class="actions"><a class="btn" href="{{ url_for('ac_classes') }}">Find a group class</a>
 <a class="btn secondary" href="{{ url_for('ac_my_sessions') }}">My lessons</a>
+<a class="btn secondary" href="{{ url_for('ac_live_tools') }}">Live tutoring tools</a>
 {% if mine %}<a class="btn secondary" href="{{ url_for('ac_teacher_dashboard') }}">Teacher dashboard</a>{% else %}<a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Become a teacher</a>{% endif %}</div></div>
 <form method="get" class="card" style="display:grid;gap:8px">
 <input name="q" value="{{ q }}" placeholder="What do you need help with? (e.g. algebra, English essays)" aria-label="Keyword">
@@ -22365,7 +23303,7 @@ def ac_my_sessions():
     return _ac_page("My lessons", r'''
 <div class="hero"><h2>My lessons</h2></div>
 {% for s in sessions %}<div class="card"><h3>{{ s.subject }} with {{ s._teacher }}</h3><p>{{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.price, s.currency) }}</p>
-<p>Status: <strong>{{ s.status }}</strong> · Payment: <strong>{{ s.payment_status }}</strong></p>
+<p>Status: <strong>{{ s.status }}</strong> · Payment: <strong>{{ s.payment_status }}</strong> · <a href="{{ url_for('ac_teaching', kind='session', rid=s.id) }}">Materials and equipment</a></p>
 {% if s.status == 'accepted' and s.payment_status == 'paid' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Join live room</a>{% elif s.status == 'accepted' %}<form method="post" action="{{ url_for('ac_session_pay', sid=s.id) }}">{{ csrf }}<label>Pay with mobile money</label><select name="network" required>{% for o in academic_pay_networks() %}<option value="{{ o.value }}">{{ o.country }} · {{ o.label }}</option>{% endfor %}</select><input name="phone" required inputmode="tel" placeholder="Mobile-money number"><button class="btn">Pay {{ money(s.price, s.currency) }} to open the live room</button></form>{% endif %}
 {% if s.status in ['requested','accepted'] %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='cancel') }}" style="display:inline">{{ csrf }}<button class="btn secondary">Cancel</button></form>{% endif %}
 {% if s.status == 'completed' and not s._reviewed %}<form method="post" action="{{ url_for('ac_review', sid=s.id) }}">{{ csrf }}<select name="rating"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select><input name="comment" maxlength="500" placeholder="How was the lesson?"><button class="btn">Review</button></form>{% endif %}</div>
@@ -22538,11 +23476,35 @@ def ac_session_action(sid, action):
     if not new:
         abort(403)
     db_update("koja_academic_sessions", {"id": sid}, {"status": new, "updated_at": utc_now()})
+    if new == "cancelled":
+        _ac_request_refund(s, "Lesson cancelled")
     if new == "completed" and s.get("payment_status") == "paid":
         _ac_credit_teacher(s, "session")
     notify_user(other, "Lesson " + new, "Your %s lesson on %s was %s." % (s.get("subject"), s.get("scheduled_date"), new), "/academic/my-lessons")
     flash("Lesson %s." % new, "success")
     return redirect(request.referrer or url_for("ac_my_sessions"))
+
+
+ACADEMIC_REFUNDS_TABLE = "koja_academic_refunds"
+
+
+def _ac_request_refund(s, reason):
+    """A paid lesson that is cancelled gets one refund request for the student. Nothing is paid out automatically."""
+    if s.get("payment_status") != "paid" or not s.get("id"):
+        return None
+    existing = first_row(ACADEMIC_REFUNDS_TABLE, {"session_id": str(s["id"])})
+    if existing:
+        return existing
+    currency = s.get("currency") or "ZMW"
+    row = {"id": str(uuid.uuid4()), "session_id": str(s["id"]), "buyer_id": str(s.get("student_id")),
+           "amount": s.get("price"), "currency": currency, "reason": reason, "status": "requested", "created_at": utc_now()}
+    _, err = db_insert(ACADEMIC_REFUNDS_TABLE, row)
+    if err:
+        return None
+    notify_user(str(s.get("student_id")), "Refund requested",
+                "Your %s lesson was cancelled. A refund of %s %s has been requested." % (s.get("subject"), s.get("price"), currency),
+                "/academic/my-lessons")
+    return row
 
 
 def _ac_credit_teacher(s, kind):
@@ -22585,16 +23547,16 @@ def ac_teacher_dashboard():
     today = datetime.now(timezone.utc).date().isoformat()
     open_lessons = sorted([x for x in sessions if x.get("status") == "accepted" and x.get("payment_status") == "paid" and str(x.get("scheduled_date")) >= today], key=lambda x: str(x.get("scheduled_date")))
     open_classes = sorted([c for c in classes if str(c.get("scheduled_date")) >= today], key=lambda c: str(c.get("scheduled_date")))
-    go_live = None
+    go_live = {"url": None, "title": None}
     if open_lessons:
         go_live = {"url": url_for("ac_room", kind="session", rid=open_lessons[0]["id"]), "title": (open_lessons[0].get("subject") or "lesson") + " lesson"}
     elif open_classes:
         go_live = {"url": url_for("ac_room", kind="class", rid=open_classes[0]["id"]), "title": open_classes[0].get("title") or "class"}
     return _ac_page("Teacher dashboard", r'''
 <div class="hero"><h2>Teacher dashboard</h2><p>Status: <strong>{{ t.status }}</strong> · Commission: {{ pct }}%</p>
-<div class="actions"><a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Edit profile</a>{% if go_live %}<a class="btn" href="{{ go_live.url }}">● Go live: {{ go_live.title }}</a>{% endif %}{% if t.status == 'verified' %}<a class="btn" href="{{ url_for('ac_class_new') }}">New group class</a>{% endif %}</div></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Edit profile</a>{% if go_live.url %}<a class="btn" href="{{ go_live.url }}">● Go live: {{ go_live.title }}</a>{% else %}<span class="btn secondary" aria-disabled="true" title="Shows once a lesson is paid or a class is scheduled">● Go live (nothing scheduled yet)</span>{% endif %}{% if t.status == 'verified' %}<a class="btn" href="{{ url_for('ac_class_new') }}">New group class</a>{% endif %}</div></div>
 <div class="grid"><div class="card"><h3>Earned</h3>{{ money(earned, t.currency or 'ZMW') }}</div><div class="card"><h3>Paid out</h3>{{ money(paid, t.currency or 'ZMW') }}</div><div class="card"><h3>Wallet balance</h3>{{ money(balance, t.currency or 'ZMW') }}</div></div>
-<h3>Lesson requests</h3>{% for s in sessions %}<div class="card"><strong>{{ s.subject }}</strong> · {{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.teacher_earning, s.currency) }} after fee<br>Status: {{ s.status }} · Payment: {{ s.payment_status }}
+<h3>Lesson requests</h3>{% for s in sessions %}<div class="card"><strong>{{ s.subject }}</strong> · {{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.teacher_earning, s.currency) }} after fee<br>Status: {{ s.status }} · Payment: {{ s.payment_status }} · <a href="{{ url_for('ac_teaching', kind='session', rid=s.id) }}">Materials and equipment</a>
 <div class="actions">{% if s.status == 'requested' %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='accept') }}">{{ csrf }}<button class="btn">Accept</button></form><form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='decline') }}">{{ csrf }}<button class="btn secondary">Decline</button></form>{% endif %}
 {% if s.status == 'accepted' and s.payment_status == 'paid' %}<a class="btn" href="{{ url_for('ac_room', kind='session', rid=s.id) }}">Start live room</a>{% elif s.status == 'accepted' %}<span>Live room opens once payment is recorded.</span>{% endif %}{% if s.status == 'accepted' %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='complete') }}">{{ csrf }}<button class="btn secondary">Mark completed</button></form>{% endif %}</div></div>
 {% else %}<div class="card"><p>No lesson requests yet.</p></div>{% endfor %}
@@ -22708,7 +23670,7 @@ def ac_class(cid):
         abort(404)
     uid = _ac_uid()
     is_teacher = str(c.get("teacher_user_id")) == uid
-    enrolments = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500)
+    enrolments = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000)
     mine = next((e for e in enrolments if str(e.get("student_id")) == uid), None)
     att = {str(a.get("student_id")): a for a in _ac_rows("koja_academic_attendance", {"class_id": cid}, limit=1000)}
     for e in enrolments:
@@ -22721,7 +23683,7 @@ def ac_class(cid):
 {% if is_teacher or mine %}<a class="btn" href="{{ url_for('ac_room', kind='class', rid=c.id) }}">Join live class</a>
 {% elif c.status == 'open' and enrolments|length < c.capacity %}<form method="post" action="{{ url_for('ac_enroll', cid=c.id) }}">{{ csrf }}<button class="btn">Enrol</button></form>{% endif %}
 {% if mine %}<p>Payment: <strong>{{ mine.payment_status }}</strong></p>{% endif %}</div>
-<div class="card"><h3>Materials</h3>{% for m in materials %}<p><a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">{{ m.title }}</a></p>{% else %}<p>No materials yet.</p>{% endfor %}
+<div class="card"><h3>Materials</h3><p><a href="{{ url_for('ac_teaching', kind='class', rid=c.id) }}">Materials and equipment page</a></p>{% for m in materials %}<p><a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">{{ m.title }}</a></p>{% else %}<p>No materials yet.</p>{% endfor %}
 {% if is_teacher %}<form method="post" action="{{ url_for('ac_material_add', cid=c.id) }}">{{ csrf }}<input name="title" placeholder="Title" required><input name="url" type="url" placeholder="https://… link to file" required><button class="btn secondary">Add material</button></form>{% endif %}</div>
 {% if is_teacher %}<div class="card"><h3>Attendance</h3><form method="post" action="{{ url_for('ac_attendance', cid=c.id) }}">{{ csrf }}
 {% for e in enrolments %}<label><input type="checkbox" name="present" value="{{ e.student_id }}" {{ 'checked' if e._present }}> {{ e._name }} ({{ e.payment_status }})</label><br>{% else %}<p>No students enrolled.</p>{% endfor %}
@@ -22736,7 +23698,7 @@ def ac_enroll(cid):
     uid = _ac_uid()
     if not c or str(c.get("teacher_user_id")) == uid:
         abort(404)
-    es = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500)
+    es = _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000)
     if any(str(e.get("student_id")) == uid for e in es):
         flash("You are already enrolled.", "info")
     elif len(es) >= int(c.get("capacity") or 0):
@@ -22767,6 +23729,2226 @@ def ac_material_add(cid):
     return redirect(url_for("ac_class", cid=cid))
 
 
+AC_TEACH_CATEGORIES = [
+    ("lab", "Science lab and experiments"),
+    ("computer", "Computer lab and software"),
+    ("consumable", "Chemicals and consumables"),
+    ("stationery", "Stationery and paper"),
+    ("other", "Other"),
+]
+AC_TEACH_CATEGORY_LABELS = dict(AC_TEACH_CATEGORIES)
+AC_TEACH_FILE_TYPES = {"pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "png", "jpg", "jpeg", "webp"}
+AC_TEACH_FILE_MB = 25
+
+
+def _ac_teaching_key(kind):
+    return "class_id" if kind == "class" else "session_id"
+
+
+def _ac_teaching_access(kind, rid):
+    """(obj, is_teacher) for who may see a lesson's or class's materials and equipment:
+    the teacher, the student booked on the lesson, or a student enrolled in the class."""
+    if kind not in ("session", "class") or not CV_ID_RE.match(rid or ""):
+        return None, False
+    uid = _ac_uid()
+    if kind == "session":
+        s = first_row("koja_academic_sessions", {"id": rid})
+        if not s:
+            return None, False
+        if str(s.get("teacher_user_id")) == uid:
+            return s, True
+        return (s, False) if str(s.get("student_id")) == uid else (None, False)
+    c = first_row("koja_academic_classes", {"id": rid})
+    if not c:
+        return None, False
+    if str(c.get("teacher_user_id")) == uid:
+        return c, True
+    e = first_row("koja_academic_enrollments", {"class_id": rid, "student_id": uid})
+    return (c, False) if e else (None, False)
+
+
+def _ac_teaching_rows(kind, rid):
+    key = _ac_teaching_key(kind)
+    mats = _ac_rows("koja_academic_materials", {key: rid}, order="created_at.desc", limit=200)
+    eqs = _ac_rows("koja_academic_equipment", {key: rid}, order="created_at.asc", limit=300)
+    return mats, eqs
+
+
+def _ac_teaching_owner(row):
+    if row.get("class_id"):
+        return "class", str(row.get("class_id"))
+    if row.get("session_id"):
+        return "session", str(row.get("session_id"))
+    return None, None
+
+
+def _ac_teaching_title(kind, obj):
+    if kind == "class":
+        return obj.get("title") or "Group class"
+    return "%s lesson on %s" % (obj.get("subject") or "Lesson", obj.get("scheduled_date"))
+
+
+from math import log10 as _log10, sqrt as _sqrt, isfinite as _isfinite
+
+TITRATION_ANALYTES = {
+    "hcl": {"label": "Hydrochloric acid (strong acid)", "ka": None},
+    "acetic": {"label": "Acetic acid (weak acid, Ka 1.8 x 10^-5)", "ka": 1.8e-5},
+}
+TITRATION_INDICATORS = {
+    "phenolphthalein": {"label": "Phenolphthalein", "low": 8.2, "high": 10.0, "acid": "colourless", "base": "pink"},
+    "methyl_orange": {"label": "Methyl orange", "low": 3.1, "high": 4.4, "acid": "red", "base": "yellow"},
+    "bromothymol_blue": {"label": "Bromothymol blue", "low": 6.0, "high": 7.6, "acid": "yellow", "base": "blue"},
+}
+TITRATION_ASSUMPTIONS = [
+    "25 degrees Celsius and ideal solutions: concentrations are used in place of activities.",
+    "Strong acid or weak acid titrated with strong base (sodium hydroxide). No carbon dioxide absorption and no temperature change.",
+    "The indicator changes colour where the pH crosses the middle of its colour range.",
+    "This lab teaches the method. Real burettes, pipettes and indicators add errors this model leaves out.",
+]
+
+
+def _titration_ph(ca, va_ml, cb, vb_ml, weak_ka):
+    """pH after vb_ml of base (cb mol/L) is added to va_ml of analyte (ca mol/L). Volumes in mL."""
+    va, vb = va_ml / 1000.0, vb_ml / 1000.0
+    na, nb = ca * va, cb * vb
+    vt = va + vb
+    if weak_ka is None:
+        excess = (na - nb) / vt
+        if abs(excess) < 1e-12:
+            return 7.0
+        if excess > 0:
+            return -_log10(excess)
+        return 14 + _log10(-excess)
+    if nb == 0:
+        ha = na / vt
+        x = (-weak_ka + _sqrt(weak_ka * weak_ka + 4 * weak_ka * ha)) / 2
+        return -_log10(x)
+    if nb < na * (1 - 1e-9):
+        pka = -_log10(weak_ka)
+        return pka + _log10(nb / (na - nb))
+    if abs(nb - na) <= na * 1e-9:
+        kb = 1e-14 / weak_ka
+        oh = _sqrt(kb * (na / vt))
+        return 14 + _log10(oh)
+    return 14 + _log10((nb - na) / vt)
+
+
+def _titration_curve(ca, va, cb, analyte, indicator):
+    ka = TITRATION_ANALYTES[analyte]["ka"]
+    ve = ca * va / cb
+    end = 2.0 * ve
+    n = 1000
+    pts = []
+    for i in range(n + 1):
+        v = end * i / n
+        pts.append([round(v, 3), round(_titration_ph(ca, va, cb, v, ka), 2)])
+    ind = TITRATION_INDICATORS[indicator]
+    mid = (ind["low"] + ind["high"]) / 2.0
+    change = next((p[0] for p in pts if p[1] >= mid), None)
+    return {
+        "equivalence_ml": round(ve, 3),
+        "ph_at_equivalence": round(_titration_ph(ca, va, cb, ve, ka), 2),
+        "end_ml": round(end, 3),
+        "points": pts,
+        "indicator": {"key": indicator, "label": ind["label"], "low": ind["low"], "high": ind["high"],
+                      "acid": ind["acid"], "base": ind["base"], "change_ml": change,
+                      "error_ml": round(change - ve, 3) if change is not None else None},
+        "assumptions": TITRATION_ASSUMPTIONS,
+    }
+
+
+@app.route("/academic/lab/titration")
+@login_required
+def ac_lab_titration():
+    return _ac_page("Virtual lab: titration", r"""
+<div class="hero"><h2>Virtual lab: acid-base titration</h2><p>Set up the experiment, add base a little at a time and watch the pH change. The pH comes from a chemistry calculation, not a fixed animation.</p></div>
+<div class="card"><form id="tf">
+<label>Analyte</label><select id="tAnalyte">{% for k, a in analytes.items() %}<option value="{{ k }}">{{ a.label }}</option>{% endfor %}</select>
+<label>Analyte concentration (mol/L)</label><input id="tCa" type="number" step="0.001" min="0.001" max="5" value="0.1">
+<label>Analyte volume (mL)</label><input id="tVa" type="number" step="0.5" min="1" max="100" value="25">
+<label>Base concentration, NaOH (mol/L)</label><input id="tCb" type="number" step="0.001" min="0.001" max="5" value="0.1">
+<label>Indicator</label><select id="tIndicator">{% for k, i in indicators.items() %}<option value="{{ k }}">{{ i.label }}</option>{% endfor %}</select>
+<button class="btn">Set up experiment</button></form><p id="tErr" class="small" style="color:#b91c1c"></p></div>
+<div class="card"><label>Base added: <strong><span id="tVol">0.00</span> mL</strong></label>
+<input type="range" id="tSlider" min="0" max="50" step="0.05" value="0" disabled style="width:100%">
+<p>pH: <strong id="tPh">-</strong> &middot; Indicator colour: <strong id="tColour">-</strong></p>
+<div class="actions"><button id="tRecord" class="btn secondary" type="button" disabled>Record reading</button></div></div>
+<div class="card"><svg id="tPlot" viewBox="0 0 600 300" style="width:100%;max-width:700px;background:#fff;border-radius:8px"></svg></div>
+<div class="card"><h3>Recorded readings</h3><table id="tTable" style="width:100%"><tr><th>Base added (mL)</th><th>pH</th><th>Colour</th></tr></table><p id="tSummary"></p></div>
+<div class="card"><h3>What this model assumes</h3><ul id="tAssume">{% for a in assumptions %}<li>{{ a }}</li>{% endfor %}</ul></div>
+<script>
+var CURVE=null,REC=[],CUR_V=0;
+function $(id){return document.getElementById(id);}
+function phAt(v){var p=CURVE.points,i=Math.round(v/CURVE.end_ml*(p.length-1));i=Math.max(0,Math.min(p.length-1,i));return p[i][1];}
+function colourFor(ph){var ind=CURVE.indicator;if(ph<ind.low)return ind.acid;if(ph>ind.high)return ind.base;return 'changing ('+ind.acid+' to '+ind.base+')';}
+function drawPlot(v){
+  var L=44,R=580,T=16,B=270,end=CURVE.end_ml,pts=CURVE.points,path=[],svg='',p,y,x;
+  for(var i=0;i<pts.length;i++){x=L+(pts[i][0]/end)*(R-L);y=B-(pts[i][1]/14)*(B-T);path.push(x.toFixed(1)+','+y.toFixed(1));}
+  for(p=0;p<=14;p+=2){y=B-(p/14)*(B-T);svg+='<line x1="'+L+'" y1="'+y+'" x2="'+R+'" y2="'+y+'" stroke="#e5e7eb"/><text x="8" y="'+(y+4)+'" font-size="11">'+p+'</text>';}
+  svg+='<line x1="'+L+'" y1="'+T+'" x2="'+L+'" y2="'+B+'" stroke="#888"/><line x1="'+L+'" y1="'+B+'" x2="'+R+'" y2="'+B+'" stroke="#888"/>';
+  svg+='<polyline fill="none" stroke="#2563eb" stroke-width="2" points="'+path.join(' ')+'"/>';
+  var xe=L+(CURVE.equivalence_ml/end)*(R-L);
+  svg+='<line x1="'+xe+'" y1="'+T+'" x2="'+xe+'" y2="'+B+'" stroke="#16a34a" stroke-dasharray="4 4"/><text x="'+(xe+4)+'" y="'+(T+12)+'" font-size="12" fill="#16a34a">equivalence</text>';
+  var xv=L+(v/end)*(R-L),yv=B-(phAt(v)/14)*(B-T);
+  svg+='<circle cx="'+xv+'" cy="'+yv+'" r="6" fill="#ef4444"/>';
+  svg+='<text x="'+L+'" y="'+(B+16)+'" font-size="12">Base added (mL), 0 to '+end+'</text>';
+  $('tPlot').innerHTML=svg;
+}
+function setVolume(v){CUR_V=v;var ph=phAt(v);$('tVol').textContent=v.toFixed(2);$('tPh').textContent=ph.toFixed(2);$('tColour').textContent=colourFor(ph);drawPlot(v);}
+function renderTable(){
+  var h='<tr><th>Base added (mL)</th><th>pH</th><th>Colour</th></tr>';
+  REC.forEach(function(r){h+='<tr><td>'+r.v.toFixed(2)+'</td><td>'+r.ph.toFixed(2)+'</td><td>'+r.colour+'</td></tr>';});
+  $('tTable').innerHTML=h;
+  var ind=CURVE.indicator,err=ind.error_ml===null?'The indicator never changes colour in this range.':('The indicator changes at '+ind.change_ml.toFixed(2)+' mL, '+Math.abs(ind.error_ml).toFixed(2)+' mL '+(ind.error_ml<0?'before':'after')+' the equivalence point.');
+  $('tSummary').textContent='Equivalence point: '+CURVE.equivalence_ml.toFixed(2)+' mL (pH '+CURVE.ph_at_equivalence.toFixed(2)+'). '+err;
+}
+$('tf').addEventListener('submit',function(e){
+  e.preventDefault();$('tErr').textContent='';
+  var q=new URLSearchParams({analyte:$('tAnalyte').value,indicator:$('tIndicator').value,ca:$('tCa').value,va:$('tVa').value,cb:$('tCb').value});
+  fetch('{{ url_for("ac_lab_titration_curve") }}?'+q.toString(),{credentials:'same-origin'}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});}).then(function(x){
+    if(!x.ok||!x.d.ok){$('tErr').textContent=(x.d&&x.d.error)||'Could not set up the experiment.';return;}
+    CURVE=x.d;REC=[];
+    $('tSlider').max=CURVE.end_ml;$('tSlider').value=0;$('tSlider').disabled=false;$('tRecord').disabled=false;
+    setVolume(0);renderTable();
+  }).catch(function(){$('tErr').textContent='Could not reach the lab. Check your connection and try again.';});
+});
+$('tSlider').addEventListener('input',function(){setVolume(parseFloat(this.value));});
+$('tRecord').addEventListener('click',function(){REC.push({v:CUR_V,ph:phAt(CUR_V),colour:colourFor(phAt(CUR_V))});renderTable();});
+</script>""", analytes=TITRATION_ANALYTES, indicators=TITRATION_INDICATORS, assumptions=TITRATION_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/titration/curve")
+@login_required
+def ac_lab_titration_curve():
+    analyte = clean(request.args.get("analyte"))
+    indicator = clean(request.args.get("indicator"))
+    try:
+        ca = float(request.args.get("ca", ""))
+        va = float(request.args.get("va", ""))
+        cb = float(request.args.get("cb", ""))
+    except ValueError:
+        return jsonify({"ok": False, "error": "Enter a number for each field."}), 400
+    if analyte not in TITRATION_ANALYTES or indicator not in TITRATION_INDICATORS:
+        return jsonify({"ok": False, "error": "Choose an analyte and an indicator."}), 400
+    if not all(_isfinite(x) for x in (ca, va, cb)):
+        return jsonify({"ok": False, "error": "Enter valid numbers."}), 400
+    if not (0.001 <= ca <= 5 and 0.001 <= cb <= 5 and 1 <= va <= 100):
+        return jsonify({"ok": False, "error": "Concentrations must be 0.001 to 5 mol/L and the analyte volume 1 to 100 mL."}), 400
+    return jsonify(dict(_titration_curve(ca, va, cb, analyte, indicator), ok=True))
+
+
+CIRCUIT_MODES = {
+    "series": "Series (one path, same current through each resistor)",
+    "parallel": "Parallel (branches, same voltage across each resistor)",
+}
+CIRCUIT_ASSUMPTIONS = [
+    "Ideal voltage source, ideal wires and no internal resistance in the battery.",
+    "Resistors are ideal and fixed: no heating and no change of resistance with temperature.",
+    "Real meters and breadboards add small errors that this model leaves out.",
+]
+
+
+def _circuit_solve(volts, resistors, mode):
+    """Ohm's law for resistors in series or in parallel. Returns totals and each resistor's V, I and P."""
+    rows = []
+    if mode == "series":
+        total_r = sum(resistors)
+        total_i = volts / total_r
+        for i, r in enumerate(resistors, 1):
+            rows.append({"index": i, "ohms": r, "volts": total_i * r, "amps": total_i, "watts": total_i * total_i * r})
+    else:
+        total_i = 0.0
+        for i, r in enumerate(resistors, 1):
+            amps = volts / r
+            total_i += amps
+            rows.append({"index": i, "ohms": r, "volts": volts, "amps": amps, "watts": volts * volts / r})
+        total_r = volts / total_i
+    total_p = volts * total_i
+    return {
+        "total_ohms": total_r, "total_amps": total_i, "total_watts": total_p,
+        "power_check_watts": sum(x["watts"] for x in rows), "resistors": rows,
+    }
+
+
+@app.route("/academic/lab/circuit")
+@login_required
+def ac_lab_circuit():
+    return _ac_page("Virtual lab: circuits", r"""
+<div class="hero"><h2>Virtual lab: series and parallel circuits</h2><p>Choose a supply voltage and resistors, then see the current, voltage and power in each part. The numbers come from Ohm's law, calculated on the server.</p></div>
+<div class="card"><form id="cf">
+<label>Connection</label><select id="cMode">{% for k, label in modes.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
+<label>Supply voltage (volts)</label><input id="cV" type="number" step="0.1" min="0.1" max="240" value="12">
+<label>Resistors in ohms, separated by commas (1 to 6)</label><input id="cR" type="text" value="100, 220, 330" maxlength="200">
+<button class="btn">Calculate</button></form><p id="cErr" class="small" style="color:#b91c1c"></p></div>
+<div class="card"><h3>Each resistor</h3><table id="cTable" style="width:100%"><tr><th>Resistor</th><th>Ohms</th><th>Volts</th><th>Amps</th><th>Watts</th></tr></table><p id="cSummary"></p></div>
+<div class="card"><h3>What this model assumes</h3><ul>{% for a in assumptions %}<li>{{ a }}</li>{% endfor %}</ul></div>
+<script>
+function $(id){return document.getElementById(id);}
+$('cf').addEventListener('submit',function(e){
+  e.preventDefault();$('cErr').textContent='';
+  var q=new URLSearchParams({mode:$('cMode').value,volts:$('cV').value,resistors:$('cR').value});
+  fetch('{{ url_for("ac_lab_circuit_calc") }}?'+q.toString(),{credentials:'same-origin'}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});}).then(function(x){
+    if(!x.ok||!x.d.ok){$('cErr').textContent=(x.d&&x.d.error)||'Could not calculate.';return;}
+    var d=x.d,h='<tr><th>Resistor</th><th>Ohms</th><th>Volts</th><th>Amps</th><th>Watts</th></tr>';
+    d.resistors.forEach(function(r){h+='<tr><td>R'+r.index+'</td><td>'+r.ohms+'</td><td>'+r.volts+'</td><td>'+r.amps+'</td><td>'+r.watts+'</td></tr>';});
+    $('cTable').innerHTML=h;
+    $('cSummary').textContent='Total resistance '+d.total_ohms+' ohms, total current '+d.total_amps+' A, total power '+d.total_watts+' W. Adding the power of each resistor gives '+d.power_check_watts+' W.';
+  }).catch(function(){$('cErr').textContent='Could not reach the lab. Check your connection and try again.';});
+});
+</script>""", modes=CIRCUIT_MODES, assumptions=CIRCUIT_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/circuit/calc")
+@login_required
+def ac_lab_circuit_calc():
+    mode = clean(request.args.get("mode"))
+    if mode not in CIRCUIT_MODES:
+        return jsonify({"ok": False, "error": "Choose series or parallel."}), 400
+    try:
+        volts = float(request.args.get("volts", ""))
+        resistors = [float(x) for x in clean(request.args.get("resistors")).replace(";", ",").split(",") if x.strip()]
+    except ValueError:
+        return jsonify({"ok": False, "error": "Enter numbers for the voltage and the resistors, separated by commas."}), 400
+    if not _isfinite(volts) or not (0.1 <= volts <= 240):
+        return jsonify({"ok": False, "error": "The supply voltage must be between 0.1 and 240 volts."}), 400
+    if not (1 <= len(resistors) <= 6):
+        return jsonify({"ok": False, "error": "Enter between 1 and 6 resistors."}), 400
+    if not all(_isfinite(r) and 0.1 <= r <= 1000000 for r in resistors):
+        return jsonify({"ok": False, "error": "Each resistor must be between 0.1 and 1,000,000 ohms."}), 400
+    result = _circuit_solve(volts, resistors, mode)
+    rounded = {k: (round(v, 6) if isinstance(v, float) else v) for k, v in result.items() if k != "resistors"}
+    rounded["resistors"] = [{k: (round(v, 6) if isinstance(v, float) else v) for k, v in row.items()} for row in result["resistors"]]
+    return jsonify(dict(rounded, ok=True, assumptions=CIRCUIT_ASSUMPTIONS))
+
+
+from math import log as _ln, exp as _exp
+
+
+class LabInputError(ValueError):
+    pass
+
+
+def _lab_float(args, key, lo, hi, label, optional=False):
+    raw = clean(args.get(key))
+    if raw == "" and optional:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        raise LabInputError("Enter a number for the " + label + ".")
+    if not _isfinite(value) or not (lo <= value <= hi):
+        raise LabInputError("The " + label + " must be between " + str(lo) + " and " + str(hi) + ".")
+    return value
+
+
+def _lab_list(args, key, label, lo, hi, min_n, max_n):
+    raw = clean(args.get(key))
+    try:
+        values = [float(x) for x in raw.replace(";", ",").split(",") if x.strip()]
+    except ValueError:
+        raise LabInputError("Enter numbers for the " + label + ", separated by commas.")
+    if not (min_n <= len(values) <= max_n):
+        raise LabInputError("Enter " + str(min_n) + " to " + str(max_n) + " values for the " + label + ".")
+    if not all(_isfinite(v) and lo <= v <= hi for v in values):
+        raise LabInputError("Each value for the " + label + " must be between " + str(lo) + " and " + str(hi) + ".")
+    return values
+
+
+def _linfit(xs, ys):
+    """Least-squares straight line. Returns slope, intercept and R squared."""
+    n = len(xs)
+    if n < 2:
+        raise LabInputError("Enter at least two points.")
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx == 0:
+        raise LabInputError("The x values must not all be the same.")
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+    intercept = my - slope * mx
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    ss_res = sum((y - (intercept + slope * x)) ** 2 for x, y in zip(xs, ys))
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    return slope, intercept, r2
+
+
+def _fmt(x):
+    return "%.4g" % x
+
+
+def _calc_spectro(args):
+    conc = _lab_list(args, "concentrations", "standard concentrations", 0, 10, 2, 10)
+    absn = _lab_list(args, "absorbances", "standard absorbances", 0, 3, 2, 10)
+    if len(conc) != len(absn):
+        raise LabInputError("Enter one absorbance for each standard concentration.")
+    unk = _lab_float(args, "unknown", 0, 3, "unknown absorbance")
+    slope, intercept, r2 = _linfit(conc, absn)
+    if slope <= 0:
+        raise LabInputError("Absorbance should rise as concentration rises. Check the readings.")
+    unknown_conc = (unk - intercept) / slope
+    notes = []
+    if max(absn) > 1.5:
+        notes.append("Some readings are above 1.5. Above that the line often bends, so dilute those standards.")
+    if unk > max(absn) or unk < min(absn):
+        notes.append("The unknown is outside the calibration range, so its concentration is an extrapolation.")
+    rows = [[_fmt(c), _fmt(a), _fmt(intercept + slope * c)] for c, a in zip(conc, absn)]
+    return {
+        "results": [["Slope (absorptivity x path length)", _fmt(slope)], ["Intercept", _fmt(intercept)],
+                    ["R squared", "%.4f" % r2], ["Unknown concentration (mol/L)", _fmt(unknown_conc)],
+                    ["Transmittance of the unknown", "%.1f %%" % (100 * 10 ** (-unk))]],
+        "table": {"headers": ["Standard (mol/L)", "Measured A", "Fitted A"], "rows": rows},
+        "note": " ".join(notes),
+    }
+
+
+def _calc_kinetics(args):
+    times = _lab_list(args, "times", "times", 0, 1000000, 3, 30)
+    concs = _lab_list(args, "concentrations", "concentrations", 0.000000001, 1000, 3, 30)
+    if len(times) != len(concs):
+        raise LabInputError("Enter one concentration for each time.")
+    if any(times[i + 1] <= times[i] for i in range(len(times) - 1)):
+        raise LabInputError("Times must increase from one reading to the next.")
+    c0 = concs[0]
+    s0, _i0, r0 = _linfit(times, concs)
+    s1, _i1, r1 = _linfit(times, [_ln(x) for x in concs])
+    s2, _i2, r2 = _linfit(times, [1 / x for x in concs])
+    options = [
+        {"name": "Zero", "k": -s0, "r2": r0, "unit": "mol/L/s", "half": c0 / (2 * -s0) if s0 < 0 else None},
+        {"name": "First", "k": -s1, "r2": r1, "unit": "1/s", "half": _ln(2) / -s1 if s1 < 0 else None},
+        {"name": "Second", "k": s2, "r2": r2, "unit": "L/mol/s", "half": 1 / (s2 * c0) if s2 > 0 else None},
+    ]
+    valid = [o for o in options if o["half"] is not None]
+    if not valid:
+        raise LabInputError("No simple order fits these readings. Check that the concentration falls steadily.")
+    best = max(valid, key=lambda o: o["r2"])
+    return {
+        "results": [["Best-fitting order", best["name"]], ["Rate constant k", _fmt(best["k"]) + " " + best["unit"]],
+                    ["Half-life", _fmt(best["half"]) + " s"], ["R squared of the best fit", "%.4f" % best["r2"]]],
+        "table": {"headers": ["Order", "R squared", "k", "Valid (k above 0)"],
+                  "rows": [[o["name"], "%.4f" % o["r2"], _fmt(o["k"]), "yes" if o["half"] is not None else "no"] for o in options]},
+        "note": "Half-life uses the first reading as the starting concentration.",
+    }
+
+
+def _calc_rc(args):
+    r = _lab_float(args, "resistance", 0.1, 10000000, "resistance (ohms)")
+    cap = _lab_float(args, "capacitance", 0.001, 10000, "capacitance (microfarads)") * 1e-6
+    v = _lab_float(args, "voltage", 0.1, 240, "supply voltage")
+    mode = clean(args.get("mode"))
+    if mode not in ("charge", "discharge"):
+        raise LabInputError("Choose charging or discharging.")
+    measured = _lab_float(args, "measured_time", 0.0001, 1000000, "measured time", optional=True)
+    tau = r * cap
+
+    def volts(t):
+        return v * (1 - _exp(-t / tau)) if mode == "charge" else v * _exp(-t / tau)
+
+    rows = [[_fmt(tau * m), _fmt(volts(tau * m))] for m in (0, 0.5, 1, 2, 3, 5)]
+    results = [["Time constant tau = R x C (s)", _fmt(tau)],
+               ["Voltage after one time constant", _fmt(volts(tau))],
+               ["Voltage after five time constants", _fmt(volts(5 * tau))]]
+    if measured is not None:
+        results.append(["Measured time to 63% (or 37% when discharging) (s)", _fmt(measured)])
+        results.append(["Difference from the prediction", "%.1f %%" % ((measured - tau) / tau * 100)])
+    note = ("Charging reaches about 99% of the supply after five time constants." if mode == "charge"
+            else "Discharging falls to about 1% of the starting voltage after five time constants.")
+    return {"results": results, "table": {"headers": ["Time (s)", "Voltage (V)"], "rows": rows}, "note": note}
+
+
+def _calc_enzyme(args):
+    subs = _lab_list(args, "substrate", "substrate concentrations", 0.000001, 1000, 3, 20)
+    rates = _lab_list(args, "rates", "reaction rates", 0.000000001, 1000000, 3, 20)
+    if len(subs) != len(rates):
+        raise LabInputError("Enter one rate for each substrate concentration.")
+    slope, intercept, r2 = _linfit([1 / x for x in subs], [1 / v for v in rates])
+    if intercept <= 0 or slope <= 1e-9 * intercept:
+        raise LabInputError("These rates do not fit Michaelis-Menten behaviour. Check the readings.")
+    vmax = 1 / intercept
+    km = slope * vmax
+    rows = [[_fmt(x), _fmt(v), _fmt(vmax * x / (km + x))] for x, v in zip(subs, rates)]
+    return {
+        "results": [["Vmax (rate at very high substrate)", _fmt(vmax)], ["Km (substrate at half Vmax)", _fmt(km)],
+                    ["R squared of the Lineweaver-Burk line", "%.4f" % r2]],
+        "table": {"headers": ["Substrate", "Measured rate", "Fitted rate"], "rows": rows},
+        "note": "Lineweaver-Burk plots 1/rate against 1/substrate. Scattered points make Km and Vmax less reliable.",
+    }
+
+
+def _lab_calc(calc_fn, assumptions):
+    try:
+        result = calc_fn(request.args)
+    except LabInputError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify(dict(result, ok=True, assumptions=assumptions))
+
+
+LAB_PAGE_TPL = r"""
+<div class="hero"><h2>{{ page_title }}</h2><p>{{ intro }}</p></div>
+<div class="card"><form id="labForm">{{ fields|safe }}<button class="btn">Calculate</button></form><p id="labErr" class="small" style="color:#b91c1c"></p></div>
+<div class="card"><h3>Say or type a value</h3><p class="small">Say the field name and the value, for example "unknown 0.45", or say "calculate".</p>
+<form id="vForm" class="actions"><input id="vText" maxlength="200" placeholder="e.g. unknown 0.45"><button class="btn">Set</button></form>
+<div class="actions"><button id="vMic" class="btn secondary" type="button">Start listening</button></div>
+<p class="small" id="vHeard"></p><p class="small" id="vMsg"></p><p class="small" id="vErr" style="color:#b91c1c"></p></div>
+<div class="card"><h3>Results</h3><table id="labResults" style="width:100%"></table><div style="overflow:auto"><table id="labTable" style="width:100%;margin-top:10px"></table></div><p id="labNote" class="small"></p></div>
+<div class="card"><h3>What this model assumes</h3><ul>{% for a in assumptions %}<li>{{ a }}</li>{% endfor %}</ul></div>
+<div class="card"><a href="{{ url_for('ac_labs_index') }}">All virtual labs</a></div>
+<script>
+var CALC={{ calc_url|tojson }};
+function $(id){return document.getElementById(id);}
+function runLab(){
+  $('labErr').textContent='';
+  var q=new URLSearchParams(new FormData($('labForm')));
+  fetch(CALC+'?'+q.toString(),{credentials:'same-origin'}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});}).then(function(x){
+    if(!x.ok||!x.d.ok){$('labErr').textContent=(x.d&&x.d.error)||'Could not calculate.';return;}
+    var d=x.d,h='';
+    (d.results||[]).forEach(function(r){h+='<tr><th style="text-align:left">'+r[0]+'</th><td>'+r[1]+'</td></tr>';});
+    $('labResults').innerHTML=h;
+    var t='';
+    if(d.table){t='<tr>'+d.table.headers.map(function(c){return '<th>'+c+'</th>';}).join('')+'</tr>';d.table.rows.forEach(function(row){t+='<tr>'+row.map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>';});}
+    $('labTable').innerHTML=t;
+    $('labNote').textContent=d.note||'';
+  }).catch(function(){$('labErr').textContent='Could not reach the lab. Check your connection and try again.';});
+}
+$('labForm').addEventListener('submit',function(e){e.preventDefault();runLab();});
+var STOPW={the:1,of:1,in:1,for:1,and:1,set:1,to:1,a:1,is:1,at:1,with:1,value:1,equals:1,equal:1};
+function labWords(s){return s.toLowerCase().replace(/[^a-z0-9.,\- ]/g,' ').split(/\s+/).filter(function(w){return w&&!STOPW[w];});}
+function labFieldName(el){var lb=(el.id&&document.querySelector('label[for="'+el.id+'"]'))||el.closest('label')||el.previousElementSibling;var t=(lb&&lb.tagName==='LABEL')?lb.textContent:'';return (t||el.name||'').toLowerCase();}
+function labSay(text){
+  $('vErr').textContent='';$('vMsg').textContent='';
+  if(/\b(calculate|compute|run|go)\b/i.test(text)){runLab();$('vMsg').textContent='Calculating.';return;}
+  var said=labWords(text).filter(function(w){return !/^[0-9.,\-]+$/.test(w);});
+  var fields=Array.prototype.slice.call($('labForm').querySelectorAll('input,select'));
+  var best=null,score=0,bestLen=0;
+  fields.forEach(function(el){var lw=labWords(labFieldName(el)),s=0;lw.forEach(function(w){if(said.indexOf(w)>=0)s++;});
+    if(s>score||(s===score&&s>0&&lw.length>bestLen)){score=s;best=el;bestLen=lw.length;}});
+  if(!best||score===0){$('vErr').textContent='I could not match that to a field. Say the field name and a number, for example "unknown 0.45", or say "calculate".';return;}
+  var name=labFieldName(best),nums=(text.match(/-?\d+(\.\d+)?/g)||[]);
+  if(best.tagName==='SELECT'){
+    var opt=Array.prototype.slice.call(best.options).filter(function(o){return said.some(function(w){return w.length>2&&o.text.toLowerCase().indexOf(w)>=0;});});
+    if(!opt.length){$('vErr').textContent='Say one of the options for '+name+'.';return;}
+    best.value=opt[0].value;
+  } else {
+    if(!nums.length){$('vErr').textContent='Say a number for '+name+'.';return;}
+    best.value=best.type==='number'?nums[0]:nums.join(', ');
+  }
+  $('vMsg').textContent='Set '+name+' to '+best.value+'.';
+}
+$('vForm').addEventListener('submit',function(e){e.preventDefault();var t=$('vText').value;$('vText').value='';if(t)labSay(t);});
+var VSR=window.SpeechRecognition||window.webkitSpeechRecognition,vrec=null,vlisten=false;
+if(VSR){
+  vrec=new VSR();vrec.continuous=true;vrec.interimResults=false;vrec.lang='en-US';
+  vrec.onresult=function(e){var t=e.results[e.results.length-1][0].transcript;$('vHeard').textContent='Heard: '+t;labSay(t);};
+  vrec.onerror=function(e){$('vErr').textContent='Voice input stopped: '+e.error;vlisten=false;$('vMic').textContent='Start listening';};
+  vrec.onend=function(){if(vlisten){try{vrec.start();}catch(x){}}};
+  $('vMic').addEventListener('click',function(){
+    if(!vlisten){vlisten=true;try{vrec.start();}catch(x){}$('vMic').textContent='Stop listening';}
+    else{vlisten=false;vrec.stop();$('vMic').textContent='Start listening';}
+  });
+} else {
+  $('vMic').disabled=true;$('vMic').textContent='Voice is not supported in this browser. Type below.';
+}
+</script>
+"""
+
+
+def _lab_page(page_title, intro, fields_html, calc_endpoint, assumptions):
+    return _ac_page(page_title, LAB_PAGE_TPL, intro=intro, fields=fields_html,
+                    calc_url=url_for(calc_endpoint), assumptions=assumptions, page_title=page_title)
+
+
+def _lab_field(name, label, value, kind="number", step="any"):
+    step_attr = (' step="' + step + '"') if step else ""
+    return '<label>' + label + '</label><input name="' + name + '" type="' + kind + '"' + step_attr + ' value="' + value + '">'
+
+
+SPECTRO_INTRO = "Measure standards of known concentration, fit a calibration line, then read the concentration of an unknown from its absorbance."
+SPECTRO_FIELDS = (_lab_field("concentrations", "Standard concentrations (mol/L), separated by commas", "0.1, 0.2, 0.4, 0.6, 0.8", "text", None)
+                  + _lab_field("absorbances", "Measured absorbance of each standard, in the same order", "0.15, 0.30, 0.61, 0.90, 1.19", "text", None)
+                  + _lab_field("unknown", "Measured absorbance of the unknown", "0.45"))
+SPECTRO_ASSUMPTIONS = [
+    "Beer-Lambert law holds: absorbance is proportional to concentration.",
+    "The linear range is roughly 0 to 1.5 absorbance. Above that, stray light and molecular interactions bend the line.",
+    "One absorbing substance, no scattering, and the same cuvette path length for every reading.",
+]
+KINETICS_INTRO = "Enter concentrations measured over time. The lab tests zero, first and second order fits and reports the best one with its rate constant and half-life."
+KINETICS_FIELDS = (_lab_field("times", "Times (s), separated by commas", "0, 60, 120, 180, 240, 300", "text", None)
+                   + _lab_field("concentrations", "Concentrations (mol/L), in the same order", "0.1, 0.0741, 0.0549, 0.0407, 0.0301, 0.0223", "text", None))
+KINETICS_ASSUMPTIONS = [
+    "Constant temperature and a single reaction with a simple order.",
+    "The best order is the one with the highest R squared among fits that give a positive rate constant.",
+    "Half-life uses the first reading as the starting concentration.",
+]
+RC_INTRO = "Set the resistor, capacitor and supply voltage. The lab predicts how the capacitor voltage changes and compares a measured time with the prediction."
+RC_FIELDS = (_lab_field("resistance", "Resistance (ohms)", "1000")
+             + _lab_field("capacitance", "Capacitance (microfarads)", "100")
+             + _lab_field("voltage", "Supply voltage (V)", "12")
+             + '<label>Mode</label><select name="mode"><option value="charge">Charging</option><option value="discharge">Discharging</option></select>'
+             + _lab_field("measured_time", "Measured time to 63% (optional, seconds)", ""))
+RC_ASSUMPTIONS = [
+    "Ideal capacitor and resistor, no leakage current and an ideal supply.",
+    "Charging follows V = Vsupply x (1 - e^(-t/RC)); discharging follows V = Vstart x e^(-t/RC).",
+    "Real capacitors have a tolerance and meters add error, so a measured time will usually differ a little.",
+]
+ENZYME_INTRO = "Enter substrate concentrations and the rates you measured. The lab estimates Vmax and Km with a Lineweaver-Burk plot."
+ENZYME_FIELDS = (_lab_field("substrate", "Substrate concentrations (mmol/L), separated by commas", "0.5, 1, 2, 4, 8", "text", None)
+                 + _lab_field("rates", "Measured reaction rate for each (umol/min), in the same order", "2.0, 3.33, 5.0, 6.67, 8.0", "text", None))
+ENZYME_ASSUMPTIONS = [
+    "Michaelis-Menten behaviour: one enzyme, one substrate and no inhibitor.",
+    "The rates are initial rates, measured before the substrate runs low.",
+    "Lineweaver-Burk fits a straight line to reciprocals, which gives extra weight to the low-rate points.",
+]
+
+
+@app.route("/academic/lab/spectrophotometer")
+@login_required
+def ac_lab_spectro():
+    return _lab_page("Virtual lab: spectrophotometer (Beer-Lambert law)", SPECTRO_INTRO, SPECTRO_FIELDS, "ac_lab_spectro_calc", SPECTRO_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/spectrophotometer/calc")
+@login_required
+def ac_lab_spectro_calc():
+    return _lab_calc(_calc_spectro, SPECTRO_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/kinetics")
+@login_required
+def ac_lab_kinetics():
+    return _lab_page("Virtual lab: reaction kinetics", KINETICS_INTRO, KINETICS_FIELDS, "ac_lab_kinetics_calc", KINETICS_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/kinetics/calc")
+@login_required
+def ac_lab_kinetics_calc():
+    return _lab_calc(_calc_kinetics, KINETICS_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/rc-circuit")
+@login_required
+def ac_lab_rc():
+    return _lab_page("Virtual lab: RC circuit charging", RC_INTRO, RC_FIELDS, "ac_lab_rc_calc", RC_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/rc-circuit/calc")
+@login_required
+def ac_lab_rc_calc():
+    return _lab_calc(_calc_rc, RC_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/enzyme")
+@login_required
+def ac_lab_enzyme():
+    return _lab_page("Virtual lab: enzyme kinetics (Michaelis-Menten)", ENZYME_INTRO, ENZYME_FIELDS, "ac_lab_enzyme_calc", ENZYME_ASSUMPTIONS)
+
+
+@app.route("/academic/lab/enzyme/calc")
+@login_required
+def ac_lab_enzyme_calc():
+    return _lab_calc(_calc_enzyme, ENZYME_ASSUMPTIONS)
+
+
+PHET_HOME_URL = "https://phet.colorado.edu/"
+
+LAB_INDEX = [
+    {"name": "Acid-base titration", "subject": "Chemistry", "endpoint": "ac_lab_titration"},
+    {"name": "Series and parallel circuits", "subject": "Physics", "endpoint": "ac_lab_circuit"},
+    {"name": "Spectrophotometer (Beer-Lambert law)", "subject": "Chemistry", "endpoint": "ac_lab_spectro"},
+    {"name": "Reaction kinetics", "subject": "Chemistry", "endpoint": "ac_lab_kinetics"},
+    {"name": "RC circuit charging", "subject": "Physics", "endpoint": "ac_lab_rc"},
+    {"name": "Enzyme kinetics (Michaelis-Menten)", "subject": "Biology", "endpoint": "ac_lab_enzyme"},
+]
+
+
+@app.route("/academic/lab")
+@login_required
+def ac_labs_index():
+    return _ac_page("Virtual labs", r"""
+<div class="hero"><h2>Virtual labs</h2><p>Experiments that calculate real results. Pick one and try it.</p></div>
+<div class="grid">{% for l in labs %}<div class="card"><h3>{{ l.name }}</h3><p>{{ l.subject }}</p><a class="btn" href="{{ url_for(l.endpoint) }}">Open lab</a></div>{% endfor %}</div>
+<div class="card"><h3>More simulations: PhET</h3><p>Interactive physics, chemistry, biology and maths simulations from PhET Interactive Simulations, University of Colorado Boulder.</p>
+<a class="btn secondary" href="{{ phet_url }}" target="_blank" rel="noopener noreferrer">Open PhET simulations</a>
+<p class="small">Licence: Creative Commons Attribution 4.0 (CC BY 4.0) for the historical HTML simulations. Keep the PhET credit and logo visible, close to where the simulation is used. Using PhET's name or logo for promotion needs a separate agreement from PhET.</p></div>""", labs=LAB_INDEX, phet_url=PHET_HOME_URL)
+
+
+DEMO_TABLE = "koja_academic_lab_state"
+DEMO_MAX_RESISTORS = 6
+
+
+def _demo_defaults(lab):
+    if lab == "circuit":
+        return {"lab": "circuit", "volts": 12.0, "mode": "series", "resistors": [100.0, 220.0, 330.0]}
+    return {"lab": "titration", "ca": 0.1, "va": 25.0, "cb": 0.1, "analyte": "hcl",
+            "indicator": "phenolphthalein", "volume": 0.0, "readings": []}
+
+
+def _demo_number(t, pattern):
+    m = re.search(pattern, t)
+    return float(m.group(1)) if m else None
+
+
+def _demo_titration(state, t):
+    ve = state["ca"] * state["va"] / state["cb"]
+    end = 2.0 * ve
+    if "record" in t:
+        state["readings"] = (state["readings"] + [round(state["volume"], 2)])[-20:]
+        return state, "Recorded a reading at " + format(state["volume"], ".2f") + " mL."
+    if "clear" in t and "reading" in t:
+        state["readings"] = []
+        return state, "Readings cleared."
+    x = _demo_number(t, "(?:add|pour|dispense|put in) ([0-9]+(?:[.][0-9]+)?) ?(?:ml|millilit)")
+    if x is not None:
+        state["volume"] = min(state["volume"] + x, end)
+        return state, "Added " + format(x, "g") + " mL. Total base " + format(state["volume"], ".2f") + " mL."
+    x = _demo_number(t, "(?:set|change) (?:the )?(?:base )?volume to ([0-9]+(?:[.][0-9]+)?)")
+    if x is not None:
+        state["volume"] = min(x, end)
+        return state, "Base volume set to " + format(state["volume"], ".2f") + " mL."
+    x = _demo_number(t, "base concentration to ([0-9]+(?:[.][0-9]+)?)")
+    if x is not None and 0.001 <= x <= 5:
+        state["cb"] = x
+        state["volume"] = min(state["volume"], 2.0 * state["ca"] * state["va"] / x)
+        return state, "Base concentration set to " + format(x, "g") + " mol/L."
+    x = _demo_number(t, "analyte concentration to ([0-9]+(?:[.][0-9]+)?)")
+    if x is not None and 0.001 <= x <= 5:
+        state["ca"] = x
+        state["volume"] = min(state["volume"], 2.0 * x * state["va"] / state["cb"])
+        return state, "Analyte concentration set to " + format(x, "g") + " mol/L."
+    if "methyl orange" in t:
+        state["indicator"] = "methyl_orange"
+        return state, "Indicator set to methyl orange."
+    if "bromothymol" in t:
+        state["indicator"] = "bromothymol_blue"
+        return state, "Indicator set to bromothymol blue."
+    if "phenolphthalein" in t:
+        state["indicator"] = "phenolphthalein"
+        return state, "Indicator set to phenolphthalein."
+    if "acetic" in t:
+        state["analyte"] = "acetic"
+        return state, "Analyte set to acetic acid."
+    if "hydrochloric" in t:
+        state["analyte"] = "hcl"
+        return state, "Analyte set to hydrochloric acid."
+    if "reset" in t:
+        return _demo_defaults("titration"), "Experiment reset."
+    return state, None
+
+
+def _demo_circuit(state, t):
+    if "clear" in t and "resistor" in t:
+        state["resistors"] = []
+        return state, "All resistors removed."
+    if "remove" in t and "resistor" in t:
+        if state["resistors"]:
+            state["resistors"].pop()
+            return state, "Removed the last resistor."
+        return state, "There are no resistors to remove."
+    x = _demo_number(t, "(?:add|put in) (?:a )?resistor(?: of)? ([0-9]+(?:[.][0-9]+)?)")
+    if x is None:
+        x = _demo_number(t, "add ([0-9]+(?:[.][0-9]+)?) ?(?:ohm|ohms)")
+    if x is not None:
+        if len(state["resistors"]) >= DEMO_MAX_RESISTORS:
+            return state, "The circuit already has six resistors."
+        if not (0.1 <= x <= 1000000):
+            return state, "A resistor must be between 0.1 and 1,000,000 ohms."
+        state["resistors"].append(x)
+        return state, "Added a " + format(x, "g") + " ohm resistor."
+    x = _demo_number(t, "voltage to ([0-9]+(?:[.][0-9]+)?)")
+    if x is None:
+        x = _demo_number(t, "([0-9]+(?:[.][0-9]+)?) ?volts")
+    if x is not None:
+        if not (0.1 <= x <= 240):
+            return state, "The supply voltage must be between 0.1 and 240 volts."
+        state["volts"] = x
+        return state, "Supply voltage set to " + format(x, "g") + " V."
+    if "parallel" in t:
+        state["mode"] = "parallel"
+        return state, "Resistors connected in parallel."
+    if "series" in t:
+        state["mode"] = "series"
+        return state, "Resistors connected in series."
+    if "reset" in t:
+        return _demo_defaults("circuit"), "Experiment reset."
+    return state, None
+
+
+def _demo_apply(state, text):
+    """Apply one spoken or typed command to the demonstration. Returns (state, message)."""
+    t = " ".join(clean(text).lower().replace(",", " ").split())
+    if not t:
+        return state, "Say or type a command."
+    if ("switch" in t or "open" in t or "go to" in t) and "circuit" in t:
+        return _demo_defaults("circuit"), "Switched to the circuit lab."
+    if ("switch" in t or "open" in t or "go to" in t) and "titration" in t:
+        return _demo_defaults("titration"), "Switched to the titration lab."
+    if state.get("lab") == "circuit":
+        state, message = _demo_circuit(state, t)
+    else:
+        state, message = _demo_titration(state, t)
+    if message is None:
+        return state, "Not understood: \"" + t[:120] + "\". Try: add 5 ml, record, indicator to methyl orange, reset."
+    return state, message
+
+
+def _demo_room(kind, rid):
+    return kind + ":" + rid
+
+
+def _demo_load(kind, rid):
+    row = first_row(DEMO_TABLE, {"room": _demo_room(kind, rid)})
+    if row and row.get("state"):
+        try:
+            return json.loads(row["state"])
+        except ValueError:
+            return None
+    return None
+
+
+def _demo_save(kind, rid, state):
+    room = _demo_room(kind, rid)
+    payload = {"lab": state.get("lab", "titration"), "state": json.dumps(state), "updated_at": utc_now()}
+    if first_row(DEMO_TABLE, {"room": room}):
+        db_update(DEMO_TABLE, {"room": room}, payload)
+    else:
+        db_insert(DEMO_TABLE, dict(payload, room=room))
+
+
+@app.route("/academic/teach/<kind>/<rid>/demo")
+@login_required
+def ac_demo_page(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(404)
+    return _ac_page("Live demonstration", DEMO_TPL, is_teacher=is_teacher, title_text=_ac_teaching_title(kind, obj),
+                    state_url=url_for("ac_demo_state", kind=kind, rid=rid), command_url=url_for("ac_demo_command", kind=kind, rid=rid),
+                    token=csrf_token(), back_url=url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>/lab", methods=["GET"])
+@login_required
+def ac_demo_state(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(403)
+    state = _demo_load(kind, rid) or _demo_defaults("titration")
+    return jsonify(ok=True, state=state, teacher=is_teacher)
+
+
+@app.route("/academic/teach/<kind>/<rid>/lab", methods=["POST"])
+@login_required
+def ac_demo_command(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    state = _demo_load(kind, rid) or _demo_defaults("titration")
+    state, message = _demo_apply(state, clean(data.get("text"))[:300])
+    _demo_save(kind, rid, state)
+    return jsonify(ok=True, state=state, message=message)
+
+
+DEMO_TPL = r"""
+<div class="hero"><h2>Live demonstration</h2><p>{{ title_text }}</p></div>
+<div class="card">
+{% if is_teacher %}<p>Speak to run the experiment, or type a command. Students in the room see the same experiment.</p>
+<div class="actions"><button id="dMic" class="btn" type="button">Start listening</button></div>
+<form id="dForm" class="actions"><input id="dText" name="text" maxlength="300" placeholder="e.g. add 5 ml, record, indicator to methyl orange"><button class="btn secondary">Send</button></form>
+<p class="small" id="dHeard"></p>{% else %}<p>Your teacher is running the experiment. It updates here automatically.</p>{% endif %}
+<p class="small" id="dMsg"></p><p class="small" id="dErr" style="color:#b91c1c"></p></div>
+<div class="card"><h3 id="dLab">Experiment</h3><p id="dInfo"></p>
+<svg id="dPlot" viewBox="0 0 600 300" style="width:100%;max-width:700px;background:#fff;border-radius:8px"></svg>
+<div style="overflow:auto"><table id="dTable" style="width:100%;margin-top:10px"></table></div></div>
+<div class="card"><a href="{{ back_url }}">Back</a></div>
+<script>
+var STATE_URL={{ state_url|tojson }},CMD_URL={{ command_url|tojson }},TOKEN={{ token|tojson }},IS_TEACHER={{ 'true' if is_teacher else 'false' }};
+var CUR=null,PLOT=null;
+function $(id){return document.getElementById(id);}
+function show(msg,err){$('dMsg').textContent=msg||'';$('dErr').textContent=err||'';}
+function phAt(c,v){var p=c.points,i=Math.round(v/c.end_ml*(p.length-1));i=Math.max(0,Math.min(p.length-1,i));return p[i][1];}
+function renderTitration(st){
+  var q=new URLSearchParams({analyte:st.analyte,indicator:st.indicator,ca:st.ca,va:st.va,cb:st.cb});
+  fetch('/academic/lab/titration/curve?'+q.toString(),{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c){
+    if(!c.ok){show('',c.error);return;}
+    $('dLab').textContent='Acid-base titration';
+    var v=Math.min(st.volume,c.end_ml),ph=phAt(c,v),ind=c.indicator;
+    $('dInfo').textContent='Base added '+v.toFixed(2)+' mL. pH '+ph.toFixed(2)+'. Equivalence point '+c.equivalence_ml.toFixed(2)+' mL (pH '+c.ph_at_equivalence.toFixed(2)+'). '+ind.label+' changes at '+(ind.change_ml===null?'never':ind.change_ml.toFixed(2)+' mL')+'.';
+    var L=44,R=580,T=16,B=270,end=c.end_ml,svg='',path=[],p,y,x;
+    for(var i=0;i<c.points.length;i++){x=L+(c.points[i][0]/end)*(R-L);y=B-(c.points[i][1]/14)*(B-T);path.push(x.toFixed(1)+','+y.toFixed(1));}
+    for(p=0;p<=14;p+=2){y=B-(p/14)*(B-T);svg+='<line x1="'+L+'" y1="'+y+'" x2="'+R+'" y2="'+y+'" stroke="#e5e7eb"/><text x="8" y="'+(y+4)+'" font-size="11">'+p+'</text>';}
+    svg+='<polyline fill="none" stroke="#2563eb" stroke-width="2" points="'+path.join(' ')+'"/>';
+    var xe=L+(c.equivalence_ml/end)*(R-L);
+    svg+='<line x1="'+xe+'" y1="'+T+'" x2="'+xe+'" y2="'+B+'" stroke="#16a34a" stroke-dasharray="4 4"/>';
+    var xv=L+(v/end)*(R-L),yv=B-(ph/14)*(B-T);
+    svg+='<circle cx="'+xv+'" cy="'+yv+'" r="6" fill="#ef4444"/>';
+    $('dPlot').innerHTML=svg;
+    var h='<tr><th>Base added (mL)</th><th>pH</th></tr>';
+    st.readings.forEach(function(rv){h+='<tr><td>'+rv.toFixed(2)+'</td><td>'+phAt(c,rv).toFixed(2)+'</td></tr>';});
+    $('dTable').innerHTML=h;
+  }).catch(function(){show('','Could not reach the lab.');});
+}
+function renderCircuit(st){
+  var q=new URLSearchParams({mode:st.mode,volts:st.volts,resistors:st.resistors.join(',')});
+  fetch('/academic/lab/circuit/calc?'+q.toString(),{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){show('',d.error);return;}
+    $('dLab').textContent='Series and parallel circuits ('+st.mode+')';
+    $('dInfo').textContent='Total resistance '+d.total_ohms+' ohms, total current '+d.total_amps+' A, total power '+d.total_watts+' W.';
+    $('dPlot').innerHTML='';
+    var h='<tr><th>Resistor</th><th>Ohms</th><th>Volts</th><th>Amps</th><th>Watts</th></tr>';
+    d.resistors.forEach(function(r){h+='<tr><td>R'+r.index+'</td><td>'+r.ohms+'</td><td>'+r.volts+'</td><td>'+r.amps+'</td><td>'+r.watts+'</td></tr>';});
+    $('dTable').innerHTML=h;
+  }).catch(function(){show('','Could not reach the lab.');});
+}
+function render(st){CUR=st;if(st.lab==='circuit')renderCircuit(st);else renderTitration(st);}
+function loadState(){
+  fetch(STATE_URL,{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){if(d.ok)render(d.state);}).catch(function(){});
+}
+function send(text){
+  show('','');
+  fetch(CMD_URL,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':TOKEN},body:JSON.stringify({text:text})}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});}).then(function(x){
+    if(!x.ok){show('','You cannot control this demonstration.');return;}
+    show(x.d.message,'');render(x.d.state);
+  }).catch(function(){show('','Could not send the command. Check your connection.');});
+}
+if(IS_TEACHER){
+  $('dForm').addEventListener('submit',function(e){e.preventDefault();var t=$('dText').value;$('dText').value='';if(t)send(t);});
+  var SRC=window.SpeechRecognition||window.webkitSpeechRecognition,rec=null,listening=false;
+  if(SRC){
+    rec=new SRC();rec.continuous=true;rec.interimResults=false;rec.lang='en-US';
+    rec.onresult=function(e){var t=e.results[e.results.length-1][0].transcript;$('dHeard').textContent='Heard: '+t;send(t);};
+    rec.onerror=function(e){show('','Voice input stopped: '+e.error);listening=false;$('dMic').textContent='Start listening';};
+    rec.onend=function(){if(listening){try{rec.start();}catch(x){}}};
+    $('dMic').addEventListener('click',function(){
+      if(!listening){listening=true;try{rec.start();}catch(x){}$('dMic').textContent='Stop listening';}
+      else{listening=false;rec.stop();$('dMic').textContent='Start listening';}
+    });
+  } else {
+    $('dMic').disabled=true;$('dMic').textContent='Voice is not supported in this browser. Type commands below.';
+  }
+}
+loadState();
+setInterval(function(){if(!document.hidden)loadState();},5000);
+</script>
+"""
+
+
+from math import pi as _pi, e as _e, sin as _sin, cos as _cos, tan as _tan
+
+BOARD_MAX_ITEMS = 60
+BOARD_ALLOWED_TEXT = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-*/^().,=<>| "
+BOARD_FUNCS = ("sin", "cos", "tan", "sqrt", "ln", "log", "exp", "abs")
+BOARD_DIGITS = "0123456789."
+BOARD_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _board_tokens(src):
+    toks = []
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if ch in " \t\n":
+            i += 1
+            continue
+        if ch in BOARD_DIGITS:
+            j = i
+            while j < len(src) and src[j] in BOARD_DIGITS:
+                j += 1
+            try:
+                toks.append(("num", float(src[i:j])))
+            except ValueError:
+                raise LabInputError("Check the number " + src[i:j] + ".")
+            i = j
+            continue
+        if ch in BOARD_LETTERS:
+            j = i
+            while j < len(src) and src[j] in BOARD_LETTERS:
+                j += 1
+            word = src[i:j].lower()
+            if word not in BOARD_FUNCS and word not in ("x", "pi", "e"):
+                raise LabInputError("Unknown word " + word + " in the formula.")
+            toks.append(("name", word))
+            i = j
+            continue
+        if ch in "+-*/^()":
+            toks.append(("op", ch))
+            i += 1
+            continue
+        raise LabInputError("The character " + ch + " is not allowed in a formula.")
+    return toks
+
+
+def _board_insert_mul(toks):
+    out = []
+    for t in toks:
+        if out:
+            a = out[-1]
+            left = a[0] == "num" or a == ("op", ")") or (a[0] == "name" and a[1] in ("x", "pi", "e"))
+            right = t[0] == "num" or t == ("op", "(") or t[0] == "name"
+            if left and right:
+                out.append(("op", "*"))
+        out.append(t)
+    return out
+
+
+def _board_parse(src):
+    """Check a formula of x and return its tree. Raises LabInputError when it is not valid."""
+    toks = _board_insert_mul(_board_tokens(src))
+    if not toks or len(toks) > 200:
+        raise LabInputError("Enter a formula of x, up to 200 symbols.")
+    pos = [0]
+
+    def peek():
+        return toks[pos[0]] if pos[0] < len(toks) else None
+
+    def take():
+        t = peek()
+        pos[0] += 1
+        return t
+
+    def expr():
+        node = term()
+        while peek() in (("op", "+"), ("op", "-")):
+            op = take()[1]
+            node = ("bin", op, node, term())
+        return node
+
+    def term():
+        node = unary()
+        while peek() in (("op", "*"), ("op", "/")):
+            op = take()[1]
+            node = ("bin", op, node, unary())
+        return node
+
+    def unary():
+        if peek() == ("op", "-"):
+            take()
+            return ("neg", unary())
+        if peek() == ("op", "+"):
+            take()
+            return unary()
+        return power()
+
+    def power():
+        base = atom()
+        if peek() == ("op", "^"):
+            take()
+            return ("bin", "^", base, unary())
+        return base
+
+    def atom():
+        t = take()
+        if t is None:
+            raise LabInputError("The formula ends too early.")
+        if t[0] == "num":
+            return ("num", t[1])
+        if t[0] == "name":
+            if t[1] == "x":
+                return ("x",)
+            if t[1] == "pi":
+                return ("num", _pi)
+            if t[1] == "e":
+                return ("num", _e)
+            if peek() != ("op", "("):
+                raise LabInputError("Put brackets after " + t[1] + ".")
+            take()
+            inner = expr()
+            if take() != ("op", ")"):
+                raise LabInputError("Missing a closing bracket.")
+            return ("fn", t[1], inner)
+        if t == ("op", "("):
+            inner = expr()
+            if take() != ("op", ")"):
+                raise LabInputError("Missing a closing bracket.")
+            return inner
+        raise LabInputError("Check the formula near " + str(t[1]) + ".")
+
+    tree = expr()
+    if pos[0] != len(toks):
+        raise LabInputError("Check the formula: something comes after the end.")
+    return tree
+
+
+def _board_fin(v):
+    return v if _isfinite(v) else float("nan")
+
+
+def _board_eval(node, x):
+    """Value of a checked formula at x. Undefined results (division by zero, square root of a negative) give nan."""
+    kind = node[0]
+    if kind == "num":
+        return node[1]
+    if kind == "x":
+        return x
+    if kind == "neg":
+        return -_board_eval(node[1], x)
+    if kind == "fn":
+        v = _board_eval(node[2], x)
+        try:
+            if node[1] == "sin":
+                r = _sin(v)
+            elif node[1] == "cos":
+                r = _cos(v)
+            elif node[1] == "tan":
+                r = _tan(v)
+            elif node[1] == "sqrt":
+                r = _sqrt(v)
+            elif node[1] == "ln":
+                r = _ln(v)
+            elif node[1] == "log":
+                r = _log10(v)
+            elif node[1] == "exp":
+                r = _exp(v)
+            else:
+                r = abs(v)
+        except (ValueError, OverflowError):
+            return float("nan")
+        return _board_fin(r)
+    a = _board_eval(node[2], x)
+    b = _board_eval(node[3], x)
+    op = node[1]
+    try:
+        if op == "+":
+            r = a + b
+        elif op == "-":
+            r = a - b
+        elif op == "*":
+            r = a * b
+        elif op == "/":
+            r = float("nan") if b == 0 else a / b
+        else:
+            r = float("nan") if (a < 0 and b % 1 != 0) else __import__("math").pow(a, b)
+    except (ValueError, OverflowError, ZeroDivisionError):
+        return float("nan")
+    return _board_fin(r)
+
+
+def _board_point(text):
+    parts = [p.strip() for p in clean(text).split(",")]
+    if len(parts) != 2:
+        raise LabInputError("Each point needs an x and a y, like 2,3.")
+    try:
+        x, y = float(parts[0]), float(parts[1])
+    except ValueError:
+        raise LabInputError("Each point needs an x and a y, like 2,3.")
+    if not (_isfinite(x) and _isfinite(y) and -10 <= x <= 10 and -10 <= y <= 10):
+        raise LabInputError("Points must be between -10 and 10.")
+    return [x, y]
+
+
+def _board_points(text, count):
+    pts = [_board_point(p) for p in clean(text).split(";") if p.strip()]
+    if len(pts) != count:
+        raise LabInputError("This shape needs " + str(count) + " points, separated by semicolons.")
+    return pts
+
+
+def _board_clean_item(data):
+    kind = clean(data.get("type"))
+    if kind == "equation":
+        text = clean(data.get("text"))[:200]
+        if not text:
+            raise LabInputError("Type an equation first.")
+        if not all(ch in BOARD_ALLOWED_TEXT for ch in text):
+            raise LabInputError("An equation can use letters, numbers and + - * / ^ ( ) = . , < > | only. Write fractions as a/b.")
+        return {"type": "equation", "text": text}
+    if kind == "graph":
+        expr = clean(data.get("expr"))[:120]
+        _board_parse(expr)
+        window = {key: _lab_float(data, key, -10, 10, "graph " + key) for key in ("xmin", "xmax", "ymin", "ymax")}
+        if window["xmin"] >= window["xmax"] or window["ymin"] >= window["ymax"]:
+            raise LabInputError("The maximum must be bigger than the minimum on both axes.")
+        return dict(window, type="graph", expr=expr)
+    if kind == "shape":
+        shape = clean(data.get("kind"))
+        label = clean(data.get("label"))[:40]
+        if shape == "circle":
+            center = _board_point(data.get("points"))
+            radius = _lab_float(data, "radius", 0.1, 10, "circle radius")
+            return {"type": "shape", "kind": "circle", "points": [center], "radius": radius, "label": label}
+        counts = {"triangle": 3, "segment": 2, "angle": 3}
+        if shape not in counts:
+            raise LabInputError("Choose a shape: triangle, circle, segment or angle.")
+        return {"type": "shape", "kind": shape, "points": _board_points(data.get("points"), counts[shape]), "radius": 0, "label": label}
+    if kind == "arrow":
+        return {"type": "arrow", "from": _board_point(data.get("from")), "to": _board_point(data.get("to")),
+                "label": clean(data.get("label"))[:40]}
+    raise LabInputError("Choose equation, graph, shape or arrow.")
+
+
+def _board_room(kind, rid):
+    return "board:" + kind + ":" + rid
+
+
+def _board_load(kind, rid):
+    row = first_row(DEMO_TABLE, {"room": _board_room(kind, rid)})
+    if row and row.get("state"):
+        try:
+            items = json.loads(row["state"])
+            return items if isinstance(items, list) else []
+        except ValueError:
+            return []
+    return []
+
+
+def _board_store(kind, rid, items):
+    room = _board_room(kind, rid)
+    payload = {"lab": "board", "state": json.dumps(items), "updated_at": utc_now()}
+    if first_row(DEMO_TABLE, {"room": room}):
+        db_update(DEMO_TABLE, {"room": room}, payload)
+    else:
+        db_insert(DEMO_TABLE, dict(payload, room=room))
+
+
+BOARD_LIB_JS = r"""
+var BOARD_FUNCS={sin:1,cos:1,tan:1,sqrt:1,ln:1,log:1,exp:1,abs:1};
+function boardFin(v){return isFinite(v)?v:NaN;}
+function boardTokens(src){
+  var t=[],i=0,ch,j,w,v;
+  while(i<src.length){
+    ch=src.charAt(i);
+    if(ch===' '||ch==='\t'||ch==='\n'){i++;continue;}
+    if('0123456789.'.indexOf(ch)>=0){j=i;while(j<src.length&&'0123456789.'.indexOf(src.charAt(j))>=0)j++;v=Number(src.slice(i,j));if(isNaN(v))throw new Error('Check the number '+src.slice(i,j)+'.');t.push(['num',v]);i=j;continue;}
+    if(/[A-Za-z]/.test(ch)){j=i;while(j<src.length&&/[A-Za-z]/.test(src.charAt(j)))j++;w=src.slice(i,j).toLowerCase();if(!BOARD_FUNCS[w]&&w!=='x'&&w!=='pi'&&w!=='e')throw new Error('Unknown word '+w+' in the formula.');t.push(['name',w]);i=j;continue;}
+    if('+-*/^()'.indexOf(ch)>=0){t.push(['op',ch]);i++;continue;}
+    throw new Error('The character '+ch+' is not allowed in a formula.');
+  }
+  return t;
+}
+function boardInsertMul(t){
+  var out=[],i,a,left,right,tok;
+  for(i=0;i<t.length;i++){
+    tok=t[i];
+    if(out.length){a=out[out.length-1];
+      left=a[0]==='num'||(a[0]==='op'&&a[1]===')')||(a[0]==='name'&&(a[1]==='x'||a[1]==='pi'||a[1]==='e'));
+      right=tok[0]==='num'||(tok[0]==='op'&&tok[1]==='(')||tok[0]==='name';
+      if(left&&right)out.push(['op','*']);}
+    out.push(tok);
+  }
+  return out;
+}
+function boardCompile(src){
+  var toks=boardInsertMul(boardTokens(src)),pos=0;
+  if(!toks.length||toks.length>200)throw new Error('Enter a formula of x, up to 200 symbols.');
+  function peek(){return pos<toks.length?toks[pos]:null;}
+  function take(){var t=peek();pos++;return t;}
+  function isOp(t,o){return !!t&&t[0]==='op'&&t[1]===o;}
+  function expr(){var n=term();while(isOp(peek(),'+')||isOp(peek(),'-')){var op=take()[1];n=['bin',op,n,term()];}return n;}
+  function term(){var n=unary();while(isOp(peek(),'*')||isOp(peek(),'/')){var op=take()[1];n=['bin',op,n,unary()];}return n;}
+  function unary(){if(isOp(peek(),'-')){take();return ['neg',unary()];}if(isOp(peek(),'+')){take();return unary();}return power();}
+  function power(){var b=atom();if(isOp(peek(),'^')){take();return ['bin','^',b,unary()];}return b;}
+  function atom(){
+    var t=take(),inner;
+    if(!t)throw new Error('The formula ends too early.');
+    if(t[0]==='num')return ['num',t[1]];
+    if(t[0]==='name'){
+      if(t[1]==='x')return ['x'];
+      if(t[1]==='pi')return ['num',Math.PI];
+      if(t[1]==='e')return ['num',Math.E];
+      if(!isOp(peek(),'('))throw new Error('Put brackets after '+t[1]+'.');
+      take();inner=expr();
+      if(!isOp(take(),')'))throw new Error('Missing a closing bracket.');
+      return ['fn',t[1],inner];
+    }
+    if(isOp(t,'(')){inner=expr();if(!isOp(take(),')'))throw new Error('Missing a closing bracket.');return inner;}
+    throw new Error('Check the formula near '+t[1]+'.');
+  }
+  var tree=expr();
+  if(pos!==toks.length)throw new Error('Check the formula: something comes after the end.');
+  return tree;
+}
+function boardEval(n,x){
+  var a,b,v,r;
+  if(n[0]==='num')return n[1];
+  if(n[0]==='x')return x;
+  if(n[0]==='neg')return -boardEval(n[1],x);
+  if(n[0]==='fn'){
+    v=boardEval(n[2],x);
+    if(n[1]==='sin')r=Math.sin(v);else if(n[1]==='cos')r=Math.cos(v);else if(n[1]==='tan')r=Math.tan(v);
+    else if(n[1]==='sqrt')r=v<0?NaN:Math.sqrt(v);else if(n[1]==='ln')r=v<=0?NaN:Math.log(v);
+    else if(n[1]==='log')r=v<=0?NaN:Math.log(v)/Math.LN10;else if(n[1]==='exp')r=Math.exp(v);else r=Math.abs(v);
+    return boardFin(r);
+  }
+  a=boardEval(n[2],x);b=boardEval(n[3],x);
+  if(n[1]==='+')r=a+b;else if(n[1]==='-')r=a-b;else if(n[1]==='*')r=a*b;
+  else if(n[1]==='/')r=b===0?NaN:a/b;else r=(a<0&&b%1!==0)?NaN:Math.pow(a,b);
+  return boardFin(r);
+}
+function boardDist(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1]);}
+function boardAngle(a,b,c){
+  var v1=[a[0]-b[0],a[1]-b[1]],v2=[c[0]-b[0],c[1]-b[1]],d=v1[0]*v2[0]+v1[1]*v2[1],m=Math.hypot(v1[0],v1[1])*Math.hypot(v2[0],v2[1]);
+  if(m===0)return NaN;
+  return Math.acos(Math.max(-1,Math.min(1,d/m)))*180/Math.PI;
+}
+"""
+
+
+BOARD_TPL = r"""
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<div class="hero"><h2>Maths and physics board</h2><p>{{ title_text }}</p></div>
+{% if is_teacher %}
+<div class="card"><h3>Teacher explanation</h3>
+<p class="small">Say or type what to draw or calculate, for example: "plot y equals 2x plus 1", "solve 2x plus 3 equals 7", "solve x squared minus 5x plus 6 equals 0", "pythagoras 3 4", "triangle 0,0 4,0 0,3", "circle centre 0,0 radius 2", "force 10 newtons right", "write x squared plus 3x equals 10", "clear board".</p>
+<form id="sayForm" class="actions"><input id="sayText" maxlength="300" placeholder="Type what to put on the board"><button class="btn">Put on board</button></form>
+<div class="actions"><button id="sayMic" class="btn secondary" type="button">Start listening</button></div>
+<p class="small" id="sayHeard"></p></div>
+<div class="card"><h3>Add to the board</h3>
+<form id="eqForm" class="actions"><input id="eqText" maxlength="200" placeholder="Equation, e.g. x^2 + 3x = 10 or a/b"><button class="btn">Add equation</button></form>
+<form id="grForm"><label>Function of x, e.g. 2x + 1, sin(x), x^2 - 4</label><input id="grExpr" maxlength="120" placeholder="2x + 1">
+<label>Window: x from</label><input id="grXmin" type="number" value="-10" step="any"> to <input id="grXmax" type="number" value="10" step="any">
+<label>y from</label><input id="grYmin" type="number" value="-10" step="any"> to <input id="grYmax" type="number" value="10" step="any">
+<button class="btn">Plot graph</button></form>
+<form id="shForm"><label>Shape</label><select id="shKind"><option value="triangle">Triangle (3 points)</option><option value="segment">Line segment (2 points)</option><option value="angle">Angle (3 points, vertex in the middle)</option><option value="circle">Circle (centre and radius)</option></select>
+<label>Points as x,y separated by semicolons, e.g. 0,0; 4,0; 0,3 (circle: the centre only)</label><input id="shPoints" maxlength="200" placeholder="0,0; 4,0; 0,3">
+<label>Radius (circle only)</label><input id="shRadius" type="number" value="2" step="any"><label>Label (optional)</label><input id="shLabel" maxlength="40">
+<button class="btn">Draw shape</button></form>
+<form id="arForm"><label>Arrow from x,y</label><input id="arFrom" maxlength="20" placeholder="0,0"><label>to x,y</label><input id="arTo" maxlength="20" placeholder="3,4"><label>Label (optional, e.g. force 10 N)</label><input id="arLabel" maxlength="40"><button class="btn">Draw arrow</button></form>
+<div class="actions"><button id="bClear" class="btn secondary" type="button">Clear board</button></div>
+</div>
+{% else %}<div class="card"><p>Your teacher is working on the board. It updates here automatically.</p></div>{% endif %}
+<p class="small" id="bMsg"></p><p class="small" id="bErr" style="color:#b91c1c"></p>
+<div class="card"><svg id="bSvg" viewBox="0 0 600 600" style="width:100%;max-width:600px;background:#fff;border-radius:8px"></svg>
+<h3>Equations</h3><div id="bEqs"></div>
+<h3>Items</h3><ul id="bList"></ul></div>
+<div class="card"><a href="{{ back_url }}">Back</a></div>
+<script>{{ lib|safe }}</script>
+<script>
+var ITEMS=[],SAY_URL={{ say_url|tojson }},TOKEN={{ token|tojson }},DATA_URL={{ data_url|tojson }},ADD_URL={{ add_url|tojson }},DEL_URL={{ del_url|tojson }},CLR_URL={{ clear_url|tojson }},IS_TEACHER={{ 'true' if is_teacher else 'false' }};
+function $(id){return document.getElementById(id);}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function fmt(v){return (Math.round(v*100)/100).toString();}
+function msg(t,e){$('bMsg').textContent=t||'';$('bErr').textContent=e||'';}
+function sx(x){return (x+10)/20*600;}
+function sy(y){return (10-y)/20*600;}
+function txt(x,y,t){return '<text x="'+x+'" y="'+y+'" font-size="13" fill="#111">'+esc(t)+'</text>';}
+function poly(P,closed){var s=P.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ');if(closed)s+=' '+P[0][0].toFixed(1)+','+P[0][1].toFixed(1);return '<polyline points="'+s+'" fill="none" stroke="#16a34a" stroke-width="2"/>';}
+function drawItem(it){
+  var s='',P,i,sides,a,b,mx,my;
+  if(it.type==='graph'){
+    try{
+      var tree=boardCompile(it.expr),d='',pen=false,x0=Math.max(it.xmin,-10),x1=Math.min(it.xmax,10),n,x,y;
+      for(n=0;n<=300;n++){x=x0+(x1-x0)*n/300;y=boardEval(tree,x);if(!isFinite(y)||y<it.ymin||y>it.ymax){pen=false;continue;}d+=(pen?'L':'M')+sx(x).toFixed(1)+','+sy(y).toFixed(1)+' ';pen=true;}
+      s+='<path d="'+d+'" fill="none" stroke="#2563eb" stroke-width="2"/>';
+      s+=txt(sx(x0)+6,sy(it.ymax)+16,'y = '+it.expr);
+    }catch(e){}
+  } else if(it.type==='shape'){
+    if(it.kind==='circle'){
+      var c=it.points[0];
+      s+='<circle cx="'+sx(c[0])+'" cy="'+sy(c[1])+'" r="'+(it.radius*30)+'" fill="none" stroke="#16a34a" stroke-width="2"/>';
+      s+=txt(sx(c[0])+4,sy(c[1])-4,(it.label?it.label+' ':'')+'r = '+fmt(it.radius));
+    } else {
+      P=it.points.map(function(p){return [sx(p[0]),sy(p[1])];});
+      if(it.kind==='angle'){
+        s+=poly(P,false);
+        s+=txt(sx(it.points[1][0])+6,sy(it.points[1][1])+18,(it.label?it.label+' ':'')+fmt(boardAngle(it.points[0],it.points[1],it.points[2]))+' deg');
+      } else {
+        var closed=it.kind==='triangle';
+        s+=poly(P,closed);
+        sides=closed?[[0,1],[1,2],[2,0]]:[[0,1]];
+        for(i=0;i<sides.length;i++){a=it.points[sides[i][0]];b=it.points[sides[i][1]];
+          mx=(sx(a[0])+sx(b[0]))/2;my=(sy(a[1])+sy(b[1]))/2;
+          s+=txt(mx+4,my-4,fmt(boardDist(a,b)));}
+        if(it.label)s+=txt(P[0][0]+6,P[0][1]+16,it.label);
+      }
+    }
+  } else if(it.type==='arrow'){
+    var f=it.from,t=it.to;
+    s+='<line x1="'+sx(f[0])+'" y1="'+sy(f[1])+'" x2="'+sx(t[0])+'" y2="'+sy(t[1])+'" stroke="#dc2626" stroke-width="3" marker-end="url(#ah)"/>';
+    s+=txt((sx(f[0])+sx(t[0]))/2+6,(sy(f[1])+sy(t[1]))/2-6,(it.label?it.label:'length '+fmt(boardDist(f,t))));
+  }
+  return s;
+}
+function drawBoard(){
+  var g='',i;
+  for(i=-10;i<=10;i++){g+='<line x1="'+sx(i)+'" y1="0" x2="'+sx(i)+'" y2="600" stroke="#eef0f3"/><line x1="0" y1="'+sy(i)+'" x2="600" y2="'+sy(i)+'" stroke="#eef0f3"/>';}
+  g+='<line x1="0" y1="'+sy(0)+'" x2="600" y2="'+sy(0)+'" stroke="#9aa1ac" stroke-width="1.5"/><line x1="'+sx(0)+'" y1="0" x2="'+sx(0)+'" y2="600" stroke="#9aa1ac" stroke-width="1.5"/>';
+  ITEMS.forEach(function(it){g+=drawItem(it);});
+  $('bSvg').innerHTML='<defs><marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#dc2626"/></marker></defs>'+g;
+}
+function renderEqs(){
+  var h='';
+  ITEMS.forEach(function(it){if(it.type==='equation')h+='<div class="bEq" data-t="'+esc(it.text)+'" style="margin:6px 0;font-size:1.2em"></div>';});
+  $('bEqs').innerHTML=h;
+  document.querySelectorAll('.bEq').forEach(function(el){var t=el.getAttribute('data-t');
+    if(window.katex){try{katex.render(t,el,{throwOnError:false});}catch(e){el.textContent=t;}}else{el.textContent=t;}});
+}
+function renderList(){
+  var h='';
+  ITEMS.forEach(function(it,i){
+    var t=it.type==='equation'?'Equation: '+it.text:it.type==='graph'?'Graph: y = '+it.expr:it.type==='arrow'?'Arrow '+(it.label||''):'Shape: '+it.kind+(it.label?' ('+it.label+')':'');
+    h+='<li>'+esc(t)+(IS_TEACHER?' <button class="btn secondary" type="button" data-i="'+i+'">Remove</button>':'')+'</li>';
+  });
+  $('bList').innerHTML=h||'<li>Nothing on the board yet.</li>';
+}
+function render(){drawBoard();renderEqs();renderList();}
+function say(t){
+  post(SAY_URL,{text:t}).then(function(x){if(!x.ok||!x.d.ok){msg('',x.d.error||'Could not put that on the board.');return;}ITEMS=x.d.items;msg(x.d.message,'');render();})
+    .catch(function(){msg('','Could not reach the board. Check your connection.');});
+}
+function load(){fetch(DATA_URL,{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){if(d.ok){ITEMS=d.items;render();}}).catch(function(){});}
+function post(url,body){
+  return fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':TOKEN},body:JSON.stringify(body||{})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});});
+}
+function send(url,body,done){
+  post(url,body).then(function(x){if(!x.ok||!x.d.ok){msg('',x.d.error||'Could not update the board.');return;}ITEMS=x.d.items;msg(done,'');render();})
+    .catch(function(){msg('','Could not reach the board. Check your connection.');});
+}
+if(IS_TEACHER){
+  $('sayForm').addEventListener('submit',function(e){e.preventDefault();var t=$('sayText').value;$('sayText').value='';if(t)say(t);});
+  var SRC2=window.SpeechRecognition||window.webkitSpeechRecognition,srec=null,slisten=false;
+  if(SRC2){
+    srec=new SRC2();srec.continuous=true;srec.interimResults=false;srec.lang='en-US';
+    srec.onresult=function(e){var t=e.results[e.results.length-1][0].transcript;$('sayHeard').textContent='Heard: '+t;say(t);};
+    srec.onerror=function(e){msg('','Voice input stopped: '+e.error);slisten=false;$('sayMic').textContent='Start listening';};
+    srec.onend=function(){if(slisten){try{srec.start();}catch(x){}}};
+    $('sayMic').addEventListener('click',function(){
+      if(!slisten){slisten=true;try{srec.start();}catch(x){}$('sayMic').textContent='Stop listening';}
+      else{slisten=false;srec.stop();$('sayMic').textContent='Start listening';}
+    });
+  } else {
+    $('sayMic').disabled=true;$('sayMic').textContent='Voice is not supported in this browser. Type below.';
+  }
+  $('eqForm').addEventListener('submit',function(e){e.preventDefault();send(ADD_URL,{type:'equation',text:$('eqText').value},'Equation added.');$('eqText').value='';});
+  $('grForm').addEventListener('submit',function(e){e.preventDefault();send(ADD_URL,{type:'graph',expr:$('grExpr').value,xmin:$('grXmin').value,xmax:$('grXmax').value,ymin:$('grYmin').value,ymax:$('grYmax').value},'Graph plotted.');});
+  $('shForm').addEventListener('submit',function(e){e.preventDefault();send(ADD_URL,{type:'shape',kind:$('shKind').value,points:$('shPoints').value,radius:$('shRadius').value,label:$('shLabel').value},'Shape drawn.');});
+  $('arForm').addEventListener('submit',function(e){e.preventDefault();send(ADD_URL,{type:'arrow',from:$('arFrom').value,to:$('arTo').value,label:$('arLabel').value},'Arrow drawn.');});
+  $('bClear').addEventListener('click',function(){send(CLR_URL,{},'Board cleared.');});
+  $('bList').addEventListener('click',function(e){
+    var i=e.target.getAttribute&&e.target.getAttribute('data-i');
+    if(i!==null&&i!==undefined)send(DEL_URL,{index:parseInt(i,10)},'Item removed.');
+  });
+}
+load();
+setInterval(function(){if(!document.hidden)load();},5000);
+</script>
+"""
+
+
+import re as _board_re
+
+BOARD_SPEECH_WORDS = [("to the power of", "^"), ("multiplied by", "*"), ("divided by", "/"), ("equal to", "="),
+                      ("equals", "="), ("squared", "^2"), ("cubed", "^3"), ("plus", "+"), ("minus", "-"),
+                      ("times", "*"), ("open bracket", "("), ("close bracket", ")"),
+                      ("open parenthesis", "("), ("close parenthesis", ")"), ("over", "/")]
+
+
+def _board_speech(text):
+    """Turn a spoken or typed sentence into the symbols the board understands."""
+    t = " " + " ".join(clean(text).lower().split()) + " "
+    for words, sign in BOARD_SPEECH_WORDS:
+        t = t.replace(" " + words + " ", " " + sign + " ")
+    return " ".join(t.split())
+
+
+def _board_num(v):
+    if abs(v) < 1e-9:
+        return "0"
+    return ("%.4f" % v).rstrip("0").rstrip(".")
+
+
+def _board_nums(text):
+    return [float(v) for v in _board_re.findall(r"-?\d+(?:\.\d+)?", text)]
+
+
+def _board_split_label(text):
+    if "label " in text:
+        body, _, label = text.partition("label ")
+        return body, label.strip()[:40]
+    return text, ""
+
+
+def _board_solve(eqtext):
+    """Solve a linear or quadratic equation in x. Returns (new items, message)."""
+    compact = eqtext.replace(" ", "")
+    if not compact:
+        raise LabInputError("Say an equation to solve, like solve 2x + 3 = 7.")
+    if compact.count("=") > 1:
+        raise LabInputError("Use one equals sign.")
+    lhs, rhs = compact.split("=", 1) if "=" in compact else (compact, "0")
+    if not lhs or not rhs:
+        raise LabInputError("Both sides need something, like 2x + 3 = 7.")
+    tree = _board_parse("(" + lhs + ")-(" + rhs + ")")
+    f0, f1, fm1, f2 = (_board_eval(tree, v) for v in (0, 1, -1, 2))
+    if any(v != v for v in (f0, f1, fm1, f2)):
+        raise LabInputError("Those numbers do not give a clear equation.")
+    C = f0
+    A = (f1 + fm1) / 2 - C
+    B = (f1 - fm1) / 2
+    if abs(f2 - (4 * A + 2 * B + C)) > 1e-6 * max(1.0, abs(f2)):
+        raise LabInputError("I can solve equations in x of degree 1 or 2 only.")
+    new = [_board_clean_item({"type": "equation", "text": eqtext.strip()[:200]}),
+           _board_clean_item({"type": "graph", "expr": lhs + "-(" + rhs + ")", "xmin": -10, "xmax": 10,
+                              "ymin": -10, "ymax": 10})]
+    steps = []
+    if abs(A) < 1e-9:
+        if abs(B) < 1e-9:
+            steps.append("Every x works." if abs(C) < 1e-9 else "There is no solution.")
+        else:
+            steps.append(_board_num(B) + "x = " + _board_num(-C))
+            steps.append("x = " + _board_num(-C / B))
+    else:
+        D = B * B - 4 * A * C
+        steps.append("a = " + _board_num(A) + ", b = " + _board_num(B) + ", c = " + _board_num(C))
+        steps.append("D = b^2 - 4ac = " + _board_num(D))
+        if D < -1e-12:
+            steps.append("No real solutions, because D is negative.")
+        elif abs(D) <= 1e-12:
+            steps.append("x = -b / 2a = " + _board_num(-B / (2 * A)))
+        else:
+            root = _sqrt(D)
+            steps.append("x = (-b +/- sqrt(D)) / 2a")
+            steps.append("x = " + _board_num((-B + root) / (2 * A)) + " or x = " + _board_num((-B - root) / (2 * A)))
+    new += [_board_clean_item({"type": "equation", "text": step}) for step in steps]
+    return new, "Worked through on the board: " + steps[-1]
+
+
+def _board_say(items, text):
+    """Put a spoken or typed explanation on the board. Returns (updated items, message)."""
+    t = _board_speech(clean(text)[:300])
+    if not t:
+        raise LabInputError("Say or type what to put on the board.")
+    if t in ("clear board", "clear the board", "clear"):
+        return [], "Board cleared."
+    word, _, rest = t.partition(" ")
+    if word == "draw":
+        word, _, rest = rest.partition(" ")
+    body, label = _board_split_label(rest)
+    if word == "solve":
+        new, message = _board_solve(rest)
+    elif word in ("plot", "graph"):
+        if rest.startswith("of "):
+            rest = rest[3:]
+        head, sep, after = rest.partition("=")
+        if sep and head.strip() in ("y", "f(x)"):
+            rest = after
+        expr = rest.strip()
+        new = [_board_clean_item({"type": "graph", "expr": expr, "xmin": -10, "xmax": 10, "ymin": -10, "ymax": 10})]
+        message = "Plotted y = " + expr + "."
+    elif word in ("triangle", "segment", "angle"):
+        nums = _board_nums(body)
+        counts = {"triangle": 6, "segment": 4, "angle": 6}
+        if len(nums) != counts[word]:
+            raise LabInputError("A " + word + " needs " + str(counts[word] // 2) + " points, like " + word + " 0,0 4,0 0,3.")
+        pts = "; ".join(_board_num(nums[i]) + "," + _board_num(nums[i + 1]) for i in range(0, len(nums), 2))
+        new = [_board_clean_item({"type": "shape", "kind": word, "points": pts, "label": label})]
+        message = "Drew the " + word + "."
+    elif word == "circle":
+        centre_part, _, radius_part = body.partition("radius")
+        nums = _board_nums(centre_part)
+        radius = _board_nums(radius_part)
+        if len(nums) != 2 or len(radius) != 1:
+            raise LabInputError("A circle needs a centre and a radius, like circle centre 0,0 radius 2.")
+        new = [_board_clean_item({"type": "shape", "kind": "circle",
+                                  "points": _board_num(nums[0]) + "," + _board_num(nums[1]),
+                                  "radius": radius[0], "label": label})]
+        message = "Drew the circle."
+    elif word in ("force", "velocity"):
+        nums = _board_nums(body)
+        if not nums or nums[0] <= 0:
+            raise LabInputError("Say the size, like force 10 newtons right.")
+        dirs = {"right": (1, 0), "left": (-1, 0), "up": (0, 1), "down": (0, -1)}
+        found = [d for d in dirs if d in body.split()]
+        if not found:
+            raise LabInputError("Say the direction: right, left, up or down.")
+        dx, dy = dirs[found[0]]
+        size = min(nums[0], 10)
+        unit_match = _board_re.search(r"-?\d+(?:\.\d+)?\s*([a-z/]+)", body)
+        unit = unit_match.group(1) if unit_match and unit_match.group(1) not in dirs else ("N" if word == "force" else "m/s")
+        if unit_match and unit_match.group(1) == "newtons":
+            unit = "N"
+        new = [_board_clean_item({"type": "arrow", "from": "0,0",
+                                  "to": _board_num(dx * size) + "," + _board_num(dy * size),
+                                  "label": word + " " + _board_num(nums[0]) + " " + unit})]
+        message = "Drew the " + word + " arrow. One square stands for one unit, up to 10 squares."
+    elif word in ("pythagoras", "hypotenuse"):
+        nums = _board_nums(body)
+        if len(nums) != 2 or min(nums) <= 0:
+            raise LabInputError("Say the two shorter sides, like pythagoras 3 4.")
+        a, b = nums
+        c = _sqrt(a * a + b * b)
+        new = [_board_clean_item({"type": "equation", "text": "c^2 = " + _board_num(a) + "^2 + " + _board_num(b) + "^2"}),
+               _board_clean_item({"type": "equation", "text": "c^2 = " + _board_num(c * c)}),
+               _board_clean_item({"type": "equation", "text": "c = " + _board_num(c)})]
+        if a <= 10 and b <= 10:
+            new.append(_board_clean_item({"type": "shape", "kind": "triangle",
+                                          "points": "0,0; " + _board_num(a) + ",0; 0," + _board_num(b), "label": ""}))
+        message = "Hypotenuse c = " + _board_num(c) + "."
+    elif word == "write":
+        new = [_board_clean_item({"type": "equation", "text": rest[:200]})]
+        message = "Written on the board."
+    else:
+        raise LabInputError("I did not understand that. Try: plot y = 2x + 1, solve 2x + 3 = 7, pythagoras 3 4, "
+                            "triangle 0,0 4,0 0,3, force 10 newtons right, write x^2 + 3x = 10, clear board.")
+    if len(items) + len(new) > BOARD_MAX_ITEMS:
+        raise LabInputError("The board is full. Clear some items first.")
+    return list(items) + new, message
+
+
+@app.route("/academic/teach/<kind>/<rid>/board/say", methods=["POST"])
+@login_required
+def ac_board_say(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    items = _board_load(kind, rid)
+    try:
+        updated, message = _board_say(items, (request.get_json(silent=True) or {}).get("text"))
+    except LabInputError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    _board_store(kind, rid, updated)
+    return jsonify(ok=True, items=updated, message=message)
+
+
+@app.route("/academic/teach/<kind>/<rid>/board")
+@login_required
+def ac_board_page(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(404)
+    return _ac_page("Maths and physics board", BOARD_TPL, is_teacher=is_teacher, lib=BOARD_LIB_JS,
+                    title_text=_ac_teaching_title(kind, obj), token=csrf_token(),
+                    data_url=url_for("ac_board_data", kind=kind, rid=rid), add_url=url_for("ac_board_add", kind=kind, rid=rid),
+                    del_url=url_for("ac_board_delete", kind=kind, rid=rid), clear_url=url_for("ac_board_clear", kind=kind, rid=rid),
+                    back_url=url_for("ac_teaching", kind=kind, rid=rid),
+                    say_url=url_for("ac_board_say", kind=kind, rid=rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>/board/data")
+@login_required
+def ac_board_data(kind, rid):
+    obj, _is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(403)
+    return jsonify(ok=True, items=_board_load(kind, rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>/board/add", methods=["POST"])
+@login_required
+def ac_board_add(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    items = _board_load(kind, rid)
+    if len(items) >= BOARD_MAX_ITEMS:
+        return jsonify(ok=False, error="The board is full. Remove some items first."), 400
+    try:
+        item = _board_clean_item(request.get_json(silent=True) or {})
+    except LabInputError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    items.append(item)
+    _board_store(kind, rid, items)
+    return jsonify(ok=True, items=items)
+
+
+@app.route("/academic/teach/<kind>/<rid>/board/delete", methods=["POST"])
+@login_required
+def ac_board_delete(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    items = _board_load(kind, rid)
+    try:
+        index = int((request.get_json(silent=True) or {}).get("index"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="Choose an item to remove."), 400
+    if not (0 <= index < len(items)):
+        return jsonify(ok=False, error="That item is no longer on the board."), 400
+    items.pop(index)
+    _board_store(kind, rid, items)
+    return jsonify(ok=True, items=items)
+
+
+@app.route("/academic/teach/<kind>/<rid>/board/clear", methods=["POST"])
+@login_required
+def ac_board_clear(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    _board_store(kind, rid, [])
+    return jsonify(ok=True, items=[])
+
+
+LIB_SUBJECTS = ["Chemistry", "Physics", "Maths", "Computer", "General"]
+
+
+def _lib_svg(body, label):
+    return ('<svg viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="' + label +
+            '" fill="none" stroke="#1f2937" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+            body + '</svg>')
+
+
+# (id, title, subject, category, uses, drawing)
+_LIB_ITEMS = [
+    ("burette", "Burette and retort stand", "Chemistry", "lab",
+     "Delivers the titrant drop by drop; read the volume at the bottom of the meniscus.",
+     '<path d="M30 110 V20 H92 V34"/><path d="M22 110 H60"/><rect x="56" y="14" width="8" height="78" rx="2"/>'
+     '<rect x="57" y="50" width="6" height="42" fill="#bfdbfe" stroke="none"/><path d="M56 30 h4 M56 42 h4 M56 54 h4 M56 66 h4"/>'
+     '<path d="M60 92 v14 M56 106 h8"/><circle cx="60" cy="88" r="3" fill="#1f2937"/>'),
+    ("conical_flask", "Conical flask", "Chemistry", "lab",
+     "Holds the analyte during titration; swirl it so nothing splashes out.",
+     '<path d="M50 20 H70 M52 20 V50 L30 100 H90 L68 50 V20"/><path d="M36 84 H84" stroke-dasharray="3 4"/>'),
+    ("beaker", "Beaker (250 ml)", "Chemistry", "lab",
+     "Measures and mixes approximate volumes of solution.",
+     '<path d="M34 24 V100 Q34 106 40 106 H80 Q86 106 86 100 V24 M30 24 H90"/><path d="M34 50 h8 M34 70 h8 M34 90 h8"/>'),
+    ("pipette", "Volumetric pipette (25 ml)", "Chemistry", "lab",
+     "Delivers an exact volume of analyte; fill below the mark and let it drain.",
+     '<rect x="54" y="10" width="12" height="16" rx="5"/><path d="M57 26 V80 L60 92 L63 80 V26"/>'),
+    ("test_tubes", "Test tubes and rack", "Chemistry", "lab",
+     "Small reactions and indicator tests.",
+     '<path d="M22 30 V88 Q22 98 29 98 Q36 98 36 88 V30"/><path d="M52 30 V88 Q52 98 59 98 Q66 98 66 88 V30"/>'
+     '<path d="M82 30 V88 Q82 98 89 98 Q96 98 96 88 V30"/><path d="M14 104 H106"/>'),
+    ("indicator", "Phenolphthalein indicator", "Chemistry", "consumable",
+     "Colourless in acid and pink above pH 8.2, so it shows the end point of a strong acid and strong base titration.",
+     '<rect x="40" y="40" width="40" height="60" rx="6"/><rect x="48" y="24" width="24" height="16"/>'
+     '<path d="M50 62 H70 V86 H50 Z" fill="#f0abfc" stroke="none"/>'),
+    ("balance", "Electronic balance", "Chemistry", "lab",
+     "Weighs solids to 0.01 g for making standard solutions.",
+     '<rect x="20" y="70" width="80" height="30" rx="4"/><rect x="40" y="46" width="40" height="24" rx="2"/>'
+     '<rect x="50" y="52" width="20" height="10" fill="#dcfce7"/>'),
+    ("battery", "Battery pack (6 V) and leads", "Physics", "lab",
+     "Supplies the current in circuit experiments.",
+     '<rect x="30" y="44" width="50" height="32" rx="3"/><path d="M38 52 V68 M46 58 V62 M86 56 V64 M80 52 V68 M90 60 H110"/>'),
+    ("resistor", "Resistor set (100 ohm to 1 kohm)", "Physics", "lab",
+     "Sets the resistance in Ohm's law and series or parallel circuit experiments.",
+     '<path d="M10 60 H30 L36 48 L46 72 L56 48 L66 72 L76 48 L86 60 H110"/>'),
+    ("ammeter", "Ammeter", "Physics", "lab",
+     "Connected in series to measure current in amperes.",
+     '<circle cx="60" cy="60" r="36"/><text x="60" y="72" font-size="30" text-anchor="middle" fill="#1f2937" stroke="none">A</text>'),
+    ("voltmeter", "Voltmeter", "Physics", "lab",
+     "Connected in parallel across a component to measure voltage in volts.",
+     '<circle cx="60" cy="60" r="36"/><text x="60" y="72" font-size="30" text-anchor="middle" fill="#1f2937" stroke="none">V</text>'),
+    ("spring_balance", "Spring balance (newtons)", "Physics", "lab",
+     "Measures weight and force; read the scale at eye level.",
+     '<path d="M60 10 V26"/><path d="M48 26 H72"/><path d="M60 26 L50 32 L70 42 L50 52 L70 62 L50 72 L60 80"/>'
+     '<path d="M60 80 V92"/><circle cx="60" cy="102" r="10"/>'),
+    ("stopwatch", "Stopwatch", "Physics", "lab",
+     "Times pendulum swings and falling objects; repeat and average the readings.",
+     '<circle cx="60" cy="66" r="36"/><path d="M60 66 V40 M60 66 L76 74"/><path d="M52 14 H68 M60 14 V30"/>'),
+    ("metre_rule", "Metre rule", "Physics", "lab",
+     "Measures lengths; read with your eye straight above the mark to avoid parallax.",
+     '<rect x="10" y="50" width="100" height="20"/><path d="M20 50 V60 M30 50 V56 M40 50 V60 M50 50 V56 M60 50 V60 M70 50 V56 M80 50 V60 M90 50 V56 M100 50 V60"/>'),
+    ("protractor", "Protractor", "Maths", "stationery",
+     "Measures angles in degrees.",
+     '<path d="M10 90 A50 50 0 0 1 110 90 Z"/><path d="M60 90 L60 40 M60 90 L22 66"/><path d="M30 90 A30 30 0 0 1 90 90"/>'),
+    ("graph_paper", "Graph paper", "Maths", "stationery",
+     "Plots graphs with accurate axes and scales.",
+     '<rect x="14" y="14" width="92" height="92"/><path d="M14 36 H106 M14 58 H106 M14 80 H106 M36 14 V106 M58 14 V106 M80 14 V106"/>'),
+    ("geometry_set", "Geometry set (ruler, set square, compass)", "Maths", "stationery",
+     "Draws straight lines, right angles and circles accurately.",
+     '<path d="M20 100 H100 L20 30 Z"/><path d="M20 90 H30 V100"/>'),
+    ("graphing_calc", "Graphing calculator", "Maths", "computer",
+     "Plots functions and solves equations; check answers with it.",
+     '<rect x="34" y="12" width="52" height="96" rx="6"/><rect x="42" y="22" width="36" height="20"/>'
+     '<path d="M42 54 h8 v8 h-8z M58 54 h8 v8 h-8z M74 54 h8 v8 h-8z M42 70 h8 v8 h-8z M58 70 h8 v8 h-8z M74 70 h8 v8 h-8z"/>'),
+    ("laptop", "Laptop or tablet with internet", "Computer", "computer",
+     "Runs the live room, the demonstration, the board and the online labs.",
+     '<rect x="26" y="26" width="68" height="50" rx="3"/><path d="M14 84 H106 L100 96 H20 Z"/>'),
+    ("projector", "Projector and screen", "Computer", "computer",
+     "Shows the board and slides to the whole class.",
+     '<rect x="14" y="20" width="92" height="56"/><path d="M60 76 V92 M40 100 H80"/>'),
+    ("whiteboard", "Whiteboard and markers", "General", "stationery",
+     "A shared working space for sums and sketches.",
+     '<rect x="14" y="16" width="92" height="66"/><path d="M30 90 V104 M90 90 V104"/><path d="M40 40 Q60 30 80 46"/>'),
+]
+
+TEACHING_LIBRARY = [
+    {"id": i, "title": t, "subject": sj, "category": c, "uses": u, "svg": _lib_svg(b, t)}
+    for (i, t, sj, c, u, b) in _LIB_ITEMS
+]
+
+
+def _lib_item(item_id):
+    return next((it for it in TEACHING_LIBRARY if it["id"] == item_id), None)
+
+
+def _lib_photo(item_id):
+    folder = os.path.join(app.static_folder or "static", "library")
+    for ext in ("jpg", "jpeg", "png", "webp"):
+        if os.path.isfile(os.path.join(folder, item_id + "." + ext)):
+            return url_for("static", filename="library/" + item_id + "." + ext)
+    return None
+
+
+def _lib_with_photo(items):
+    return [dict(it, photo=_lib_photo(it["id"])) for it in items]
+
+
+def _lib_for(subject):
+    """Library items with the lesson's subject first."""
+    return _lib_with_photo(sorted(TEACHING_LIBRARY, key=lambda it: (it["subject"] != subject, LIB_SUBJECTS.index(it["subject"]))))
+
+
+def _lib_add(kind, rid, item):
+    _, err = db_insert("koja_academic_equipment", {
+        "id": str(uuid.uuid4()), _ac_teaching_key(kind): rid, "category": item["category"], "name": item["title"],
+        "quantity": 1, "provided_by": "teacher", "notes": item["uses"], "ready": False, "created_at": utc_now()})
+    return err
+
+
+LIBRARY_TPL = r"""
+<div class="hero"><h2>Teaching library</h2><p>Pictures and uses of the apparatus, computers and materials used in lessons and classes.</p>
+<div class="actions"><a class="btn secondary" href="{{ url_for('ac_library') }}">All subjects</a>{% for sj in subjects %}<a class="btn secondary" href="{{ url_for('ac_library', subject=sj) }}">{{ sj }}</a>{% endfor %}</div></div>
+<div class="grid">{% for it in items %}<div class="card">{% if it.photo %}<img src="{{ it.photo }}" alt="{{ it.title }}" loading="lazy" style="width:120px;height:120px;object-fit:contain;display:block;margin:0 auto">{% else %}{{ it.svg|safe }}{% endif %}<h3>{{ it.title }}</h3><p class="small">{{ it.subject }} · {{ it.category }}</p><p>{{ it.uses }}</p></div>{% endfor %}</div>
+"""
+
+
+@app.route("/academic/library")
+@login_required
+def ac_library():
+    subject = clean(request.args.get("subject"))
+    items = _lib_with_photo([it for it in TEACHING_LIBRARY if not subject or it["subject"] == subject])
+    return _ac_page("Teaching library", LIBRARY_TPL, items=items, subjects=LIB_SUBJECTS)
+
+
+@app.route("/academic/teach/<kind>/<rid>/library/<item_id>/add", methods=["POST"])
+@login_required
+def ac_library_add(kind, rid, item_id):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    item = _lib_item(item_id)
+    if not item:
+        abort(404)
+    err = _lib_add(kind, rid, item)
+    flash(item["title"] + " added to this lesson." if not err else "Could not add the item.", "success" if not err else "danger")
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>/library/subject/<subject>/add", methods=["POST"])
+@login_required
+def ac_library_subject_add(kind, rid, subject):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    if subject not in LIB_SUBJECTS:
+        abort(404)
+    _mats, eqs = _ac_teaching_rows(kind, rid)
+    present = {e.get("name") for e in eqs}
+    added, failed = 0, 0
+    for item in TEACHING_LIBRARY:
+        if item["subject"] == subject and item["title"] not in present:
+            if _lib_add(kind, rid, item):
+                failed += 1
+            else:
+                added += 1
+    if failed:
+        flash("Could not add " + str(failed) + " item(s).", "danger")
+    else:
+        flash(str(added) + " " + subject + " item(s) added to this lesson." if added else "All " + subject + " items are already on this lesson.", "success")
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/favicon.ico")
+def favicon_ico():
+    return redirect(url_for("static", filename="favicon.svg"), code=302)
+
+
+RECAP_TPL = r"""
+<style>@media print{.noprint{display:none!important}.card{box-shadow:none;border:0}}</style>
+<div class="hero"><h2>Lesson recap</h2><p>{{ page_title }}</p>
+<div class="actions noprint"><button class="btn secondary" type="button" onclick="window.print()">Print or save as PDF</button><a class="btn secondary" href="{{ back_url }}">Back</a></div></div>
+<div class="card"><h3>Equipment and what to bring</h3>{% for e in equipment %}<p>{{ '✔' if e.ready else '○' }} <strong>{{ e.name }}</strong> × {{ e.quantity }} · {{ e.category }}{% if e.notes %}<br><span class="small">{{ e.notes }}</span>{% endif %}</p>{% else %}<p>No equipment was listed.</p>{% endfor %}</div>
+<div class="card"><h3>Materials</h3>{% for m in materials %}<p>{{ m.title }}{% if m.url %} · <a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">open link</a>{% elif m.file_name %} · file: {{ m.file_name }}{% endif %}</p>{% else %}<p>No materials were shared.</p>{% endfor %}</div>
+<div class="card"><h3>On the board</h3>{% for t in board_text %}<p>{{ t }}</p>{% else %}<p>Nothing was written on the board.</p>{% endfor %}</div>
+<div class="card"><h3>Experiment</h3>{% if demo %}<p>Lab: {{ demo_lab }}</p>{% if demo_readings %}<p>Readings: {{ demo_readings }}</p>{% endif %}{% else %}<p>No live experiment was run.</p>{% endif %}</div>
+<div class="card"><a href="{{ back_url }}">← Back</a></div>
+"""
+
+
+def _recap_num(v):
+    try:
+        return ("%g" % float(v))
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _recap_board_line(it):
+    """One plain-language line for a board item, for the recap."""
+    kind = it.get("type")
+    label = (" (" + it["label"] + ")") if it.get("label") else ""
+    if kind == "equation":
+        return it.get("text", "")
+    if kind == "graph":
+        return "Graph of y = %s, from x = %s to %s%s" % (it.get("expr"), _recap_num(it.get("xmin")), _recap_num(it.get("xmax")), label)
+    if kind == "shape" and it.get("kind") == "circle":
+        centre = it["points"][0]
+        return "Circle with centre (%s, %s) and radius %s%s" % (_recap_num(centre[0]), _recap_num(centre[1]), _recap_num(it.get("radius")), label)
+    if kind == "shape":
+        pts = "; ".join("(%s, %s)" % (_recap_num(p[0]), _recap_num(p[1])) for p in it.get("points", []))
+        return "%s with corners %s%s" % (str(it.get("kind", "shape")).capitalize(), pts, label)
+    if kind == "arrow":
+        f, t = it.get("from", [0, 0]), it.get("to", [0, 0])
+        return "Arrow from (%s, %s) to (%s, %s)%s" % (_recap_num(f[0]), _recap_num(f[1]), _recap_num(t[0]), _recap_num(t[1]), label)
+    return "Board item"
+
+
+QUIZ_TABLE = "koja_academic_quiz"
+QUIZ_ANS_TABLE = "koja_academic_quiz_answers"
+QUIZ_TPL = r"""
+<div class="hero"><h2>Live quiz</h2><p>{{ page_title }}</p><div class="actions"><a class="btn secondary" href="{{ back_url }}">Back</a></div></div>
+{% if is_teacher %}
+<div class="card" id="qAsk"><h3>Ask a question</h3>
+<form method="post" action="{{ url_for('ac_quiz_ask', kind=kind, rid=rid) }}">{{ csrf }}
+<label>Question</label><input name="question" maxlength="300" required>
+<label>Options, separated by | (2 to 4 options)</label><input name="options" maxlength="400" placeholder="8 | 9 | 10 | 12" required>
+<label>Correct option number (1 for the first)</label><input name="correct" type="number" min="1" max="4" value="1" required>
+<button class="btn">Ask the class</button></form>
+<form method="post" action="{{ url_for('ac_quiz_close', kind=kind, rid=rid) }}" style="margin-top:8px">{{ csrf }}<button class="btn secondary">Close the question and show the answer</button></form>
+</div>
+{% endif %}
+<div class="card"><h3 id="qQuestion">Waiting for a question</h3><div id="qOptions"></div><p class="small" id="qInfo"></p><p class="small" id="qErr" style="color:#b91c1c"></p></div>
+<script>
+var DATA_URL={{ data_url|tojson }},ANSWER_URL={{ answer_url|tojson }},IS_TEACHER={{ 'true' if is_teacher else 'false' }},TOKEN={{ token|tojson }};
+function qEsc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function qRender(d){
+  var q=d.quiz;
+  if(!q){document.getElementById('qQuestion').textContent='No question yet.';document.getElementById('qOptions').innerHTML='';document.getElementById('qInfo').textContent='';return;}
+  document.getElementById('qQuestion').textContent=q.question;
+  var h='';
+  q.options.forEach(function(opt,i){
+    var label=qEsc(opt),extra='';
+    if(q.closed&&i===q.correct)extra=' <strong>(correct)</strong>';
+    if(IS_TEACHER){
+      var n=(q.counts||[])[i]||0;
+      h+='<p>'+label+extra+' · '+n+' answer'+(n===1?'':'s')+'</p>';
+    } else {
+      var mine=q.my_choice===i?' <em>(your answer)</em>':'';
+      if(q.closed||q.my_choice!==null){h+='<p>'+label+extra+mine+'</p>';}
+      else{h+='<p><button class="btn secondary" type="button" data-i="'+i+'">'+label+'</button></p>';}
+    }
+  });
+  document.getElementById('qOptions').innerHTML=h;
+  var info=q.closed?'Question closed.':(IS_TEACHER?(q.answered+' answered so far.'):(q.my_choice!==null?'Answer sent. Waiting for the teacher.':'Choose an answer.'));
+  document.getElementById('qInfo').textContent=info;
+}
+function qLoad(){fetch(DATA_URL,{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){if(d.ok)qRender(d);}).catch(function(){});}
+document.getElementById('qOptions').addEventListener('click',function(e){
+  var i=e.target.getAttribute&&e.target.getAttribute('data-i');
+  if(i===null||i===undefined||IS_TEACHER)return;
+  fetch(ANSWER_URL,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':TOKEN},body:JSON.stringify({choice:parseInt(i,10)})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(x){if(!x.ok||!x.d.ok){document.getElementById('qErr').textContent=x.d.error||'Could not send your answer.';return;}document.getElementById('qErr').textContent='';qLoad();})
+    .catch(function(){document.getElementById('qErr').textContent='Could not reach the quiz. Check your connection.';});
+});
+qLoad();
+setInterval(function(){if(!document.hidden)qLoad();},5000);
+</script>
+"""
+
+
+def _quiz_room(kind, rid):
+    return kind + ":" + rid
+
+
+def _quiz_open(kind, rid):
+    rows = _ac_rows(QUIZ_TABLE, {"room_key": _quiz_room(kind, rid)}, order="created_at.desc", limit=1)
+    return rows[0] if rows else None
+
+
+def _quiz_options(row):
+    try:
+        return json.loads(row.get("options") or "[]")
+    except ValueError:
+        return []
+
+
+@app.route("/academic/teach/<kind>/<rid>/quiz")
+@login_required
+def ac_quiz_page(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(404)
+    return _ac_page("Live quiz", QUIZ_TPL, page_title=_ac_teaching_title(kind, obj), is_teacher=is_teacher, kind=kind, rid=rid,
+                    data_url=url_for("ac_quiz_data", kind=kind, rid=rid), answer_url=url_for("ac_quiz_answer", kind=kind, rid=rid),
+                    back_url=url_for("ac_teaching", kind=kind, rid=rid), token=csrf_token())
+
+
+@app.route("/academic/teach/<kind>/<rid>/quiz/data")
+@login_required
+def ac_quiz_data(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(403)
+    q = _quiz_open(kind, rid)
+    if not q:
+        return jsonify(ok=True, quiz=None)
+    opts = _quiz_options(q)
+    answers = _ac_rows(QUIZ_ANS_TABLE, {"quiz_id": str(q["id"])}, limit=10000)
+    counts = [0] * len(opts)
+    my_choice = None
+    for a in answers:
+        if 0 <= int(a.get("choice", -1)) < len(opts):
+            counts[int(a["choice"])] += 1
+        if str(a.get("user_id")) == _ac_uid():
+            my_choice = int(a["choice"])
+    closed = q.get("status") == "closed"
+    return jsonify(ok=True, quiz={"id": str(q["id"]), "question": q.get("question"), "options": opts, "closed": closed,
+                                  "correct": int(q.get("correct_index", 0)), "counts": counts if is_teacher else None,
+                                  "answered": len(answers), "my_choice": my_choice})
+
+
+@app.route("/academic/teach/<kind>/<rid>/quiz/ask", methods=["POST"])
+@login_required
+def ac_quiz_ask(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    question = clean(request.form.get("question"))[:300]
+    options = [clean(o)[:120] for o in clean(request.form.get("options")).split("|") if clean(o)][:4]
+    try:
+        correct = int(request.form.get("correct") or 1) - 1
+    except ValueError:
+        correct = -1
+    if not question or len(options) < 2 or not (0 <= correct < len(options)):
+        flash("Give a question, 2 to 4 options, and the number of the correct option.", "danger")
+        return redirect(url_for("ac_quiz_page", kind=kind, rid=rid))
+    room = _quiz_room(kind, rid)
+    db_update(QUIZ_TABLE, {"room_key": room, "status": "open"}, {"status": "closed"})
+    _, err = db_insert(QUIZ_TABLE, {"id": str(uuid.uuid4()), "room_key": room, "question": question,
+                                    "options": json.dumps(options), "correct_index": correct, "status": "open",
+                                    "created_by": _ac_uid(), "created_at": utc_now()})
+    flash("Question sent to the class." if not err else "Could not send the question.", "success" if not err else "danger")
+    return redirect(url_for("ac_quiz_page", kind=kind, rid=rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>/quiz/close", methods=["POST"])
+@login_required
+def ac_quiz_close(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    db_update(QUIZ_TABLE, {"room_key": _quiz_room(kind, rid), "status": "open"}, {"status": "closed"})
+    flash("Question closed. The correct answer is now shown.", "success")
+    return redirect(url_for("ac_quiz_page", kind=kind, rid=rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>/quiz/answer", methods=["POST"])
+@login_required
+def ac_quiz_answer(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(403)
+    if is_teacher:
+        return jsonify(ok=False, error="The teacher does not answer the quiz."), 403
+    q = _quiz_open(kind, rid)
+    if not q or q.get("status") != "open":
+        return jsonify(ok=False, error="This question is closed."), 400
+    opts = _quiz_options(q)
+    try:
+        choice = int((request.get_json(silent=True) or {}).get("choice"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="Choose an answer."), 400
+    if not (0 <= choice < len(opts)):
+        return jsonify(ok=False, error="Choose an answer."), 400
+    uid = _ac_uid()
+    if _ac_rows(QUIZ_ANS_TABLE, {"quiz_id": str(q["id"]), "user_id": uid}, limit=1):
+        return jsonify(ok=False, error="You have already answered this question."), 400
+    _, err = db_insert(QUIZ_ANS_TABLE, {"id": str(uuid.uuid4()), "quiz_id": str(q["id"]), "user_id": uid,
+                                        "choice": choice, "created_at": utc_now()})
+    if err:
+        return jsonify(ok=False, error="You have already answered this question."), 400
+    return jsonify(ok=True)
+
+
+@app.route("/academic/teach/<kind>/<rid>/recap")
+@login_required
+def ac_recap(kind, rid):
+    """What happened in a lesson or class: equipment, materials, board writing and experiment readings."""
+    obj, _is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(404)
+    mats, eqs = _ac_teaching_rows(kind, rid)
+    board_text = [_recap_board_line(it) for it in _board_load(kind, rid)]
+    demo = _demo_load(kind, rid)
+    readings = (demo or {}).get("readings") or []
+    return _ac_page("Lesson recap", RECAP_TPL, page_title=_ac_teaching_title(kind, obj), equipment=eqs, materials=mats,
+                    board_text=board_text, demo=demo, demo_lab=(demo or {}).get("lab", ""),
+                    demo_readings=", ".join(_recap_num(v) for v in readings),
+                    back_url=url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>")
+@login_required
+def ac_teaching(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(404)
+    mats, eqs = _ac_teaching_rows(kind, rid)
+    back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
+    return _ac_page("Materials and equipment", r'''
+<div class="hero"><h2>Materials and equipment</h2><p>{{ page_title }}</p></div>
+<div class="card"><h3>Materials</h3>{% for m in materials %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}{% if is_teacher %} <form method="post" action="{{ url_for('ac_material_delete', mid=m.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary">Remove</button></form>{% endif %}</p>{% else %}<p>No materials yet.</p>{% endfor %}
+{% if is_teacher %}<form method="post" action="{{ url_for('ac_teaching_material_add', kind=kind, rid=rid) }}" enctype="multipart/form-data">{{ csrf }}<label>Title</label><input name="title" maxlength="160" required><label>Link (https://…)</label><input name="url" type="url" placeholder="https://…"><label>Or upload a file (up to 25 MB)</label><input name="file" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.webp"><button class="btn">Add material</button></form>{% endif %}</div>
+<div class="card"><h3>Equipment and what to bring</h3>
+{% for code, label in categories %}{% set items = equipment|selectattr('category','equalto',code)|list %}{% if items %}<h4>{{ label }}</h4>{% for e in items %}{% if e.photo_url %}<img src="{{ e.photo_url }}" alt="{{ e.name }}" loading="lazy" style="width:160px;height:160px;object-fit:cover;border-radius:8px;display:block;margin:6px 0">{% endif %}{% if is_teacher %}<form method="post" enctype="multipart/form-data" action="{{ url_for('ac_equipment_photo', eid=e.id) }}" style="margin:4px 0">{{ csrf }}<input type="file" name="photo" accept="image/jpeg,image/png,image/webp"> <button class="btn secondary">{{ 'Change photo' if e.photo_url else 'Add photo' }}</button></form>{% endif %}<p>{% if is_teacher %}<form method="post" action="{{ url_for('ac_equipment_ready', eid=e.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary">{{ '✔ Ready' if e.ready else 'Mark ready' }}</button></form>{% else %}{{ '✔' if e.ready else '○' }}{% endif %} <strong>{{ e.name }}</strong> × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Student brings' }}{% if e.notes %} · {{ e.notes }}{% endif %}{% if is_teacher %} <form method="post" action="{{ url_for('ac_equipment_delete', eid=e.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary">Remove</button></form>{% endif %}</p>{% endfor %}{% endif %}{% endfor %}
+{% if not equipment %}<p>No equipment listed yet.</p>{% endif %}
+{% if is_teacher %}<form method="post" action="{{ url_for('ac_equipment_add', kind=kind, rid=rid) }}">{{ csrf }}<label>Category</label><select name="category">{% for code, label in categories %}<option value="{{ code }}">{{ label }}</option>{% endfor %}</select><label>Item</label><input name="name" maxlength="160" required placeholder="e.g. Bunsen burner, Microscope, Laptop with Excel"><label>Quantity</label><input name="quantity" type="number" min="1" max="1000" value="1"><label>Who provides it</label><select name="provided_by"><option value="teacher">Teacher provides</option><option value="student">Student brings</option></select><label>Notes (optional)</label><input name="notes" maxlength="300"><button class="btn">Add equipment</button></form>{% endif %}</div>
+<div class="card"><h3>Built-in teaching library</h3><p>Pictures and uses of the apparatus, computers and materials. <a href="{{ url_for('ac_library') }}">Full library</a></p>
+{% if is_teacher %}<div class="actions">{% for sj in lib_subjects %}<form method="post" action="{{ url_for('ac_library_subject_add', kind=kind, rid=rid, subject=sj) }}">{{ csrf }}<button class="btn secondary">Add all {{ sj }} items</button></form>{% endfor %}</div>{% endif %}
+<div class="grid">{% for it in library %}<div class="card">{% if it.photo %}<img src="{{ it.photo }}" alt="{{ it.title }}" loading="lazy" style="width:120px;height:120px;object-fit:contain;display:block;margin:0 auto">{% else %}{{ it.svg|safe }}{% endif %}<strong>{{ it.title }}</strong><p class="small">{{ it.subject }} · {{ it.uses }}</p>{% if is_teacher %}<form method="post" action="{{ url_for('ac_library_add', kind=kind, rid=rid, item_id=it.id) }}">{{ csrf }}<button class="btn secondary">Add to this lesson</button></form>{% endif %}</div>{% endfor %}</div></div>
+<div class="card"><a href="{{ url_for('ac_quiz_page', kind=kind, rid=rid) }}">Live quiz</a></div>
+<div class="card"><a href="{{ url_for('ac_recap', kind=kind, rid=rid) }}">Lesson recap (print or save as PDF)</a></div>
+<div class="card"><a href="{{ url_for('ac_lab_titration') }}">Virtual lab: acid-base titration</a></div>
+<div class="card"><a href="{{ url_for('ac_labs_index') }}">All virtual labs</a></div>
+<div class="card"><a href="{{ back_url }}">← Back</a></div>''',
+        page_title=_ac_teaching_title(kind, obj), kind=kind, rid=rid, is_teacher=is_teacher, materials=mats, equipment=eqs,
+        categories=AC_TEACH_CATEGORIES, back_url=back_url,
+        library=_lib_for(obj.get("subject") or ""), lib_subjects=LIB_SUBJECTS)
+
+
+@app.route("/academic/teach/<kind>/<rid>/material", methods=["POST"])
+@login_required
+def ac_teaching_material_add(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    title = clean(request.form.get("title"))[:160]
+    url = clean(request.form.get("url"))[:1000]
+    f = request.files.get("file")
+    row = {"id": str(uuid.uuid4()), _ac_teaching_key(kind): rid, "title": title, "url": "", "created_at": utc_now()}
+    if not title:
+        flash("Give the material a title.", "danger")
+    elif f and f.filename:
+        info, err = upload_storage(f, folder="academic-materials", public=False, max_mb=AC_TEACH_FILE_MB, allowed=AC_TEACH_FILE_TYPES)
+        if err:
+            flash("File not uploaded: " + str(err)[:200], "danger")
+        else:
+            row.update({"file_path": info["path"], "file_name": info["file_name"], "file_size": info["file_size"], "mime_type": info["mime_type"]})
+            _, ierr = db_insert("koja_academic_materials", row)
+            flash("File added." if not ierr else "Could not save the material.", "success" if not ierr else "danger")
+    elif urlparse(url).scheme in ("http", "https"):
+        row["url"] = url
+        _, ierr = db_insert("koja_academic_materials", row)
+        flash("Link added." if not ierr else "Could not save the material.", "success" if not ierr else "danger")
+    else:
+        flash("Upload a file, or enter a link that starts with https://.", "danger")
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/material/<mid>/delete", methods=["POST"])
+@login_required
+def ac_material_delete(mid):
+    m = first_row("koja_academic_materials", {"id": mid})
+    kind, rid = _ac_teaching_owner(m or {})
+    if not kind:
+        abort(404)
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    if m.get("file_path"):
+        delete_storage(m["file_path"])
+    db_delete("koja_academic_materials", {"id": mid})
+    flash("Material removed.", "success")
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/material/<mid>/file")
+@login_required
+def ac_material_file(mid):
+    m = first_row("koja_academic_materials", {"id": mid})
+    kind, rid = _ac_teaching_owner(m or {})
+    if not kind or not m.get("file_path"):
+        abort(404)
+    obj, _is_teacher = _ac_teaching_access(kind, rid)
+    if not obj:
+        abort(403)
+    if not supabase_configured():
+        abort(404)
+    r = None
+    try:
+        r = _HTTP.get(sb_storage_url(m["file_path"]), headers=sb_headers(), timeout=60)
+    except Exception:
+        logger.exception("KOJA academic material download failed")
+    if r is None or not r.ok:
+        abort(404)
+    filename = secure_filename(m.get("file_name") or "material") or "material"
+    response = send_file(io.BytesIO(r.content), download_name=filename, mimetype=m.get("mime_type") or "application/octet-stream", as_attachment=True, max_age=0)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.route("/academic/equipment/<eid>/photo", methods=["POST"])
+@login_required
+def ac_equipment_photo(eid):
+    """Teacher uploads a real photo of an equipment item. Everyone in the lesson or class can see it."""
+    row = first_row("koja_academic_equipment", {"id": eid})
+    if not row:
+        abort(404)
+    kind, rid = ("class", row.get("class_id")) if row.get("class_id") else ("session", row.get("session_id"))
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    f = request.files.get("photo")
+    if not f or not f.filename:
+        flash("Choose a photo first.", "danger")
+        return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+    info, err = upload_storage(f, folder="academic-equipment", public=True, max_mb=5, allowed={"jpg", "jpeg", "png", "webp"})
+    if err:
+        flash("Photo not uploaded: " + str(err)[:200], "danger")
+    else:
+        if row.get("photo_path"):
+            delete_storage(row["photo_path"])
+        _, uerr = db_update("koja_academic_equipment", {"id": eid}, {"photo_url": info["url"], "photo_path": info["path"]})
+        flash("Photo added." if not uerr else "Could not save the photo.", "success" if not uerr else "danger")
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/teach/<kind>/<rid>/equipment", methods=["POST"])
+@login_required
+def ac_equipment_add(kind, rid):
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    category = clean(request.form.get("category"))
+    if category not in AC_TEACH_CATEGORY_LABELS:
+        category = "other"
+    name = clean(request.form.get("name"))[:160]
+    if not name:
+        flash("Name the item.", "danger")
+        return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+    try:
+        qty = int(request.form.get("quantity") or 1)
+    except ValueError:
+        qty = 1
+    provided = "student" if clean(request.form.get("provided_by")) == "student" else "teacher"
+    _, ierr = db_insert("koja_academic_equipment", {
+        "id": str(uuid.uuid4()), _ac_teaching_key(kind): rid, "category": category, "name": name,
+        "quantity": max(1, min(qty, 1000)), "provided_by": provided, "notes": clean(request.form.get("notes"))[:300],
+        "ready": False, "created_at": utc_now()})
+    flash("Equipment added." if not ierr else "Could not save the equipment.", "success" if not ierr else "danger")
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/equipment/<eid>/ready", methods=["POST"])
+@login_required
+def ac_equipment_ready(eid):
+    e = first_row("koja_academic_equipment", {"id": eid})
+    kind, rid = _ac_teaching_owner(e or {})
+    if not kind:
+        abort(404)
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    db_update("koja_academic_equipment", {"id": eid}, {"ready": not bool(e.get("ready"))})
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
+@app.route("/academic/equipment/<eid>/delete", methods=["POST"])
+@login_required
+def ac_equipment_delete(eid):
+    e = first_row("koja_academic_equipment", {"id": eid})
+    kind, rid = _ac_teaching_owner(e or {})
+    if not kind:
+        abort(404)
+    obj, is_teacher = _ac_teaching_access(kind, rid)
+    if not obj or not is_teacher:
+        abort(403)
+    if e.get("photo_path"):
+        delete_storage(e["photo_path"])
+    db_delete("koja_academic_equipment", {"id": eid})
+    flash("Equipment removed.", "success")
+    return redirect(url_for("ac_teaching", kind=kind, rid=rid))
+
+
 @app.route("/academic/class/<cid>/attendance", methods=["POST"])
 @login_required
 def ac_attendance(cid):
@@ -22774,7 +25956,7 @@ def ac_attendance(cid):
     if not c:
         abort(403)
     present = set(request.form.getlist("present"))
-    for e in _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=500):
+    for e in _ac_rows("koja_academic_enrollments", {"class_id": cid}, limit=10000):
         sid = str(e.get("student_id"))
         row = {"present": sid in present, "marked_at": utc_now()}
         old = first_row("koja_academic_attendance", {"class_id": cid, "student_id": sid})
@@ -22854,6 +26036,9 @@ def ac_room(kind, rid):
 <div id="ac-videos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:12px 0"></div>
 <h3>Whiteboard</h3>
 <canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
+<h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
+<h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}
+<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>
 {% if is_teacher %}<div class="actions"><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
@@ -22904,7 +26089,7 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
 })();
 </script>''',
                     token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid), kind=kind, rid=rid,
-                    back_url=back_url, is_teacher=is_teacher)
+                    back_url=back_url, is_teacher=is_teacher, teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
 
 
 @app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
@@ -22981,7 +26166,8 @@ def ac_admin():
             e["_title"] = class_titles.get(str(e.get("class_id"))) or "Class"
             unpaid_seats.append(e)
     return _ac_page("Academic admin", r'''
-<div class="hero"><h2>Academic admin</h2></div>
+<div class="hero"><h2>Academic admin</h2><p><a href="{{ url_for('ac_admin_refunds') }}">Refunds for cancelled lessons</a></p>
+<p><a href="{{ url_for('admin_knowledge_sources') }}">KOJA AI knowledge sources (licences)</a></p></div>
 <div class="grid"><div class="card"><h3>Teachers</h3>{{ stats.verified }}/{{ stats.teachers }} verified</div><div class="card"><h3>Lessons</h3>{{ stats.completed }}/{{ stats.sessions }} completed</div>
 <div class="card"><h3>Commission earned</h3>{{ stats.commission }}</div><div class="card"><h3>Owed to teachers</h3>{{ stats.payable }}</div></div>
 <div class="card"><h3>Teachers</h3>{% for t in teachers %}<p><strong>{{ t.full_name }}</strong> — {{ t.subjects }} · {{ t.status }} · balance {{ t._balance }}

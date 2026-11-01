@@ -1,7 +1,4 @@
-KOJA MUSIC REAL INDUSTRY CONNECTIONS
-
-1. Run KOJA_MUSIC_REAL_INDUSTRY_CONNECTIONS_20261005.sql in Supabase SQL Editor.
-2. Deploy app.py to the existing KOJA AFRICA Render service.
-3. Artist accounts can open /music/industry-suite/network.
-
-This build connects KOJA's lifecycle to real industry organizations and official platform endpoints as verified external references. It does not falsely claim direct API access or commercial partnerships. Direct API/distribution/royalty integrations require the relevant organization credentials, contracts or partner access.
+Teaching library photos.
+Put a real photo here named after the item id, for example ammeter.jpg, burette.png or laptop.webp.
+Allowed types: jpg, jpeg, png, webp. Photos show in place of the drawing on the library and lesson pages.
+Item ids: burette, conical_flask, beaker, pipette, test_tubes, indicator, balance, battery, resistor, ammeter, voltmeter, spring_balance, stopwatch, metre_rule, protractor, graph_paper, geometry_set, graphing_calc, laptop, projector, whiteboard.
