@@ -10973,7 +10973,7 @@ def admin():
 <a class="btn" href="{{ url_for('media_live_partners') }}">KOJA Live partners</a>
 <a class="btn success" href="{{ url_for('media_live_add') }}">Add live stream</a>
 <a class="btn" href="{{ url_for('admin_assignment_answerers') }}">Assignment answerers</a>
-<a class="btn" href="{{ url_for('admin_assignment_payments') }}">Assignment payments</a><a class="btn" href="{{ url_for('admin_welcome_messages') }}">Welcome messages</a><a class="btn" href="{{ url_for('admin_complaints') }}">Complaints</a>
+<a class="btn" href="{{ url_for('admin_assignment_payments') }}">Assignment payments</a><a class="btn" href="{{ url_for('admin_welcome_messages') }}">Welcome messages</a><a class="btn" href="{{ url_for('admin_complaints') }}">Complaints</a><a class="btn" href="{{ url_for('admin_service_requests') }}">Help desk requests</a>
 <a class="btn" href="{{ url_for('admin_drivers') }}">Drivers</a>
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
