@@ -825,68 +825,6 @@ def admin_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-# ---- admin edit password ----------------------------------------------------------
-# Every admin POST under /admin/ needs the admin edit password first. Only a hash is stored,
-# in the ADMIN_EDIT_PASSWORD_HASH environment variable. If that variable is not set, admin
-# edits are refused (fails closed). Unlock lasts ADMIN_EDIT_UNLOCK_MINUTES after a correct password.
-ADMIN_EDIT_UNLOCK_MINUTES = 15
-
-def _admin_edit_hash():
-    return clean(os.getenv("ADMIN_EDIT_PASSWORD_HASH"))
-
-def _admin_edit_unlocked():
-    try:
-        return float(session.get("admin_edit_until") or 0) > datetime.now(timezone.utc).timestamp()
-    except Exception:
-        return False
-
-def _admin_edit_page(message="", status=403):
-    return render_page("Confirm admin password", r"""
-<div class="hero"><h1>Confirm admin password</h1><p>{{ message }}</p></div>
-<div class="card"><form method="post" action="{{ url_for('admin_edit_unlock') }}">{{ csrf }}
-<label>Admin edit password</label><input type="password" name="password" required autocomplete="current-password">
-<button class="btn" type="submit">Unlock admin edits for {{ minutes }} minutes</button></form>
-<p class="small">After unlocking, go back and repeat the action you were doing.</p></div>""",
-                       csrf=Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())),
-                       message=message, minutes=ADMIN_EDIT_UNLOCK_MINUTES), status
-
-@app.before_request
-def _admin_edit_gate():
-    if request.method != "POST" or not request.path.startswith("/admin/") or request.path == "/admin/unlock":
-        return None
-    user = current_user() or {}
-    if not user.get("is_admin"):
-        return None  # admin_required refuses non-admins
-    if not _admin_edit_hash():
-        return _admin_edit_page("Admin edits are locked: the ADMIN_EDIT_PASSWORD_HASH setting is not set on the server. Your change was not saved.")
-    if _admin_edit_unlocked():
-        return None
-    return _admin_edit_page("Enter the admin edit password to continue. Your change was not saved.")
-
-@app.route("/admin/unlock", methods=["GET", "POST"])
-@admin_required
-def admin_edit_unlock():
-    if request.method == "GET":
-        return _admin_edit_page("", status=200)
-    user_id = str((current_user() or {}).get("id") or "")
-    if _rate_limited("adminunlock:" + user_id, 5, 900):
-        return _admin_edit_page("Too many attempts. Wait 15 minutes and try again.")
-    stored = _admin_edit_hash()
-    if not stored:
-        logger.error("ADMIN_EDIT_PASSWORD_HASH is not set, so the admin password cannot be checked")
-        return _admin_edit_page("The admin password has not been set on this server yet. The site owner must set the ADMIN_EDIT_PASSWORD_HASH setting and restart the app.")
-    try:
-        ok = bool(stored) and check_password_hash(stored, request.form.get("password") or "")
-    except Exception:
-        ok = False
-    if not ok:
-        logger.warning("KOJA admin edit password rejected for user %s", user_id)
-        return _admin_edit_page("Wrong password.")
-    session["admin_edit_until"] = datetime.now(timezone.utc).timestamp() + ADMIN_EDIT_UNLOCK_MINUTES * 60
-    flash("Admin edits unlocked for %d minutes. Repeat the action you were doing." % ADMIN_EDIT_UNLOCK_MINUTES, "success")
-    return redirect(url_for("admin"))
-
-
 def music_artist_required(fn):
     """Artist-only authentication without the global Terms gate."""
     @wraps(fn)
@@ -22537,7 +22475,7 @@ SERVICE_CATALOG = [
     {"key": "bursary_application", "name": "Bursary and scholarship help", "category": "Education",
      "summary": "We help you find, prepare and submit a bursary or scholarship application. The funder decides who is awarded.",
      "needs": "National ID, proof of admission or enrolment, household income proof if the funder asks", "confirm": ""},
-    {"key": "tax_number", "name": "Tax number (TPIN/TPN) registration help", "category": "Government forms",
+    {"key": "tax_number", "name": "Tax number (TPIN/TPN) registration help", "category": "Government forms", "fixed_fee": 50,
      "summary": "We help you prepare a tax number registration. The tax authority issues the number, not KOJA.",
      "needs": "National ID, proof of address, employment or business details", "confirm": ""},
     {"key": "result_verification", "name": "Result verification help", "category": "Education",
@@ -22592,7 +22530,8 @@ SERVICE_REQUIREMENTS = {
             "A copy of your National Registration Card (NRC). The community guide lists this for individuals",
             "Your NRC and passport number, if you have a passport",
             "Apply online at zra.org.zm (Register for a TPIN), or in the TaxOnApp app, or in person at a Domestic Taxes Office on Form TPIN 1 with the attachments",
-            "Pay the application fee as ZRA requests. The guide we read did not give the amount, so confirm it with ZRA first. ZRA: +260 211 382831 or +260 211 382819",
+            "KOJA service fee: K50, paid from your request page once you send it. This covers our help with the registration",
+            "ZRA's own fee, if it charges one, is separate. The guide we read did not give the amount, so confirm it with ZRA: +260 211 382831 or +260 211 382819",
             "Your TPIN is issued after ZRA checks your documents, so the time depends on that check",
         ],
         "note": "The number is issued by the Zambia Revenue Authority, not by KOJA. The steps come from a community guide (edited November 2025), so confirm them with ZRA before you apply.",
@@ -22713,6 +22652,7 @@ def service_request_new(key):
     now = utc_now()
     _, err = db_insert(SERVICE_REQUESTS_TABLE, {
         "id": rid, "user_id": uid, "customer_id": uid, "service_key": key, "service_name": item["name"], "category": item["category"],
+        "quote_amount": item.get("fixed_fee"), "currency": "ZMW" if item.get("fixed_fee") else None,
         "full_name": full_name, "phone": phone, "email": email or None, "details": details,
         "attachment_path": info["path"] if info else None,
         "attachment_name": info["file_name"] if info else None,
@@ -22755,12 +22695,14 @@ def service_request_message(rid):
         flash("This request is closed. Send a new request to ask more.", "warning")
         return redirect(url_for("service_request_detail", rid=rid))
     body = clean(request.form.get("body"))[:2000]
-    if not body:
-        flash("Write a message first.", "danger")
+    info, ferr = _svc_message_file()
+    if ferr:
+        flash("File not sent: " + str(ferr)[:200], "danger")
         return redirect(url_for("service_request_detail", rid=rid))
-    _, err = db_insert(SERVICE_MESSAGES_TABLE, {
-        "id": uuid.uuid4().hex, "request_id": rid, "sender_id": _ac_uid(), "sender_role": "user",
-        "body": body, "created_at": utc_now()})
+    if not body and not info:
+        flash("Write a message or attach a file first.", "danger")
+        return redirect(url_for("service_request_detail", rid=rid))
+    err = _svc_save_message(rid, "user", body, info)
     if err:
         flash("Could not send your message.", "danger")
     else:
@@ -22836,7 +22778,8 @@ def admin_service_request(rid):
         abort(404)
     msgs = _ac_rows(SERVICE_MESSAGES_TABLE, {"request_id": rid}, order="created_at.asc", limit=500)
     return _ac_page("Help request", ADMIN_SERVICE_TPL, r=row, msgs=msgs, statuses=SERVICE_STATUSES,
-                    item=_svc_item(row.get("service_key")) or {})
+                    item=_svc_item(row.get("service_key")) or {},
+                    wa_number=re.sub(r"\D", "", str(row.get("phone") or "")))
 
 
 @app.route("/admin/help-desk/<rid>/update", methods=["POST"])
@@ -22879,12 +22822,14 @@ def _admin_service_post(rid, role):
     if not row:
         abort(404)
     body = clean(request.form.get("body"))[:2000]
-    if not body:
-        flash("Write a message first.", "danger")
+    info, ferr = _svc_message_file()
+    if ferr:
+        flash("File not saved: " + str(ferr)[:200], "danger")
         return redirect(url_for("admin_service_request", rid=rid))
-    _, err = db_insert(SERVICE_MESSAGES_TABLE, {
-        "id": uuid.uuid4().hex, "request_id": rid, "sender_id": str((current_user() or {}).get("id")),
-        "sender_role": role, "body": body, "created_at": utc_now()})
+    if not body and not info:
+        flash("Write a message or attach a file first.", "danger")
+        return redirect(url_for("admin_service_request", rid=rid))
+    err = _svc_save_message(rid, role, body, info)
     if err:
         flash("Could not save that.", "danger")
     elif role == "staff":
@@ -22900,6 +22845,39 @@ def _admin_service_post(rid, role):
 @admin_required
 def admin_service_reply(rid):
     return _admin_service_post(rid, "staff")
+
+
+@app.route("/admin/help-desk/<rid>/email", methods=["POST"])
+@admin_required
+def admin_service_email(rid):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row:
+        abort(404)
+    back = url_for("admin_service_request", rid=rid)
+    to = clean(row.get("email"))
+    subject = clean(request.form.get("subject"))[:150]
+    body = clean(request.form.get("body"))[:4000]
+    if not to:
+        flash("This request has no email address. Use the phone or WhatsApp instead.", "warning")
+        return redirect(back)
+    if not subject or not body:
+        flash("Write a subject and a message first.", "danger")
+        return redirect(back)
+    if not email_configured():
+        flash("Email is not set up on the server yet. Use the phone or WhatsApp instead.", "warning")
+        return redirect(back)
+    try:
+        ok, err = send_plain_email(to, subject, body)
+    except Exception:
+        logger.exception("Help desk email failed")
+        ok, err = False, "unexpected error"
+    if not ok:
+        flash("The email could not be sent: " + str(err)[:200], "danger")
+        return redirect(back)
+    _svc_save_message(rid, "staff", "Email sent to the person. Subject: " + subject + "\n\n" + body, None)
+    _svc_notify(row, "New message from KOJA", "The KOJA team sent you an email about your %s request. The message is also here." % row.get("service_name"))
+    flash("Email sent.", "success")
+    return redirect(back)
 
 
 @app.route("/admin/help-desk/<rid>/note", methods=["POST"])
@@ -23081,6 +23059,57 @@ def admin_service_export():
                              "Cache-Control": "private, no-store"})
 
 
+# ---- help desk: helper tools (files both ways, email, contact links) ----
+SERVICE_MESSAGE_EXT = {"pdf", "jpg", "jpeg", "png", "webp", "doc", "docx", "xls", "xlsx", "txt"}
+
+
+def _svc_message_file():
+    """Returns (info, error) for an optional file attached to a message. (None, None) when no file was sent."""
+    f = request.files.get("document")
+    if not f or not f.filename:
+        return None, None
+    return upload_storage(f, folder="help-desk-messages", public=False, max_mb=10, allowed=SERVICE_MESSAGE_EXT)
+
+
+def _svc_stream(path, name, mime):
+    try:
+        r = _HTTP.get(sb_storage_url(path), headers=sb_headers(), timeout=60, stream=True)
+    except Exception:
+        logger.exception("Help desk file download failed")
+        abort(404)
+    if not r.ok:
+        r.close()
+        abort(404)
+    fname = secure_filename(name or "file") or "file"
+    return Response(stream_with_context(r.iter_content(65536)), mimetype=mime or "application/octet-stream",
+                    headers={"Content-Disposition": 'attachment; filename="%s"' % fname, "Cache-Control": "private, no-store"})
+
+
+@app.route("/help-desk/requests/<rid>/messages/<mid>/file")
+@login_required
+def service_message_file(rid, mid):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row or not _svc_can_read(row):
+        abort(404)
+    m = first_row(SERVICE_MESSAGES_TABLE, {"id": mid})
+    if not m or str(m.get("request_id")) != str(rid) or not m.get("attachment_path"):
+        abort(404)
+    return _svc_stream(m["attachment_path"], m.get("attachment_name"), m.get("attachment_mime"))
+
+
+def _svc_save_message(rid, role, body, info):
+    sender = str((current_user() or {}).get("id") or "")
+    _, err = db_insert(SERVICE_MESSAGES_TABLE, {
+        "id": uuid.uuid4().hex, "request_id": rid, "sender_id": sender, "sender_role": role,
+        "body": body, "created_at": utc_now(),
+        "attachment_path": info["path"] if info else None,
+        "attachment_name": info["file_name"] if info else None,
+        "attachment_mime": info["mime_type"] if info else None})
+    if err and info:
+        delete_storage(info["path"])
+    return err
+
+
 SERVICE_CATALOG_TPL = r"""<div class="hero"><h2>KOJA help desk</h2><p>Ask for help with university applications, bursaries, tax number registration, result verification, computer and phone help, forms and more. Send a request, then follow it and reply in the same place.</p><p class="small">KOJA prepares and tracks each request. Decisions and official registrations are made by the university, funder, tax authority, examining body or device owner.</p></div>
 <div class="actions"><a class="btn secondary" href="{{ url_for('service_my_requests') }}">My requests</a></div>
 {% for cat, items in groups.items() %}<h3>{{ cat }}</h3>
@@ -23121,10 +23150,10 @@ SERVICE_DETAIL_TPL = r"""<div class="hero"><h2>{{ r.service_name }}</h2><p>Statu
 {% else %}<p class="small">Online payment is not set up yet. The team will confirm how to pay.</p>{% endif %}
 </div>{% endif %}
 <div class="card"><p>{{ r.details }}</p><span class="small">Sent {{ r.created_at|svc_dt }}</span>{% if r.attachment_path %}<br><a href="{{ url_for('service_request_file', rid=r.id) }}">Download the document you sent</a>{% endif %}</div>
-{% for m in msgs %}<div class="card"><strong>{% if m.sender_role == 'staff' %}KOJA team{% else %}You{% endif %}</strong> <span class="small">{{ m.created_at|svc_dt }}</span><p>{{ m.body }}</p></div>
+{% for m in msgs %}<div class="card"><strong>{% if m.sender_role == 'staff' %}KOJA team{% else %}You{% endif %}</strong> <span class="small">{{ m.created_at|svc_dt }}</span><p>{{ m.body }}</p>{% if m.attachment_path %}<a href="{{ url_for('service_message_file', rid=r.id, mid=m.id) }}">Download {{ m.attachment_name }}</a>{% endif %}</div>
 {% endfor %}
 {% if r.status in ['done', 'cancelled'] %}<div class="card small">This request is closed. Send a new request to ask more.</div>
-{% else %}<div class="card"><form method="post" action="{{ url_for('service_request_message', rid=r.id) }}">{{ csrf }}<label>Message</label><textarea name="body" rows="3" maxlength="2000" required></textarea><button class="btn">Send message</button></form></div>
+{% else %}<div class="card"><form method="post" enctype="multipart/form-data" action="{{ url_for('service_request_message', rid=r.id) }}">{{ csrf }}<label>Message</label><textarea name="body" rows="3" maxlength="2000"></textarea><label>Attach a picture or document (optional, up to 10 MB)</label><input name="document" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,.xls,.xlsx,.txt"><button class="btn">Send</button></form></div>
 <form method="post" action="{{ url_for('service_request_cancel', rid=r.id) }}">{{ csrf }}<button class="btn secondary">Cancel request</button></form>
 {% endif %}
 <div class="card"><a href="{{ url_for('service_my_requests') }}">← My requests</a></div>
@@ -23139,10 +23168,15 @@ ADMIN_SERVICES_TPL = r"""<div class="hero"><h2>Help desk requests</h2><p>Work th
 
 ADMIN_SERVICE_TPL = r"""<div class="hero"><h2>{{ r.service_name }}</h2><p>{{ r.full_name }} · {{ r.phone }}{% if r.email %} · {{ r.email }}{% endif %} · status: <strong>{{ statuses.get(r.status, r.status) }}</strong>{% if r.quote_amount is not none %} · payment: <strong>{{ 'paid' if r.payment_status == 'paid' else ('pending' if r.payment_status == 'pending' else 'not paid') }}</strong>{% endif %}</p>{% if item %}<p class="small">Expected documents: {{ item.needs }}</p>{% endif %}</div>
 <div class="card"><p>{{ r.details }}</p>{% if r.attachment_path %}<a href="{{ url_for('service_request_file', rid=r.id) }}">Download {{ r.attachment_name }}</a>{% endif %}</div>
+<div class="card"><h3>Contact the person</h3>
+<p><a class="btn" href="tel:{{ r.phone }}">Call {{ r.phone }}</a> <a class="btn secondary" href="https://wa.me/{{ wa_number }}" target="_blank" rel="noopener">WhatsApp</a>{% if r.email %} <a class="btn secondary" href="mailto:{{ r.email }}">Email app</a>{% endif %}</p>
+{% if r.email %}<form method="post" action="{{ url_for('admin_service_email', rid=r.id) }}">{{ csrf }}<label>Email subject</label><input name="subject" maxlength="150" required><label>Email message</label><textarea name="body" rows="5" maxlength="4000" required></textarea><button class="btn">Send email to {{ r.email }}</button></form>
+{% else %}<p class="small">No email address on this request. Use the phone or WhatsApp.</p>{% endif %}
+</div>
 <div class="card"><h3>Conversation</h3>
-{% for m in msgs %}<div class="card"><strong>{% if m.sender_role == 'user' %}Person{% elif m.sender_role == 'staff' %}KOJA team{% else %}Internal note{% endif %}</strong> <span class="small">{{ m.created_at|svc_dt }}</span><p>{{ m.body }}</p></div>
+{% for m in msgs %}<div class="card"><strong>{% if m.sender_role == 'user' %}Person{% elif m.sender_role == 'staff' %}KOJA team{% else %}Internal note{% endif %}</strong> <span class="small">{{ m.created_at|svc_dt }}</span><p>{{ m.body }}</p>{% if m.attachment_path %}<a href="{{ url_for('service_message_file', rid=r.id, mid=m.id) }}">Download {{ m.attachment_name }}</a>{% endif %}</div>
 {% else %}<p>No messages yet.</p>{% endfor %}
-<form method="post" action="{{ url_for('admin_service_reply', rid=r.id) }}">{{ csrf }}<label>Reply to the person</label><textarea name="body" rows="3" maxlength="2000"></textarea><button class="btn">Send reply</button></form>
+<form method="post" enctype="multipart/form-data" action="{{ url_for('admin_service_reply', rid=r.id) }}">{{ csrf }}<label>Reply to the person</label><textarea name="body" rows="3" maxlength="2000"></textarea><label>Attach a file or picture (optional, up to 10 MB)</label><input name="document" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,.xls,.xlsx,.txt"><button class="btn">Send reply</button></form>
 <form method="post" action="{{ url_for('admin_service_note', rid=r.id) }}">{{ csrf }}<label>Internal note (the person cannot see this)</label><textarea name="body" rows="2" maxlength="2000"></textarea><button class="btn secondary">Save note</button></form>
 </div>
 <div class="card"><h3>Update</h3><form method="post" action="{{ url_for('admin_service_update', rid=r.id) }}">{{ csrf }}
