@@ -22563,6 +22563,84 @@ SERVICE_CATALOG = [
 ]
 
 
+# What to send, per service. Items marked "official" come from the sources listed; the rest are what KOJA needs from you.
+# Read on 2 Nov 2026. Fees and rules change, so confirm with the source before you pay or submit.
+SERVICE_REQUIREMENTS = {
+    "university_application": {
+        "items": [
+            "National Registration Card (NRC) or passport",
+            "Your O-Level and/or A-Level results or certificates. Entry rules differ by course; most programmes need credits in five O-Level subjects, including English",
+            "The application form, filled in online at applications.unza.zm (for UNZA). Tell us the university if it is not UNZA",
+            "Application fee (official, UNZA): K150 for Zambians or USD 60 for non-Zambians. Pay into the university account shown on its page, and keep the bank deposit slip. The slip must show your full name and the university's name",
+            "Submit the deposit slip with your application. A paper application also needs the official receipt issued by the university",
+        ],
+        "note": "These are UNZA's rules, checked on its 2026 admission advert. Each university sets its own, and the closing date is set by the university. The advert we read does not show the 2026 closing date, so confirm it with UNZA.",
+        "sources": [("UNZA 2026 admission advert", "https://unza.zm/sites/default/files/article_files/2025-01/2026%20ADMISSION%20ADVERT.pdf")],
+    },
+    "bursary_application": {
+        "items": [
+            "Tell us which bursary or loan you want. Official list: HELSB (helsb.gov.zm)",
+            "Proof of admission or enrolment from your university",
+            "National Registration Card (NRC)",
+            "Any other document the bursary asks for, such as proof of income or guardian details. We could not confirm the full list from the official pages, so check it with HELSB before you send your documents",
+        ],
+        "note": "Bursary rules differ by funder and by year. KOJA helps you prepare and send the application. HELSB decides who is awarded.",
+        "sources": [("HELSB, how to apply", "https://helsb.gov.zm/how-to-apply")],
+    },
+    "tax_number": {
+        "items": [
+            "A copy of your National Registration Card (NRC). The community guide lists this for individuals",
+            "Your NRC and passport number, if you have a passport",
+            "Apply online at zra.org.zm (Register for a TPIN), or in the TaxOnApp app, or in person at a Domestic Taxes Office on Form TPIN 1 with the attachments",
+            "Pay the application fee as ZRA requests. The guide we read did not give the amount, so confirm it with ZRA first. ZRA: +260 211 382831 or +260 211 382819",
+            "Your TPIN is issued after ZRA checks your documents, so the time depends on that check",
+        ],
+        "note": "The number is issued by the Zambia Revenue Authority, not by KOJA. The steps come from a community guide (edited November 2025), so confirm them with ZRA before you apply.",
+        "sources": [("TPIN steps, Wikiprocedure (community guide, confirm with ZRA)", "https://wikiprocedure.com/index.php/Zambia_-_Obtain_a_Taxpayer_Identification_Number_(TPIN)"), ("Zambia Revenue Authority", "https://zra.org.zm")],
+    },
+    "result_verification": {
+        "items": [
+            "A photocopy of the statement or certificate. A statement is accepted only for a year when no certificate has been issued",
+            "Fee (official, ECZ): K100 per result for Grade 7, Grade 9, Grade 12, GCE and TED/TEVET. Pay at an ECZ service centre",
+            "ECZ service centres: Lusaka, Kitwe, Mpika, Solwezi, Kasama, Chipata, Mongu, Livingstone, Mansa and Kabwe",
+            "Payment and form questions: +260 211 252544 or +260 211 252930, info@exams-council.org.zm",
+        ],
+        "note": "KOJA does not verify results itself. ECZ does. Schools and employers that want to check results online must register with ECZ for the online verification system, and KOJA cannot do that for them.",
+        "sources": [("ECZ services (2024)", "https://www.exams-council.org.zm/wp-content/uploads/2024/07/ECZ-SERVICES.pdf")],
+    },
+    "forms_and_typing": {
+        "items": ["The form or its link", "The information to enter, and any documents to upload"],
+        "note": "",
+        "sources": [],
+    },
+    "printing_scanning": {
+        "items": ["The file (PDF, Word or image), or a clear description", "How many copies, and the paper size if you know it"],
+        "note": "",
+        "sources": [],
+    },
+    "pc_maintenance": {
+        "items": ["Make and model", "What happens, and any error message (a photo helps)", "Whether you have a backup of your files"],
+        "note": "",
+        "sources": [],
+    },
+    "phone_repair": {
+        "items": ["Make and model", "What is wrong", "Whether you have backed up your data"],
+        "note": "Flashing can erase all data on the phone.",
+        "sources": [],
+    },
+    "job_application": {
+        "items": ["Your current CV, or your work history", "The job advert or link"],
+        "note": "",
+        "sources": [],
+    },
+    "help": {
+        "items": ["Your question", "Any document or screenshot that helps us understand it"],
+        "note": "",
+        "sources": [],
+    },
+}
+
+
 def _svc_item(key):
     return next((x for x in SERVICE_CATALOG if x["key"] == key), None)
 
@@ -22601,7 +22679,7 @@ def service_request_new(key):
     uid = _ac_uid()
     if request.method == "GET":
         return _ac_page("Request help: " + item["name"], SERVICE_FORM_TPL, item=item, consent=SERVICE_CONSENT,
-                        upload_ext=sorted(SERVICE_UPLOAD_EXT))
+                        upload_ext=sorted(SERVICE_UPLOAD_EXT), req=SERVICE_REQUIREMENTS.get(key, {"items": [], "note": "", "sources": []}))
     if _rate_limited("svc:" + uid, 10, 3600):
         flash("You have sent many requests in the last hour. Please try again later.", "warning")
         return redirect(url_for("service_request_new", key=key))
@@ -22634,7 +22712,7 @@ def service_request_new(key):
     rid = uuid.uuid4().hex
     now = utc_now()
     _, err = db_insert(SERVICE_REQUESTS_TABLE, {
-        "id": rid, "user_id": uid, "service_key": key, "service_name": item["name"], "category": item["category"],
+        "id": rid, "user_id": uid, "customer_id": uid, "service_key": key, "service_name": item["name"], "category": item["category"],
         "full_name": full_name, "phone": phone, "email": email or None, "details": details,
         "attachment_path": info["path"] if info else None,
         "attachment_name": info["file_name"] if info else None,
@@ -23011,7 +23089,12 @@ SERVICE_CATALOG_TPL = r"""<div class="hero"><h2>KOJA help desk</h2><p>Ask for he
 <div class="card small">Never send passwords, PINs or one-time codes to KOJA. We will never ask for them.</div>
 """
 
-SERVICE_FORM_TPL = r"""<div class="hero"><h2>{{ item.name }}</h2><p>{{ item.summary }}</p><p class="small"><strong>Have ready:</strong> {{ item.needs }}</p></div>
+SERVICE_FORM_TPL = r"""<div class="hero"><h2>{{ item.name }}</h2><p>{{ item.summary }}</p></div>
+<div class="card"><h3>What to send</h3>
+<ul>{% for x in req['items'] %}<li>{{ x }}</li>{% endfor %}</ul>
+{% if req['note'] %}<p class="small">{{ req['note'] }}</p>{% endif %}
+{% if req['sources'] %}<p class="small">Official sources: {% for label, url in req['sources'] %}<a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+<p class="small">Fees and deadlines change. Check them with the source above before you pay.</p></div>
 <div class="card"><form method="post" enctype="multipart/form-data" action="{{ url_for('service_request_new', key=item.key) }}">{{ csrf }}
 <label>Full name</label><input name="full_name" maxlength="120" required>
 <label>Phone number (with country code)</label><input name="phone" maxlength="30" required placeholder="+260 97 000 0000">
