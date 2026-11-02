@@ -26304,12 +26304,19 @@ def ac_room(kind, rid):
         back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
     return _ac_page("Live room", r'''
 <div class="card"><h2>Live room</h2><p id="ac-status">Connecting…</p>
-<div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button>{% if is_teacher %}<button class="btn" type="button" id="ac-share">Share screen</button>{% endif %}</div>
-<style>.ac-corner{position:absolute!important;right:10px;bottom:10px;width:36%;min-width:150px;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.45);border-radius:12px;overflow:hidden}#ac-screenbox{position:relative}#ac-stage[data-mode=board] #ac-videos video{max-height:18vh!important;width:auto!important;max-width:100%}#ac-stage[data-mode=board] #ac-doc iframe{height:18vh!important}#ac-stage[data-mode=board] #ac-doc img{max-height:18vh!important;width:auto!important;margin:0 auto}#ac-stage[data-mode=board] #ac-doc-wrap{margin:0!important}</style>
-<div class="actions" id="ac-layout" style="margin:8px 0"><button class="btn secondary" type="button" data-m="split">Stacked</button><button class="btn secondary" type="button" data-m="board">Board big, screen in corner</button><button class="btn secondary" type="button" data-m="screen">Screen big, board in corner</button></div>
+<div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button>{% if is_teacher %}<button class="btn secondary ac-icon" type="button" id="ac-share" aria-label="Share screen" title="Share screen">&#x1F5A5;</button>{% endif %}</div>
+<style>.ac-corner{position:absolute!important;right:10px;bottom:10px;width:36%;min-width:150px;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.45);border-radius:12px;overflow:hidden}#ac-screenbox{position:relative}.ac-news{position:relative;aspect-ratio:16/9;background:#050b14;border-radius:14px;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+#ac-screen #ac-videos{position:absolute;inset:0;display:grid!important;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));grid-auto-rows:1fr;gap:4px;padding:4px;width:auto!important}
+#ac-screen #ac-videos video{width:100%!important;height:100%!important;max-height:none!important;object-fit:contain;background:#000;border-radius:10px}
+#ac-screen #ac-waiting{color:#ddd;display:flex;align-items:center;justify-content:center;height:100%;margin:0}
+.ac-live-badge{position:absolute;top:3%;right:2.5%;z-index:4;padding:.3em .8em;border-radius:6px;font-weight:800;letter-spacing:.08em;font-size:13px;background:#d62828;color:#fff}
+.ac-live-badge[hidden]{display:none}
+.ac-icon{padding:.35em .7em!important;font-size:16px!important;line-height:1}
+.ac-fs{position:absolute;right:2.5%;bottom:4%;z-index:4;background:rgba(0,0,0,.6);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:8px;padding:.45em .9em;font-size:13px;cursor:pointer}#ac-stage[data-mode=board] #ac-doc iframe{height:18vh!important}#ac-stage[data-mode=board] #ac-doc img{max-height:18vh!important;width:auto!important;margin:0 auto}#ac-stage[data-mode=board] #ac-doc-wrap{margin:0!important}</style>
+<div class="actions" id="ac-layout" style="margin:8px 0"><button class="btn secondary ac-icon" type="button" data-m="split" aria-label="Screen above board" title="Screen above board">&#x2630;</button><button class="btn secondary ac-icon" type="button" data-m="board" aria-label="Board big, screen in corner" title="Board big, screen in corner">&#x25AD;</button><button class="btn secondary ac-icon" type="button" data-m="screen" aria-label="Screen big, board in corner" title="Screen big, board in corner">&#x25A3;</button></div>
 <div id="ac-stage" style="position:relative"><div id="ac-screenbox">
 <div id="ac-doc-wrap" hidden style="margin:12px 0"><p class="small" id="ac-doc-title" style="margin:0 0 6px"></p><div id="ac-doc" style="background:#fff;border-radius:12px;overflow:hidden;min-height:360px"></div></div>
-<div id="ac-screen" style="background:#000;border-radius:12px;overflow:hidden;margin:12px 0;min-height:160px;max-width:100%;display:flex;align-items:center;justify-content:center"><div id="ac-videos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;width:100%"><p id="ac-waiting" style="color:#ddd;padding:24px;text-align:center;margin:0">Waiting for the teacher's video…</p></div></div>
+<div id="ac-screen" class="ac-news" style="margin:12px 0;max-width:100%"><div id="ac-videos"><p id="ac-waiting">Waiting for the teacher's video…</p></div><span class="ac-live-badge" id="ac-live-badge" hidden>&#9679; LIVE</span><button class="ac-fs" type="button" id="ac-fs" aria-label="Full screen" title="Full screen">&#x26F6;</button></div>
 </div><h3 id="ac-board-h">Whiteboard</h3>
 {% if not is_teacher %}<p class="small" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<div id="ac-boardbox" style="background:#fff;border-radius:12px;overflow:hidden"><canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas></div></div>
 <h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
@@ -26348,6 +26355,8 @@ function setLayout(m){
 }
 document.querySelectorAll('#ac-layout button').forEach(b=>{b.onclick=()=>setLayout(b.dataset.m)});
 (function(){let m='split';try{m=localStorage.getItem('koja_ac_layout')||'split'}catch(e){}if(['split','board','screen'].indexOf(m)<0)m='split';setLayout(m)})();
+(function(){const fsb=document.getElementById('ac-fs'),scr=document.getElementById('ac-screen');
+  if(fsb&&scr)fsb.onclick=()=>{try{if(document.fullscreenElement)document.exitFullscreen();else scr.requestFullscreen()}catch(e){}};})();
 function showDoc(d){
   const wrap=document.getElementById('ac-doc-wrap'),box=document.getElementById('ac-doc'),tt=document.getElementById('ac-doc-title');
   if(!wrap||!box)return;
@@ -26378,7 +26387,7 @@ cv.onpointerup=endStroke;cv.onpointercancel=endStroke;
 const clr=document.getElementById('ac-clear');
 if(clr)clr.onclick=()=>{clearBoard();send({c:1});save({kind:'clear'})};
 const shb=document.getElementById('ac-share');let sharing=false;
-if(shb)shb.onclick=async()=>{try{if(!room)return;sharing=!sharing;await room.localParticipant.setScreenShareEnabled(sharing);shb.textContent=sharing?'Stop sharing':'Share screen'}catch(e){sharing=false;setStatus('Screen sharing is blocked or not supported on this device.')}};
+if(shb)shb.onclick=async()=>{try{if(!room)return;sharing=!sharing;await room.localParticipant.setScreenShareEnabled(sharing);shb.textContent=sharing?'\u23F9':'\u{1F5A5}';shb.title=sharing?'Stop sharing':'Share screen'}catch(e){sharing=false;setStatus('Screen sharing is blocked or not supported on this device.')}};
 if(IS_TEACHER){
   const perm={};let allOn=false;
   const allBtn=document.getElementById('ac-allow-all');
@@ -26458,6 +26467,7 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     room.on(LK.RoomEvent.Disconnected,()=>setStatus('Disconnected. Reload the page to rejoin.'));
     await room.connect(d.url,d.token);
     setStatus('Connected.');
+    const lbg=document.getElementById('ac-live-badge');if(lbg)lbg.hidden=false;
     room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>attach(x.track)));
     {% if is_teacher or kind != 'public' %}try{await room.localParticipant.enableCameraAndMicrophone()}
     catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}{% else %}setStatus('Connected. You are watching this live class.');{% endif %}
