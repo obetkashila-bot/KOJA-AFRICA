@@ -26241,6 +26241,10 @@ def _ac_room_access(kind, rid):
     return None, False
 
 
+AC_SCREEN_DOC_TYPES = {"pdf", "png", "jpg", "jpeg", "webp"}  # what a browser can show on the screen
+AC_SCREEN_DOC_MB = 25
+
+
 def _ac_board_key(kind, rid):
     return "%s:%s" % (kind, rid)
 
@@ -26301,13 +26305,18 @@ def ac_room(kind, rid):
     return _ac_page("Live room", r'''
 <div class="card"><h2>Live room</h2><p id="ac-status">Connecting…</p>
 <div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button>{% if is_teacher %}<button class="btn" type="button" id="ac-share">Share screen</button>{% endif %}</div>
+<style>.ac-corner{position:absolute!important;right:10px;bottom:10px;width:36%;min-width:150px;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.45);border-radius:12px;overflow:hidden}#ac-screenbox{position:relative}</style>
+<div class="actions" id="ac-layout" style="margin:8px 0"><button class="btn secondary" type="button" data-m="split">Stacked</button><button class="btn secondary" type="button" data-m="board">Board big, screen in corner</button><button class="btn secondary" type="button" data-m="screen">Screen big, board in corner</button></div>
+<div id="ac-stage" style="position:relative"><div id="ac-screenbox">
+<div id="ac-doc-wrap" hidden style="margin:12px 0"><p class="small" id="ac-doc-title" style="margin:0 0 6px"></p><div id="ac-doc" style="background:#fff;border-radius:12px;overflow:hidden;min-height:360px"></div></div>
 <div id="ac-screen" style="background:#000;border-radius:12px;overflow:hidden;margin:12px 0;min-height:240px;display:flex;align-items:center;justify-content:center"><div id="ac-videos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;width:100%"><p id="ac-waiting" style="color:#ddd;padding:24px;text-align:center;margin:0">Waiting for the teacher's video…</p></div></div>
-<h3>Whiteboard</h3>
-{% if not is_teacher %}<p class="small" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
+</div><h3 id="ac-board-h">Whiteboard</h3>
+{% if not is_teacher %}<p class="small" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<div id="ac-boardbox" style="background:#fff;border-radius:12px;overflow:hidden"><canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas></div></div>
 <h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
 <h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}
 {% if kind != 'public' %}<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
-{% if is_teacher %}<div class="actions"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone. Works in Chrome and Edge.</p><div class="card" style="margin-top:10px"><h3>Who can write on the board</h3><div class="actions"><button class="btn secondary" type="button" id="ac-allow-all">Allow everyone to write</button></div><div id="ac-people" class="small"></div></div>{% endif %}</div>
+{% if is_teacher %}<div class="actions"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" placeholder="Speak with your keyboard microphone, or type, then press Write" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write">Write on board</button></div><p class="small">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card" style="margin-top:10px"><h3>Show a document on the screen</h3><p class="small">PDF or picture (PNG, JPG, WEBP), up to 25 MB. Everyone in the room sees it.</p><label>Title</label><input id="ac-doc-name" maxlength="160" placeholder="e.g. Worksheet 3"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"><div class="actions"><button class="btn" type="button" id="ac-doc-show">Show on screen</button><button class="btn secondary" type="button" id="ac-doc-close">Remove from screen</button></div><p class="small" id="ac-doc-status"></p></div>{% endif %}
+<div class="card" style="margin-top:10px"><h3>Who can write on the board</h3><div class="actions"><button class="btn secondary" type="button" id="ac-allow-all">Allow everyone to write</button></div><div id="ac-people" class="small"></div></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <script>
@@ -26317,8 +26326,38 @@ const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');
 cx.lineWidth=2;cx.lineCap='round';cx.strokeStyle='#111';
 const box=document.getElementById('ac-videos');
 const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }};
-const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }};
+const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }},DOC_URL={{ doc_url|tojson }};
 let canDraw=IS_TEACHER;
+const CSRF_T={{ csrf_token()|tojson }};
+const stageEl=document.getElementById('ac-stage'),screenbox=document.getElementById('ac-screenbox'),boardbox=document.getElementById('ac-boardbox'),boardH=document.getElementById('ac-board-h'),screenEl=document.getElementById('ac-screen'),docEl=document.getElementById('ac-doc');
+function setLayout(m){
+  if(!stageEl||!boardbox||!screenbox)return;
+  stageEl.dataset.mode=m;
+  if(m==='screen'){
+    if(boardbox.parentNode!==screenbox)screenbox.appendChild(boardbox);
+    boardbox.classList.add('ac-corner');screenbox.classList.remove('ac-corner');
+    screenEl.style.minHeight='';docEl.style.minHeight='';if(boardH)boardH.style.display='none';
+  }else{
+    if(boardbox.parentNode!==stageEl)stageEl.insertBefore(boardbox,boardH?boardH.nextSibling:null);
+    boardbox.classList.remove('ac-corner');if(boardH)boardH.style.display='';
+    if(m==='board'){screenbox.classList.add('ac-corner');screenEl.style.minHeight='0';docEl.style.minHeight='0'}
+    else{screenbox.classList.remove('ac-corner');screenEl.style.minHeight='';docEl.style.minHeight=''}
+  }
+  document.querySelectorAll('#ac-layout button').forEach(b=>{b.classList.toggle('secondary',b.dataset.m!==m)});
+  try{localStorage.setItem('koja_ac_layout',m)}catch(e){}
+}
+document.querySelectorAll('#ac-layout button').forEach(b=>{b.onclick=()=>setLayout(b.dataset.m)});
+(function(){let m='split';try{m=localStorage.getItem('koja_ac_layout')||'split'}catch(e){}if(['split','board','screen'].indexOf(m)<0)m='split';setLayout(m)})();
+function showDoc(d){
+  const wrap=document.getElementById('ac-doc-wrap'),box=document.getElementById('ac-doc'),tt=document.getElementById('ac-doc-title');
+  if(!wrap||!box)return;
+  box.innerHTML='';
+  if(!d||!d.url){wrap.hidden=true;return}
+  tt.textContent='On screen: '+(d.title||'Document');
+  if((d.mime||'').indexOf('image/')===0){const im=document.createElement('img');im.src=d.url;im.alt=d.title||'Document';im.style.cssText='width:100%;height:auto;display:block';box.appendChild(im)}
+  else{const fr=document.createElement('iframe');fr.src=d.url;fr.title=d.title||'Document';fr.style.cssText='width:100%;height:70vh;border:0;display:block';box.appendChild(fr)}
+  wrap.hidden=false;
+}
 function setWrite(on){canDraw=IS_TEACHER||!!on;cv.style.cursor=canDraw?'crosshair':'not-allowed';const pm=document.getElementById('ac-perm');if(pm&&!IS_TEACHER)pm.textContent=canDraw?'You can write on the board now.':'Only the teacher writes on the board. Ask your teacher to let you write.'}
 let room=null;
 function setStatus(t){st.textContent=t}
@@ -26358,6 +26397,25 @@ if(IS_TEACHER){
   }
   setInterval(people,4000);
 }
+if(IS_TEACHER){
+  const dBtn=document.getElementById('ac-doc-show'),dClose=document.getElementById('ac-doc-close'),dFile=document.getElementById('ac-doc-file'),dName=document.getElementById('ac-doc-name'),dSt=document.getElementById('ac-doc-status');
+  if(dBtn)dBtn.onclick=async()=>{
+    if(!dFile||!dFile.files||!dFile.files[0]){if(dSt)dSt.textContent='Choose a PDF or picture first.';return}
+    const fd=new FormData();fd.append('file',dFile.files[0]);fd.append('title',(dName&&dName.value)||dFile.files[0].name);
+    if(dSt)dSt.textContent='Uploading…';
+    try{const r=await fetch(DOC_URL,{method:'POST',body:fd,credentials:'same-origin',headers:{'X-CSRF-Token':CSRF_T}});const d=await r.json();
+      if(!r.ok){if(dSt)dSt.textContent=d.error||'Could not show the document.';return}
+      showDoc(d);send({doc:d});if(dSt)dSt.textContent='Showing on screen for everyone in the room.';dFile.value='';
+    }catch(e){if(dSt)dSt.textContent='Upload failed. Check your connection and try again.'}
+  };
+  if(dClose)dClose.onclick=()=>{showDoc(null);send({doc:null});save({kind:'doc_close'});if(dSt)dSt.textContent='Removed from the screen.'};
+}
+if(IS_TEACHER){
+  const tIn=document.getElementById('ac-type-text'),tBtn=document.getElementById('ac-type-write');
+  const goType=()=>{if(!tIn)return;const v=tIn.value.trim();if(!v)return;writeLine(v);tIn.value='';tIn.focus()};
+  if(tBtn)tBtn.onclick=goType;
+  if(tIn)tIn.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();goType()}};
+}
 function writeLine(text){
   if(!text)return;
   for(const line of wrapLines(text)){
@@ -26368,7 +26426,7 @@ function writeLine(text){
 const lb=document.getElementById('ac-listen'),lst=document.getElementById('ac-listen-status');
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 if(lb){
-  if(!SR){lb.disabled=true;if(lst)lst.textContent='Speech writing needs Chrome or Edge. Type on the board by drawing instead.'}
+  if(!SR){lb.style.display='none';if(lst)lst.textContent='This browser cannot listen here. Use the box below: tap the microphone on your keyboard, speak, then press Write.'}
   else{
     let rec=null,on=false;
     const make=()=>{const r=new SR();r.continuous=true;r.interimResults=false;r.lang='en-US';
@@ -26384,7 +26442,7 @@ if(lb){
 }
 document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.disconnect()}catch(_){}location.href=BACK};
 (async function(){
-  try{const h=await fetch(BOARD,{credentials:'same-origin'});if(h.ok){const j=await h.json();(j.strokes||[]).forEach(s=>drawStroke(s.points));(j.texts||[]).forEach(t=>{drawText(t.t,t.x,t.y);lineY=Math.max(lineY,t.y+30)});setWrite(j.can_write)}}catch(_){}
+  try{const h=await fetch(BOARD,{credentials:'same-origin'});if(h.ok){const j=await h.json();(j.strokes||[]).forEach(s=>drawStroke(s.points));(j.texts||[]).forEach(t=>{drawText(t.t,t.x,t.y);lineY=Math.max(lineY,t.y+30)});setWrite(j.can_write);showDoc(j.doc)}}catch(_){}
   try{
     const r=await fetch(TOKEN,{credentials:'same-origin'});const d=await r.json();
     if(!d.token){setStatus(d.error||'Live video is not configured. You can still use the whiteboard.');return}
@@ -26396,7 +26454,7 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     room.on(LK.RoomEvent.TrackSubscribed,(track)=>attach(track));
     room.on(LK.RoomEvent.LocalTrackPublished,(pub)=>attach(pub.track));
     room.on(LK.RoomEvent.TrackUnsubscribed,(track)=>{shown.delete(track.sid);track.detach().forEach(el=>el.remove())});
-    room.on(LK.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)drawStroke(o.s);if(o.c){clearBoard();lineY=40}if(o.t)drawText(o.t,o.x,o.y);if(o.g&&(o.g.u==='*'||o.g.u===ME))setWrite(o.g.on)}catch(_){}});
+    room.on(LK.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)drawStroke(o.s);if(o.c){clearBoard();lineY=40}if(o.t)drawText(o.t,o.x,o.y);if(o.g&&(o.g.u==='*'||o.g.u===ME))setWrite(o.g.on);if(o.doc!==undefined)showDoc(o.doc)}catch(_){}});
     room.on(LK.RoomEvent.Disconnected,()=>setStatus('Disconnected. Reload the page to rejoin.'));
     await room.connect(d.url,d.token);
     setStatus('Connected.');
@@ -26408,7 +26466,7 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
 })();
 </script>''',
                     token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid), kind=kind, rid=rid,
-                    back_url=back_url, is_teacher=is_teacher, me_id=_ac_uid(), teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
+                    back_url=back_url, is_teacher=is_teacher, me_id=_ac_uid(), doc_url=url_for("ac_room_doc", kind=kind, rid=rid), teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
 
 
 @app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
@@ -26425,7 +26483,13 @@ def ac_board(kind, rid):
         strokes = [{"points": r.get("points") or []} for r in reversed(rows[:cut]) if r.get("kind") == "stroke"]
         texts = [t for r in reversed(rows[:cut]) if r.get("kind") == "text" for t in (r.get("points") or [])]
         can_write = is_teacher or _ac_can_write(key, _ac_uid())
-        return jsonify({"strokes": strokes, "texts": texts, "can_write": can_write})
+        doc = None
+        doc_ev = next((r for r in rows if r.get("kind") == "doc"), None)  # newest first
+        if doc_ev and doc_ev.get("points"):
+            p0 = doc_ev["points"][0]
+            doc = {"id": str(doc_ev.get("id")), "title": p0.get("title") or "Document", "mime": p0.get("mime") or "",
+                   "url": url_for("ac_room_doc_file", kind=kind, rid=rid, eid=str(doc_ev.get("id")))}
+        return jsonify({"strokes": strokes, "texts": texts, "can_write": can_write, "doc": doc})
     data = request.get_json(silent=True) or {}
     action = data.get("kind")
     if action == "grant":
@@ -26460,6 +26524,10 @@ def ac_board(kind, rid):
                 return jsonify({"error": "Invalid stroke."}), 400
             clean_pts.append([round(min(max(x, 0.0), 800.0), 1), round(min(max(y, 0.0), 420.0), 1)])
         row = {"room_key": key, "author_id": _ac_uid(), "kind": "stroke", "points": clean_pts}
+    elif action == "doc_close":
+        if not is_teacher:
+            return jsonify({"error": "Only the teacher can close the document."}), 403
+        row = {"room_key": key, "author_id": _ac_uid(), "kind": "doc", "points": []}
     elif action == "text":
         # One line of what the teacher said, written on the board at x,y. Stored with the same board events as strokes.
         txt = clean(data.get("text"))[:300]
@@ -26497,6 +26565,58 @@ def ac_live_now():
 <div class="hero"><h2>Teachers live now</h2><p>Open live classes. Anyone signed in can join while the teacher is live.</p></div>
 {% for x in rows %}<div class="card"><strong>{{ x.title or 'Live class' }}</strong><p class="small">{{ x.teacher_name or 'Teacher' }}</p><a class="btn" href="{{ url_for('ac_room', kind='public', rid=x.teacher_user_id) }}">Join live class</a></div>
 {% else %}<div class="card"><p>No teacher is live right now. Check back soon, or <a href="{{ url_for('ac_classes') }}">find a group class</a>.</p></div>{% endfor %}''', rows=rows)
+
+
+@app.route("/academic/room/<kind>/<rid>/doc", methods=["POST"])
+@login_required
+def ac_room_doc(kind, rid):
+    """Teacher puts a PDF or picture on the room screen. Everyone allowed in the room sees it."""
+    obj, is_teacher = _ac_room_access(kind, rid)
+    if not obj or not is_teacher:
+        return jsonify({"error": "Only the teacher can show a document."}), 403
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "Choose a PDF or picture to show."}), 400
+    title = clean(request.form.get("title"))[:160] or f.filename[:160]
+    info, err = upload_storage(f, folder="academic-room-docs", public=False, max_mb=AC_SCREEN_DOC_MB, allowed=AC_SCREEN_DOC_TYPES)
+    if err:
+        return jsonify({"error": "Not uploaded: " + str(err)[:200]}), 400
+    eid = str(uuid.uuid4())
+    row = {"id": eid, "room_key": _ac_board_key(kind, rid), "author_id": _ac_uid(), "kind": "doc",
+           "points": [{"title": title, "mime": info.get("mime_type") or "", "path": info["path"], "name": info.get("file_name") or f.filename}]}
+    _, ierr = db_insert("koja_academic_board_events", dict(row, created_at=utc_now()))
+    if ierr:
+        delete_storage(info["path"])
+        return jsonify({"error": "Could not save the document."}), 503
+    return jsonify({"ok": True, "id": eid, "title": title, "mime": info.get("mime_type") or "",
+                    "url": url_for("ac_room_doc_file", kind=kind, rid=rid, eid=eid)})
+
+
+@app.route("/academic/room/<kind>/<rid>/doc/<eid>")
+@login_required
+def ac_room_doc_file(kind, rid, eid):
+    """Shows the document on the screen. Only people allowed in the room can open it."""
+    obj, _ = _ac_room_access(kind, rid)
+    if not obj or not CV_ID_RE.match(eid or ""):
+        abort(403)
+    ev = first_row("koja_academic_board_events", {"id": eid})
+    if not ev or ev.get("room_key") != _ac_board_key(kind, rid) or ev.get("kind") != "doc" or not ev.get("points"):
+        abort(404)
+    p0 = ev["points"][0]
+    if not supabase_configured():
+        abort(404)
+    try:
+        r = _HTTP.get(sb_storage_url(p0["path"]), headers=sb_headers(), timeout=60, stream=True)
+    except Exception:
+        logger.exception("Academic room document download failed")
+        abort(404)
+    if not r.ok:
+        r.close()
+        abort(404)
+    mime = p0.get("mime") or "application/octet-stream"
+    return Response(stream_with_context(r.iter_content(65536)), mimetype=mime,
+                    headers={"Content-Disposition": 'inline; filename="%s"' % (secure_filename(p0.get("name") or "document") or "document"),
+                             "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.route("/academic/room/<kind>/<rid>/token")
