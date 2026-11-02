@@ -26309,14 +26309,12 @@ def ac_room(kind, rid):
 #ac-screen #ac-videos{position:absolute;inset:0;display:grid!important;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));grid-auto-rows:1fr;gap:4px;padding:4px;width:auto!important}
 #ac-screen #ac-videos video{width:100%!important;height:100%!important;max-height:none!important;object-fit:contain;background:#000;border-radius:10px}
 #ac-screen #ac-waiting{color:#ddd;display:flex;align-items:center;justify-content:center;height:100%;margin:0}
-.ac-live-badge{position:absolute;top:3%;right:2.5%;z-index:4;padding:.3em .8em;border-radius:6px;font-weight:800;letter-spacing:.08em;font-size:13px;background:#d62828;color:#fff}
-.ac-live-badge[hidden]{display:none}
 .ac-icon{padding:.35em .7em!important;font-size:16px!important;line-height:1}
-.ac-fs{position:absolute;right:2.5%;bottom:4%;z-index:4;background:rgba(0,0,0,.6);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:8px;padding:.45em .9em;font-size:13px;cursor:pointer}#ac-stage[data-mode=board] #ac-doc iframe{height:18vh!important}#ac-stage[data-mode=board] #ac-doc img{max-height:18vh!important;width:auto!important;margin:0 auto}#ac-stage[data-mode=board] #ac-doc-wrap{margin:0!important}</style>
-<div class="actions" id="ac-layout" style="margin:8px 0"><button class="btn secondary ac-icon" type="button" data-m="split" aria-label="Screen above board" title="Screen above board">&#x2630;</button><button class="btn secondary ac-icon" type="button" data-m="board" aria-label="Board big, screen in corner" title="Board big, screen in corner">&#x25AD;</button><button class="btn secondary ac-icon" type="button" data-m="screen" aria-label="Screen big, board in corner" title="Screen big, board in corner">&#x25A3;</button></div>
+#ac-stage[data-mode=board] #ac-doc iframe{height:18vh!important}#ac-stage[data-mode=board] #ac-doc img{max-height:18vh!important;width:auto!important;margin:0 auto}#ac-stage[data-mode=board] #ac-doc-wrap{margin:0!important}</style>
+<div class="actions" id="ac-layout" style="margin:8px 0"><button class="btn secondary ac-icon" type="button" id="ac-layout-btn" aria-label="Change layout" title="Layout">&#x21C4;</button></div>
 <div id="ac-stage" style="position:relative"><div id="ac-screenbox">
 <div id="ac-doc-wrap" hidden style="margin:12px 0"><p class="small" id="ac-doc-title" style="margin:0 0 6px"></p><div id="ac-doc" style="background:#fff;border-radius:12px;overflow:hidden;min-height:360px"></div></div>
-<div id="ac-screen" class="ac-news" style="margin:12px 0;max-width:100%"><div id="ac-videos"><p id="ac-waiting">Waiting for the teacher's video…</p></div><span class="ac-live-badge" id="ac-live-badge" hidden>&#9679; LIVE</span><button class="ac-fs" type="button" id="ac-fs" aria-label="Full screen" title="Full screen">&#x26F6;</button></div>
+<div id="ac-screen" class="ac-news" style="margin:12px 0;max-width:100%"><div id="ac-videos"><p id="ac-waiting">Waiting for the teacher's video…</p></div></div>
 </div><h3 id="ac-board-h">Whiteboard</h3>
 {% if not is_teacher %}<p class="small" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<div id="ac-boardbox" style="background:#fff;border-radius:12px;overflow:hidden"><canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas></div></div>
 <h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
@@ -26337,8 +26335,12 @@ const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }},DOC_URL={{ doc_ur
 let canDraw=IS_TEACHER;
 const CSRF_T={{ csrf_token()|tojson }};
 const stageEl=document.getElementById('ac-stage'),screenbox=document.getElementById('ac-screenbox'),boardbox=document.getElementById('ac-boardbox'),boardH=document.getElementById('ac-board-h'),screenEl=document.getElementById('ac-screen'),docEl=document.getElementById('ac-doc');
+const LAYOUTS=['split','board','screen'];
+const LAYOUT_NAMES={split:'Stacked: screen above board',board:'Board big, screen in corner',screen:'Screen big, board in corner'};
+let docShown=false;
 function setLayout(m){
   if(!stageEl||!boardbox||!screenbox)return;
+  if(LAYOUTS.indexOf(m)<0)m='split';
   stageEl.dataset.mode=m;
   if(m==='screen'){
     if(boardbox.parentNode!==screenbox)screenbox.appendChild(boardbox);
@@ -26350,15 +26352,22 @@ function setLayout(m){
     if(m==='board'){screenbox.classList.add('ac-corner');screenEl.style.minHeight='0';docEl.style.minHeight='0'}
     else{screenbox.classList.remove('ac-corner');screenEl.style.minHeight='';docEl.style.minHeight=''}
   }
-  document.querySelectorAll('#ac-layout button').forEach(b=>{b.classList.toggle('secondary',b.dataset.m!==m)});
-  try{localStorage.setItem('koja_ac_layout',m)}catch(e){}
+  const lb=document.getElementById('ac-layout-btn');if(lb)lb.title='Layout: '+LAYOUT_NAMES[m]+' (tap to change)';
 }
-document.querySelectorAll('#ac-layout button').forEach(b=>{b.onclick=()=>setLayout(b.dataset.m)});
-(function(){let m='split';try{m=localStorage.getItem('koja_ac_layout')||'split'}catch(e){}if(['split','board','screen'].indexOf(m)<0)m='split';setLayout(m)})();
-(function(){const fsb=document.getElementById('ac-fs'),scr=document.getElementById('ac-screen');
-  if(fsb&&scr)fsb.onclick=()=>{try{if(document.fullscreenElement)document.exitFullscreen();else scr.requestFullscreen()}catch(e){}};})();
+// Layout follows the content unless this viewer chose one: a shared document puts the screen big, otherwise stacked.
+function autoLayout(){
+  let pref=null;try{pref=localStorage.getItem('koja_ac_layout')}catch(e){}
+  if(pref&&LAYOUTS.indexOf(pref)>=0){setLayout(pref);return}
+  setLayout(docShown?'screen':'split');
+}
+(function(){const lb=document.getElementById('ac-layout-btn');if(!lb)return;
+  lb.onclick=()=>{const cur=stageEl?stageEl.dataset.mode:'split';const next=LAYOUTS[(LAYOUTS.indexOf(cur)+1)%LAYOUTS.length];setLayout(next);try{localStorage.setItem('koja_ac_layout',next)}catch(e){}};
+})();
+autoLayout();
 function showDoc(d){
   const wrap=document.getElementById('ac-doc-wrap'),box=document.getElementById('ac-doc'),tt=document.getElementById('ac-doc-title');
+  docShown=!!(d&&d.url);
+  if(typeof autoLayout==='function')autoLayout();
   if(!wrap||!box)return;
   box.innerHTML='';
   if(!d||!d.url){wrap.hidden=true;return}
@@ -26467,7 +26476,6 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     room.on(LK.RoomEvent.Disconnected,()=>setStatus('Disconnected. Reload the page to rejoin.'));
     await room.connect(d.url,d.token);
     setStatus('Connected.');
-    const lbg=document.getElementById('ac-live-badge');if(lbg)lbg.hidden=false;
     room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>attach(x.track)));
     {% if is_teacher or kind != 'public' %}try{await room.localParticipant.enableCameraAndMicrophone()}
     catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}{% else %}setStatus('Connected. You are watching this live class.');{% endif %}
