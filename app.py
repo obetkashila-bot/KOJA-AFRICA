@@ -23479,7 +23479,7 @@ def ac_teacher_profile(tid):
 <label>Notes</label><textarea name="notes" maxlength="1000"></textarea>
 <label>Pay now (optional)</label><select name="network"><option value="">Pay later from My lessons</option>{% for o in academic_pay_networks() %}<option value="{{ o.value }}">{{ o.country }} · {{ o.label }}</option>{% endfor %}</select>
 <label>Mobile-money number</label><input name="phone" inputmode="tel" placeholder="e.g. 0971234567"><button class="btn">Book lesson</button></form></div>{% endif %}
-<div class="card"><h3>Group classes</h3>{% if t_public_live %}<p><strong>● This teacher is live now.</strong></p><a class="btn" href="{{ url_for('ac_room', kind='public', rid=t.user_id) }}">Join live now</a>{% endif %}{% for c in t_classes %}<p><strong>{{ c.title }}</strong> · {{ c.subject }} · {{ c.scheduled_date }} {{ c.start_time }} · {{ money(c.price_per_student, c.currency or 'ZMW') }}{% if c._live %} <span class="small"><strong>● LIVE NOW</strong></span>{% endif %}</p><a class="btn{% if not c._live %} secondary{% endif %}" href="{{ url_for('ac_class', cid=c.id) }}">{% if c._live %}Join live class{% else %}Join class{% endif %}</a>{% else %}<p>No group classes scheduled.</p>{% endfor %}<p class="small"><a href="{{ url_for('ac_classes') }}">Find all group classes</a></p></div>
+<div class="card"><h3>Group classes</h3>{% if t_public_live %}<p><strong>● This teacher is live now.</strong></p><a class="btn" href="{{ url_for('ac_room', kind='public', rid=t.user_id) }}">Join live now</a>{% endif %}{% for c in t_classes %}<p><strong>{{ c.title }}</strong> · {{ c.subject }} · {{ c.scheduled_date }} {{ c.start_time }} · {{ money(c.price_per_student, c.currency or 'ZMW') }}{% if c._live %} <span class="small"><strong>● LIVE NOW</strong></span>{% endif %}</p><a class="btn{% if not c._live %} secondary{% endif %}" href="{{ url_for('ac_class', cid=c.id) }}">{% if c._live %}Join live class{% else %}Join class{% endif %}</a>{% else %}{% if me == t.user_id|string %}<p>You have no group classes yet. Create one so students can join.</p><a class="btn" href="{{ url_for('ac_class_new') }}">+ Create a group class</a> <a class="btn secondary" href="{{ url_for('ac_go_live') }}">● Go live for everyone</a>{% else %}<p>No group classes scheduled yet.</p>{% endif %}{% endfor %}<p class="small"><a href="{{ url_for('ac_classes') }}">Find all group classes</a></p></div>
 <div class="card"><h3>Reviews</h3>{% for r in reviews %}<p>{{ '⭐' * (r.rating|int) }} — {{ r.comment or '' }}</p>{% else %}<p>No reviews yet.</p>{% endfor %}</div>''',
                     t=t, reviews=reviews, me=_ac_uid(), t_classes=t_classes, t_public_live=t_public_live)
 
@@ -26245,6 +26245,19 @@ def _ac_board_key(kind, rid):
     return "%s:%s" % (kind, rid)
 
 
+def _ac_can_write(key, uid):
+    """Students write only when the teacher allowed them: a grant for this person, else a grant for everyone. Newest grant wins."""
+    rows = _ac_rows("koja_academic_board_events", {"room_key": key, "kind": "grant"}, order="created_at.desc", limit=500)
+    star = None
+    for r in rows:
+        for p in (r.get("points") or []):
+            if str(p.get("u")) == str(uid):
+                return bool(p.get("on"))
+            if str(p.get("u")) == "*" and star is None:
+                star = bool(p.get("on"))
+    return bool(star)
+
+
 AC_LIVE_TABLE = "koja_academic_live"
 AC_LIVE_WINDOW_SECONDS = 180  # a teacher counts as live for 3 minutes after their last heartbeat
 
@@ -26287,14 +26300,14 @@ def ac_room(kind, rid):
         back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
     return _ac_page("Live room", r'''
 <div class="card"><h2>Live room</h2><p id="ac-status">Connecting…</p>
-<div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button></div>
-<div id="ac-videos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:12px 0"></div>
+<div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button>{% if is_teacher %}<button class="btn" type="button" id="ac-share">Share screen</button>{% endif %}</div>
+<div id="ac-screen" style="background:#000;border-radius:12px;overflow:hidden;margin:12px 0;min-height:240px;display:flex;align-items:center;justify-content:center"><div id="ac-videos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;width:100%"><p id="ac-waiting" style="color:#ddd;padding:24px;text-align:center;margin:0">Waiting for the teacher's video…</p></div></div>
 <h3>Whiteboard</h3>
-<canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
+{% if not is_teacher %}<p class="small" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
 <h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
 <h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}
 {% if kind != 'public' %}<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
-{% if is_teacher %}<div class="actions"><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div>{% endif %}</div>
+{% if is_teacher %}<div class="actions"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone. Works in Chrome and Edge.</p><div class="card" style="margin-top:10px"><h3>Who can write on the board</h3><div class="actions"><button class="btn secondary" type="button" id="ac-allow-all">Allow everyone to write</button></div><div id="ac-people" class="small"></div></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <script>
@@ -26304,24 +26317,74 @@ const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');
 cx.lineWidth=2;cx.lineCap='round';cx.strokeStyle='#111';
 const box=document.getElementById('ac-videos');
 const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }};
+const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }};
+let canDraw=IS_TEACHER;
+function setWrite(on){canDraw=IS_TEACHER||!!on;cv.style.cursor=canDraw?'crosshair':'not-allowed';const pm=document.getElementById('ac-perm');if(pm&&!IS_TEACHER)pm.textContent=canDraw?'You can write on the board now.':'Only the teacher writes on the board. Ask your teacher to let you write.'}
 let room=null;
 function setStatus(t){st.textContent=t}
+function drawText(t,x,y){cx.font='22px sans-serif';cx.fillStyle='#111';cx.fillText(t,x,y);cx.fillStyle='#111'}
+let lineY=40;
+function wrapLines(text){const words=text.split(/\s+/),out=[];let line='';cx.font='22px sans-serif';for(const w of words){const test=line?line+' '+w:w;if(cx.measureText(test).width>740&&line){out.push(line);line=w}else line=test}if(line)out.push(line);return out}
 function drawStroke(pts){if(!pts||pts.length<2)return;cx.beginPath();cx.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)cx.lineTo(pts[i][0],pts[i][1]);cx.stroke()}
 function clearBoard(){cx.clearRect(0,0,cv.width,cv.height)}
 function send(o){if(!room||room.state!=='connected')return;try{room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(o)),{reliable:true})}catch(_){}}
 function save(body){return fetch(BOARD,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.ok).catch(()=>false)}
 function pos(e){const q=cv.getBoundingClientRect();return[(e.clientX-q.left)*cv.width/q.width,(e.clientY-q.top)*cv.height/q.height]}
 let drawing=false,last=null,cur=null;
-cv.onpointerdown=e=>{drawing=true;last=pos(e);cur=[last];try{cv.setPointerCapture(e.pointerId)}catch(_){}};
+cv.onpointerdown=e=>{if(!canDraw)return;drawing=true;last=pos(e);cur=[last];try{cv.setPointerCapture(e.pointerId)}catch(_){}};
 cv.onpointermove=e=>{if(!drawing)return;const p=pos(e);drawStroke([last,p]);send({s:[last,p]});cur.push(p);last=p;
   if(cur.length>=300){save({kind:'stroke',points:cur});cur=[p]}};
 function endStroke(){if(!drawing)return;drawing=false;if(cur&&cur.length>1)save({kind:'stroke',points:cur});cur=null;last=null}
 cv.onpointerup=endStroke;cv.onpointercancel=endStroke;
 const clr=document.getElementById('ac-clear');
 if(clr)clr.onclick=()=>{clearBoard();send({c:1});save({kind:'clear'})};
+const shb=document.getElementById('ac-share');let sharing=false;
+if(shb)shb.onclick=async()=>{try{if(!room)return;sharing=!sharing;await room.localParticipant.setScreenShareEnabled(sharing);shb.textContent=sharing?'Stop sharing':'Share screen'}catch(e){sharing=false;setStatus('Screen sharing is blocked or not supported on this device.')}};
+if(IS_TEACHER){
+  const perm={};let allOn=false;
+  const allBtn=document.getElementById('ac-allow-all');
+  if(allBtn)allBtn.onclick=()=>{allOn=!allOn;allBtn.textContent=allOn?'Stop letting everyone write':'Allow everyone to write';send({g:{u:'*',on:allOn}});save({kind:'grant',u:'*',on:allOn})};
+  function people(){
+    const box=document.getElementById('ac-people');if(!box||!room)return;
+    box.innerHTML='';
+    room.remoteParticipants.forEach(p=>{
+      const row=document.createElement('p');const on=!!perm[p.identity];
+      const nm=document.createElement('span');nm.textContent=(p.name||'Student')+' ';
+      const b=document.createElement('button');b.className='btn secondary';b.type='button';b.textContent=on?'Stop writing':'Allow writing';
+      b.onclick=()=>{perm[p.identity]=!on;send({g:{u:p.identity,on:!on}});save({kind:'grant',u:p.identity,on:!on});people()};
+      row.appendChild(nm);row.appendChild(b);box.appendChild(row);
+    });
+    if(!room.remoteParticipants.size)box.textContent='No students in the room yet.';
+  }
+  setInterval(people,4000);
+}
+function writeLine(text){
+  if(!text)return;
+  for(const line of wrapLines(text)){
+    if(lineY>400){clearBoard();send({c:1});save({kind:'clear'});lineY=40}
+    drawText(line,40,lineY);send({t:line,x:40,y:lineY});save({kind:'text',x:40,y:lineY,text:line});lineY+=30;
+  }
+}
+const lb=document.getElementById('ac-listen'),lst=document.getElementById('ac-listen-status');
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(lb){
+  if(!SR){lb.disabled=true;if(lst)lst.textContent='Speech writing needs Chrome or Edge. Type on the board by drawing instead.'}
+  else{
+    let rec=null,on=false;
+    const make=()=>{const r=new SR();r.continuous=true;r.interimResults=false;r.lang='en-US';
+      r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal)writeLine(e.results[i][0].transcript.trim())}};
+      r.onerror=e=>{if(lst)lst.textContent='Speech stopped: '+(e.error||'error')+'. Press the button to start again.';on=false;lb.textContent='● Write what I say'};
+      r.onend=()=>{if(on){try{r.start()}catch(_){}}};return r};
+    lb.onclick=()=>{
+      if(on){on=false;try{rec&&rec.stop()}catch(_){}lb.textContent='● Write what I say';if(lst)lst.textContent='Stopped. Press the button to write again.';return}
+      try{rec=make();rec.start();on=true;lb.textContent='■ Stop writing';if(lst)lst.textContent='Listening… speak clearly. Each finished sentence appears on the board.'}
+      catch(e){if(lst)lst.textContent='Could not start listening. Allow the microphone and try again.'}
+    };
+  }
+}
 document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.disconnect()}catch(_){}location.href=BACK};
 (async function(){
-  try{const h=await fetch(BOARD,{credentials:'same-origin'});if(h.ok){const j=await h.json();(j.strokes||[]).forEach(s=>drawStroke(s.points))}}catch(_){}
+  try{const h=await fetch(BOARD,{credentials:'same-origin'});if(h.ok){const j=await h.json();(j.strokes||[]).forEach(s=>drawStroke(s.points));(j.texts||[]).forEach(t=>{drawText(t.t,t.x,t.y);lineY=Math.max(lineY,t.y+30)});setWrite(j.can_write)}}catch(_){}
   try{
     const r=await fetch(TOKEN,{credentials:'same-origin'});const d=await r.json();
     if(!d.token){setStatus(d.error||'Live video is not configured. You can still use the whiteboard.');return}
@@ -26329,10 +26392,11 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     if(!LK){setStatus('Video library did not load. Check your connection and reload.');return}
     room=new LK.Room();
     const shown=new Set();
-    function attach(track){if(!track||shown.has(track.sid)||(track.kind!=='video'&&track.kind!=='audio'))return;shown.add(track.sid);const el=track.attach();el.style.width='100%';box.appendChild(el)}
+    function attach(track){if(!track||shown.has(track.sid)||(track.kind!=='video'&&track.kind!=='audio'))return;shown.add(track.sid);const el=track.attach();el.style.width='100%';if(track.kind==='video'){el.style.maxHeight='70vh';el.style.background='#000';el.style.objectFit='contain';el.style.borderRadius='12px';const w=document.getElementById('ac-waiting');if(w)w.remove()}box.appendChild(el)}
     room.on(LK.RoomEvent.TrackSubscribed,(track)=>attach(track));
+    room.on(LK.RoomEvent.LocalTrackPublished,(pub)=>attach(pub.track));
     room.on(LK.RoomEvent.TrackUnsubscribed,(track)=>{shown.delete(track.sid);track.detach().forEach(el=>el.remove())});
-    room.on(LK.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)drawStroke(o.s);if(o.c)clearBoard()}catch(_){}});
+    room.on(LK.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)drawStroke(o.s);if(o.c){clearBoard();lineY=40}if(o.t)drawText(o.t,o.x,o.y);if(o.g&&(o.g.u==='*'||o.g.u===ME))setWrite(o.g.on)}catch(_){}});
     room.on(LK.RoomEvent.Disconnected,()=>setStatus('Disconnected. Reload the page to rejoin.'));
     await room.connect(d.url,d.token);
     setStatus('Connected.');
@@ -26344,7 +26408,7 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
 })();
 </script>''',
                     token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid), kind=kind, rid=rid,
-                    back_url=back_url, is_teacher=is_teacher, teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
+                    back_url=back_url, is_teacher=is_teacher, me_id=_ac_uid(), teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
 
 
 @app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
@@ -26359,11 +26423,25 @@ def ac_board(kind, rid):
         rows = _ac_rows("koja_academic_board_events", {"room_key": key}, order="created_at.desc", limit=2000)
         cut = next((i for i, r in enumerate(rows) if r.get("kind") == "clear"), len(rows))
         strokes = [{"points": r.get("points") or []} for r in reversed(rows[:cut]) if r.get("kind") == "stroke"]
-        return jsonify({"strokes": strokes})
+        texts = [t for r in reversed(rows[:cut]) if r.get("kind") == "text" for t in (r.get("points") or [])]
+        can_write = is_teacher or _ac_can_write(key, _ac_uid())
+        return jsonify({"strokes": strokes, "texts": texts, "can_write": can_write})
     data = request.get_json(silent=True) or {}
     action = data.get("kind")
-    if kind == "public" and not is_teacher:
-        return jsonify({"error": "Only the teacher writes on a public room."}), 403
+    if action == "grant":
+        # Only the teacher gives permission: one person (their user id) or everyone ("*").
+        if not is_teacher:
+            return jsonify({"error": "Only the teacher can give writing permission."}), 403
+        target = clean(data.get("u"))
+        if target != "*" and not CV_ID_RE.match(target or ""):
+            return jsonify({"error": "Choose a participant or everyone."}), 400
+        grant_row = {"room_key": key, "author_id": _ac_uid(), "kind": "grant", "points": [{"u": target, "on": bool(data.get("on"))}]}
+        _, err = db_insert("koja_academic_board_events", dict(grant_row, id=str(uuid.uuid4()), created_at=utc_now()))
+        if err:
+            return jsonify({"error": "Could not save the permission."}), 503
+        return jsonify({"ok": True})
+    if not is_teacher and not _ac_can_write(key, _ac_uid()):
+        return jsonify({"error": "Ask the teacher to let you write on the board."}), 403
     if action == "clear":
         if not is_teacher:
             return jsonify({"error": "Only the teacher can clear the board."}), 403
@@ -26382,6 +26460,16 @@ def ac_board(kind, rid):
                 return jsonify({"error": "Invalid stroke."}), 400
             clean_pts.append([round(min(max(x, 0.0), 800.0), 1), round(min(max(y, 0.0), 420.0), 1)])
         row = {"room_key": key, "author_id": _ac_uid(), "kind": "stroke", "points": clean_pts}
+    elif action == "text":
+        # One line of what the teacher said, written on the board at x,y. Stored with the same board events as strokes.
+        txt = clean(data.get("text"))[:300]
+        try:
+            x, y = min(max(float(data.get("x", 40)), 0.0), 800.0), min(max(float(data.get("y", 40)), 0.0), 420.0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid text."}), 400
+        if not txt:
+            return jsonify({"error": "Nothing to write."}), 400
+        row = {"room_key": key, "author_id": _ac_uid(), "kind": "text", "points": [{"x": round(x, 1), "y": round(y, 1), "t": txt}]}
     else:
         return jsonify({"error": "Unknown board action."}), 400
     _, err = db_insert("koja_academic_board_events", dict(row, id=str(uuid.uuid4()), created_at=utc_now()))
