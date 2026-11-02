@@ -22501,83 +22501,149 @@ SERVICE_CATALOG = [
 ]
 
 
-# What to send, per service. Items marked "official" come from the sources listed; the rest are what KOJA needs from you.
-# Read on 2 Nov 2026. Fees and rules change, so confirm with the source before you pay or submit.
+# What to tell us, per service. Official rules are noted with their sources.
+# Read on 2 Nov 2026. Fees and rules change, so we check them before anything is sent or paid.
 SERVICE_REQUIREMENTS = {
     "university_application": {
         "items": [
-            "National Registration Card (NRC) or passport",
-            "Your O-Level and/or A-Level results or certificates. Entry rules differ by course; most programmes need credits in five O-Level subjects, including English",
-            "The application form, filled in online at applications.unza.zm (for UNZA). Tell us the university if it is not UNZA",
-            "Application fee (official, UNZA): K150 for Zambians or USD 60 for non-Zambians. Pay into the university account shown on its page, and keep the bank deposit slip. The slip must show your full name and the university's name",
-            "Submit the deposit slip with your application. A paper application also needs the official receipt issued by the university",
+            "Your full name, and your NRC number (or passport number if you are not Zambian)",
+            "Your school results: the school, the year, and each subject with its grade",
+            "The university and course you want",
+            "Whether you are Zambian. The application fee depends on it: K150 for Zambians, USD 60 for non-Zambians",
+            "Your phone number and email",
         ],
-        "note": "These are UNZA's rules, checked on its 2026 admission advert. Each university sets its own, and the closing date is set by the university. The advert we read does not show the 2026 closing date, so confirm it with UNZA.",
+        "note": "These are UNZA's rules from its 2026 admission advert. If you choose UNZA, the application is online at applications.unza.zm. Each university sets its own rules and closing date, so we check them with the university you choose.",
         "sources": [("UNZA 2026 admission advert", "https://unza.zm/sites/default/files/article_files/2025-01/2026%20ADMISSION%20ADVERT.pdf")],
     },
     "bursary_application": {
         "items": [
-            "Tell us which bursary or loan you want. Official list: HELSB (helsb.gov.zm)",
-            "Proof of admission or enrolment from your university",
-            "National Registration Card (NRC)",
-            "Any other document the bursary asks for, such as proof of income or guardian details. We could not confirm the full list from the official pages, so check it with HELSB before you send your documents",
+            "Your full name, NRC number, and your university and course",
+            "The bursary or loan you want, if you know its name",
+            "Your phone number and email",
         ],
-        "note": "Bursary rules differ by funder and by year. KOJA helps you prepare and send the application. HELSB decides who is awarded.",
+        "note": "Bursary rules differ by funder and year. We check the list with HELSB before we send your application. HELSB decides who is awarded.",
         "sources": [("HELSB, how to apply", "https://helsb.gov.zm/how-to-apply")],
     },
     "tax_number": {
         "items": [
-            "A copy of your National Registration Card (NRC). The community guide lists this for individuals",
-            "Your NRC and passport number, if you have a passport",
-            "Apply online at zra.org.zm (Register for a TPIN), or in the TaxOnApp app, or in person at a Domestic Taxes Office on Form TPIN 1 with the attachments",
-            "KOJA service fee: K50, paid from your request page once you send it. This covers our help with the registration",
-            "ZRA's own fee, if it charges one, is separate. The guide we read did not give the amount, so confirm it with ZRA: +260 211 382831 or +260 211 382819",
-            "Your TPIN is issued after ZRA checks your documents, so the time depends on that check",
+            "Your full name and NRC number",
+            "Your passport number, if you have one",
+            "Your phone number and email",
+            "KOJA service fee: K50, paid from your request page once you send the request. This covers our help with the registration",
+            "ZRA's own fee, if it charges one, is separate. ZRA: +260 211 382831 or +260 211 382819",
         ],
-        "note": "The number is issued by the Zambia Revenue Authority, not by KOJA. The steps come from a community guide (edited November 2025), so confirm them with ZRA before you apply.",
-        "sources": [("TPIN steps, Wikiprocedure (community guide, confirm with ZRA)", "https://wikiprocedure.com/index.php/Zambia_-_Obtain_a_Taxpayer_Identification_Number_(TPIN)"), ("Zambia Revenue Authority", "https://zra.org.zm")],
+        "note": "The number is issued by the Zambia Revenue Authority, not by KOJA. The steps come from a community guide (edited November 2025), which we check with ZRA before we apply.",
+        "sources": [("TPIN steps, Wikiprocedure (community guide, we confirm with ZRA)", "https://wikiprocedure.com/index.php/Zambia_-_Obtain_a_Taxpayer_Identification_Number_(TPIN)"), ("Zambia Revenue Authority", "https://zra.org.zm")],
     },
     "result_verification": {
         "items": [
-            "A photocopy of the statement or certificate. A statement is accepted only for a year when no certificate has been issued",
-            "Fee (official, ECZ): K100 per result for Grade 7, Grade 9, Grade 12, GCE and TED/TEVET. Pay at an ECZ service centre",
+            "Your full name",
+            "The school or college, the exam (Grade 12, GCE or TED/TEVET, for example), and the year",
+            "Your index or registration number, and the exam centre",
+            "Fee: K100 per result, paid at an ECZ service centre",
             "ECZ service centres: Lusaka, Kitwe, Mpika, Solwezi, Kasama, Chipata, Mongu, Livingstone, Mansa and Kabwe",
-            "Payment and form questions: +260 211 252544 or +260 211 252930, info@exams-council.org.zm",
         ],
         "note": "KOJA does not verify results itself. ECZ does. Schools and employers that want to check results online must register with ECZ for the online verification system, and KOJA cannot do that for them.",
         "sources": [("ECZ services (2024)", "https://www.exams-council.org.zm/wp-content/uploads/2024/07/ECZ-SERVICES.pdf")],
     },
     "forms_and_typing": {
-        "items": ["The form or its link", "The information to enter, and any documents to upload"],
+        "items": ["The name of the form, or its link", "The information to enter into it"],
         "note": "",
         "sources": [],
     },
     "printing_scanning": {
-        "items": ["The file (PDF, Word or image), or a clear description", "How many copies, and the paper size if you know it"],
+        "items": ["What to print, and how many copies", "The paper size, if you know it"],
         "note": "",
         "sources": [],
     },
     "pc_maintenance": {
-        "items": ["Make and model", "What happens, and any error message (a photo helps)", "Whether you have a backup of your files"],
+        "items": ["Make and model", "What happens, and any error message you see", "Whether your files are backed up"],
         "note": "",
         "sources": [],
     },
     "phone_repair": {
-        "items": ["Make and model", "What is wrong", "Whether you have backed up your data"],
+        "items": ["Make and model", "What is wrong", "Whether your data is backed up"],
         "note": "Flashing can erase all data on the phone.",
         "sources": [],
     },
     "job_application": {
-        "items": ["Your current CV, or your work history", "The job advert or link"],
+        "items": ["Your work history and skills", "The job you want"],
         "note": "",
         "sources": [],
     },
     "help": {
-        "items": ["Your question", "Any document or screenshot that helps us understand it"],
+        "items": ["Your question"],
         "note": "",
         "sources": [],
     },
 }
+
+
+# Files requested per service: each has its own label and requirement. Four slots per service.
+SERVICE_UPLOADS = {
+    "university_application": [
+        {"key": "nrc", "label": "NRC or passport", "help": "Photo or scan of your NRC (front and back), or the photo page of your passport", "required": True},
+        {"key": "results", "label": "Your results or certificate", "help": "Photo or scan of your Grade 12 or GCE results slip or certificate", "required": True},
+        {"key": "photo", "label": "Passport-size photo", "help": "A recent photo of your face, plain background", "required": False},
+        {"key": "extra", "label": "Other results or transcript (optional)", "help": "Any other results or transcript you have", "required": False}
+    ],
+    "bursary_application": [
+        {"key": "nrc", "label": "NRC", "help": "Photo or scan of your NRC (front and back)", "required": True},
+        {"key": "admission", "label": "Admission or enrolment letter", "help": "Letter from your university showing your admission or enrolment", "required": True},
+        {"key": "photo", "label": "Passport-size photo (optional)", "help": "A recent photo of your face, plain background", "required": False},
+        {"key": "income", "label": "Proof of income or guardian letter (optional)", "help": "Only if the bursary asks for it", "required": False}
+    ],
+    "tax_number": [
+        {"key": "nrc", "label": "NRC, front and back", "help": "Photo or scan of both sides of your NRC", "required": True},
+        {"key": "passport", "label": "Passport photo page (optional)", "help": "Only if you have a passport", "required": False},
+        {"key": "photo", "label": "Passport-size photo (optional)", "help": "A recent photo of your face, plain background", "required": False},
+        {"key": "other", "label": "Any other document (optional)", "help": "Anything else that helps the registration", "required": False}
+    ],
+    "result_verification": [
+        {"key": "slip", "label": "Result slip or statement", "help": "Photo or scan of the statement. A statement is accepted only when no certificate was issued for that year", "required": True},
+        {"key": "certificate", "label": "Certificate, if one was issued (optional)", "help": "Photo or scan of the certificate", "required": False},
+        {"key": "nrc", "label": "NRC", "help": "Photo or scan of your NRC (front and back)", "required": True},
+        {"key": "letter", "label": "Letter from the school (optional)", "help": "Only if the school has written to you about this result", "required": False}
+    ],
+    "forms_and_typing": [
+        {"key": "form", "label": "The form (optional)", "help": "The form itself, as a PDF or Word file", "required": False},
+        {"key": "support1", "label": "Supporting document 1 (optional)", "help": "Any document the form asks for", "required": False},
+        {"key": "support2", "label": "Supporting document 2 (optional)", "help": "Another document the form asks for", "required": False},
+        {"key": "other", "label": "Anything else (optional)", "help": "Anything else that helps", "required": False}
+    ],
+    "printing_scanning": [
+        {"key": "doc", "label": "Document to print or scan", "help": "The document as a PDF, Word file or photo", "required": True},
+        {"key": "doc2", "label": "Second document (optional)", "help": "Another document, if you have one", "required": False},
+        {"key": "pic", "label": "Picture (optional)", "help": "A picture to print or scan", "required": False},
+        {"key": "other", "label": "Anything else (optional)", "help": "Anything else that helps", "required": False}
+    ],
+    "pc_maintenance": [
+        {"key": "error", "label": "Screenshot of the error (optional)", "help": "A picture of the error message on the screen", "required": False},
+        {"key": "photo", "label": "Photo of the computer (optional)", "help": "A photo of the computer, or of its problem", "required": False},
+        {"key": "files", "label": "File to back up or recover (optional)", "help": "A file you want us to back up or recover", "required": False},
+        {"key": "other", "label": "Anything else (optional)", "help": "Anything else that helps", "required": False}
+    ],
+    "phone_repair": [
+        {"key": "proof", "label": "Proof the phone is yours", "help": "Receipt, box or warranty card for this phone", "required": True},
+        {"key": "screen", "label": "Screenshot of the problem (optional)", "help": "A picture of what the phone shows", "required": False},
+        {"key": "photo", "label": "Photo of the phone (optional)", "help": "A photo of the phone", "required": False},
+        {"key": "other", "label": "Anything else (optional)", "help": "Anything else that helps", "required": False}
+    ],
+    "job_application": [
+        {"key": "cv", "label": "Your CV", "help": "Your CV as a PDF, Word file or photo", "required": True},
+        {"key": "certs", "label": "Certificates (optional)", "help": "Certificates that support your CV", "required": False},
+        {"key": "photo", "label": "Passport-size photo (optional)", "help": "A recent photo of your face, plain background", "required": False},
+        {"key": "other", "label": "Anything else (optional)", "help": "Anything else that helps", "required": False}
+    ],
+    "help": [
+        {"key": "pic1", "label": "Picture (optional)", "help": "A picture that shows your question", "required": False},
+        {"key": "pic2", "label": "Second picture (optional)", "help": "Another picture, if you have one", "required": False},
+        {"key": "doc", "label": "Document (optional)", "help": "A document that helps us understand the question", "required": False},
+        {"key": "other", "label": "Anything else (optional)", "help": "Anything else that helps", "required": False}
+    ],
+}
+SERVICE_FILE_EXT = {"pdf", "jpg", "jpeg", "png", "webp", "doc", "docx"}
+SERVICE_FILES_TABLE = "koja_service_files"
 
 
 def _svc_item(key):
@@ -22589,6 +22655,15 @@ def _svc_owned(rid):
     if not row or str(row.get("user_id")) != _ac_uid():
         abort(404)
     return row
+
+
+def _svc_has_file(slot_key):
+    f = request.files.get("file_" + slot_key)
+    return bool(f and f.filename)
+
+
+def _svc_files(rid):
+    return _ac_rows(SERVICE_FILES_TABLE, {"request_id": rid}, order="created_at.asc", limit=50)
 
 
 def _svc_can_read(row):
@@ -22618,7 +22693,8 @@ def service_request_new(key):
     uid = _ac_uid()
     if request.method == "GET":
         return _ac_page("Request help: " + item["name"], SERVICE_FORM_TPL, item=item, consent=SERVICE_CONSENT,
-                        upload_ext=sorted(SERVICE_UPLOAD_EXT), req=SERVICE_REQUIREMENTS.get(key, {"items": [], "note": "", "sources": []}))
+                        upload_ext=sorted(SERVICE_UPLOAD_EXT), req=SERVICE_REQUIREMENTS.get(key, {"items": [], "note": "", "sources": []}),
+                        uploads=SERVICE_UPLOADS.get(key, []))
     if _rate_limited("svc:" + uid, 10, 3600):
         flash("You have sent many requests in the last hour. Please try again later.", "warning")
         return redirect(url_for("service_request_new", key=key))
@@ -22641,13 +22717,23 @@ def service_request_new(key):
         for p in problems:
             flash(p, "danger")
         return redirect(url_for("service_request_new", key=key))
+    slots = SERVICE_UPLOADS.get(key, [])
+    missing = [u["label"] for u in slots if u["required"] and not _svc_has_file(u["key"])]
+    if missing:
+        flash("Please add: " + ", ".join(missing) + ".", "danger")
+        return redirect(url_for("service_request_new", key=key))
+    chosen = []
+    for u in slots:
+        f = request.files.get("file_" + u["key"])
+        if f and f.filename:
+            fi, err = upload_storage(f, folder="help-desk-files", public=False, max_mb=8, allowed=SERVICE_FILE_EXT)
+            if err:
+                for _, prev in chosen:
+                    delete_storage(prev["path"])
+                flash("%s not uploaded: %s" % (u["label"], str(err)[:200]), "danger")
+                return redirect(url_for("service_request_new", key=key))
+            chosen.append((u, fi))
     info = None
-    f = request.files.get("document")
-    if f and f.filename:
-        info, err = upload_storage(f, folder="help-desk", public=False, max_mb=8, allowed=SERVICE_UPLOAD_EXT)
-        if err:
-            flash("Document not uploaded: " + str(err)[:200], "danger")
-            return redirect(url_for("service_request_new", key=key))
     rid = uuid.uuid4().hex
     now = utc_now()
     _, err = db_insert(SERVICE_REQUESTS_TABLE, {
@@ -22659,10 +22745,14 @@ def service_request_new(key):
         "attachment_mime": info["mime_type"] if info else None,
         "status": "new", "created_at": now, "updated_at": now})
     if err:
-        if info:
-            delete_storage(info["path"])
+        for _, prev in chosen:
+            delete_storage(prev["path"])
         flash("Could not save your request. Please try again.", "danger")
         return redirect(url_for("service_request_new", key=key))
+    for u, fi in chosen:
+        db_insert(SERVICE_FILES_TABLE, {"id": uuid.uuid4().hex, "request_id": rid, "slot": u["key"], "slot_label": u["label"],
+                                        "file_path": fi["path"], "file_name": fi["file_name"], "file_mime": fi["mime_type"],
+                                        "file_size": fi.get("file_size"), "created_at": now})
     log_activity("help-desk", "Help request sent: " + key, uid)
     _svc_alert_staff(item["name"], full_name, rid, "new")
     notify_user(uid, "Request received", "We received your request for %s and will reply here." % item["name"],
@@ -22684,7 +22774,7 @@ def service_request_detail(rid):
     row = _svc_owned(rid)
     msgs = [m for m in _ac_rows(SERVICE_MESSAGES_TABLE, {"request_id": rid}, order="created_at.asc", limit=500)
             if m.get("sender_role") != "note"]
-    return _ac_page(row.get("service_name") or "Help request", SERVICE_DETAIL_TPL, r=row, msgs=msgs, statuses=SERVICE_STATUSES, pay_enabled=bool(FLW_SECRET_KEY), networks=HELP_DESK_NETWORKS)
+    return _ac_page(row.get("service_name") or "Help request", SERVICE_DETAIL_TPL, r=row, msgs=msgs, statuses=SERVICE_STATUSES, pay_enabled=bool(FLW_SECRET_KEY), networks=HELP_DESK_NETWORKS, files=_svc_files(rid))
 
 
 @app.route("/help-desk/requests/<rid>/message", methods=["POST"])
@@ -22779,7 +22869,7 @@ def admin_service_request(rid):
     msgs = _ac_rows(SERVICE_MESSAGES_TABLE, {"request_id": rid}, order="created_at.asc", limit=500)
     return _ac_page("Help request", ADMIN_SERVICE_TPL, r=row, msgs=msgs, statuses=SERVICE_STATUSES,
                     item=_svc_item(row.get("service_key")) or {},
-                    wa_number=re.sub(r"\D", "", str(row.get("phone") or "")))
+                    wa_number=re.sub(r"\D", "", str(row.get("phone") or "")), files=_svc_files(rid))
 
 
 @app.route("/admin/help-desk/<rid>/update", methods=["POST"])
@@ -23085,6 +23175,18 @@ def _svc_stream(path, name, mime):
                     headers={"Content-Disposition": 'attachment; filename="%s"' % fname, "Cache-Control": "private, no-store"})
 
 
+@app.route("/help-desk/requests/<rid>/files/<fid>")
+@login_required
+def service_request_file_slot(rid, fid):
+    row = first_row(SERVICE_REQUESTS_TABLE, {"id": rid})
+    if not row or not _svc_can_read(row):
+        abort(404)
+    f = first_row(SERVICE_FILES_TABLE, {"id": fid})
+    if not f or str(f.get("request_id")) != str(rid):
+        abort(404)
+    return _svc_stream(f["file_path"], f.get("file_name"), f.get("file_mime"))
+
+
 @app.route("/help-desk/requests/<rid>/messages/<mid>/file")
 @login_required
 def service_message_file(rid, mid):
@@ -23119,17 +23221,18 @@ SERVICE_CATALOG_TPL = r"""<div class="hero"><h2>KOJA help desk</h2><p>Ask for he
 """
 
 SERVICE_FORM_TPL = r"""<div class="hero"><h2>{{ item.name }}</h2><p>{{ item.summary }}</p></div>
-<div class="card"><h3>What to send</h3>
+<div class="card"><h3>What to tell us</h3>
 <ul>{% for x in req['items'] %}<li>{{ x }}</li>{% endfor %}</ul>
 {% if req['note'] %}<p class="small">{{ req['note'] }}</p>{% endif %}
 {% if req['sources'] %}<p class="small">Official sources: {% for label, url in req['sources'] %}<a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
-<p class="small">Fees and deadlines change. Check them with the source above before you pay.</p></div>
+<p class="small">Fees and deadlines change. We check them before we send anything or take any payment.</p></div>
 <div class="card"><form method="post" enctype="multipart/form-data" action="{{ url_for('service_request_new', key=item.key) }}">{{ csrf }}
 <label>Full name</label><input name="full_name" maxlength="120" required>
 <label>Phone number (with country code)</label><input name="phone" maxlength="30" required placeholder="+260 97 000 0000">
 <label>Email (optional)</label><input name="email" type="email" maxlength="160">
-<label>What do you need?</label><textarea name="details" rows="6" maxlength="4000" required></textarea>
-<label>Document (optional, up to 8 MB: {{ upload_ext|join(', ') }})</label><input name="document" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx">
+<label>Tell us what you need, in your own words</label><textarea name="details" rows="6" maxlength="4000" required></textarea>
+<h3>Files to upload</h3>
+{% for u in uploads %}<label>{{ u.label }} {% if u.required %}(required){% endif %}</label><p class="small">{{ u.help }}</p><input name="file_{{ u.key }}" type="file" accept="image/*,.pdf,.doc,.docx">{% endfor %}
 {% if item.confirm %}<label><input type="checkbox" name="confirm_item" value="yes" style="width:auto"> {{ item.confirm }}</label>{% endif %}
 <label><input type="checkbox" name="consent" value="yes" style="width:auto"> {{ consent }}</label>
 <button class="btn">Send request</button></form></div>
@@ -23150,10 +23253,11 @@ SERVICE_DETAIL_TPL = r"""<div class="hero"><h2>{{ r.service_name }}</h2><p>Statu
 {% else %}<p class="small">Online payment is not set up yet. The team will confirm how to pay.</p>{% endif %}
 </div>{% endif %}
 <div class="card"><p>{{ r.details }}</p><span class="small">Sent {{ r.created_at|svc_dt }}</span>{% if r.attachment_path %}<br><a href="{{ url_for('service_request_file', rid=r.id) }}">Download the document you sent</a>{% endif %}</div>
+{% if files %}<div class="card"><h3>Files you sent</h3>{% for f in files %}<p><a href="{{ url_for('service_request_file_slot', rid=r.id, fid=f.id) }}">{{ f.slot_label }}: {{ f.file_name }}</a></p>{% endfor %}</div>{% endif %}
 {% for m in msgs %}<div class="card"><strong>{% if m.sender_role == 'staff' %}KOJA team{% else %}You{% endif %}</strong> <span class="small">{{ m.created_at|svc_dt }}</span><p>{{ m.body }}</p>{% if m.attachment_path %}<a href="{{ url_for('service_message_file', rid=r.id, mid=m.id) }}">Download {{ m.attachment_name }}</a>{% endif %}</div>
 {% endfor %}
 {% if r.status in ['done', 'cancelled'] %}<div class="card small">This request is closed. Send a new request to ask more.</div>
-{% else %}<div class="card"><form method="post" enctype="multipart/form-data" action="{{ url_for('service_request_message', rid=r.id) }}">{{ csrf }}<label>Message</label><textarea name="body" rows="3" maxlength="2000"></textarea><label>Attach a picture or document (optional, up to 10 MB)</label><input name="document" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,.xls,.xlsx,.txt"><button class="btn">Send</button></form></div>
+{% else %}<div class="card"><form method="post" action="{{ url_for('service_request_message', rid=r.id) }}">{{ csrf }}<label>Message</label><textarea name="body" rows="3" maxlength="2000" required></textarea><button class="btn">Send</button></form></div>
 <form method="post" action="{{ url_for('service_request_cancel', rid=r.id) }}">{{ csrf }}<button class="btn secondary">Cancel request</button></form>
 {% endif %}
 <div class="card"><a href="{{ url_for('service_my_requests') }}">← My requests</a></div>
@@ -23166,8 +23270,9 @@ ADMIN_SERVICES_TPL = r"""<div class="hero"><h2>Help desk requests</h2><p>Work th
 <div class="card"><a href="{{ url_for('admin') }}">← Admin</a></div>
 """
 
-ADMIN_SERVICE_TPL = r"""<div class="hero"><h2>{{ r.service_name }}</h2><p>{{ r.full_name }} · {{ r.phone }}{% if r.email %} · {{ r.email }}{% endif %} · status: <strong>{{ statuses.get(r.status, r.status) }}</strong>{% if r.quote_amount is not none %} · payment: <strong>{{ 'paid' if r.payment_status == 'paid' else ('pending' if r.payment_status == 'pending' else 'not paid') }}</strong>{% endif %}</p>{% if item %}<p class="small">Expected documents: {{ item.needs }}</p>{% endif %}</div>
+ADMIN_SERVICE_TPL = r"""<div class="hero"><h2>{{ r.service_name }}</h2><p>{{ r.full_name }} · {{ r.phone }}{% if r.email %} · {{ r.email }}{% endif %} · status: <strong>{{ statuses.get(r.status, r.status) }}</strong>{% if r.quote_amount is not none %} · payment: <strong>{{ 'paid' if r.payment_status == 'paid' else ('pending' if r.payment_status == 'pending' else 'not paid') }}</strong>{% endif %}</p>{% if item %}<p class="small">Information to collect: {{ item.needs }}</p>{% endif %}</div>
 <div class="card"><p>{{ r.details }}</p>{% if r.attachment_path %}<a href="{{ url_for('service_request_file', rid=r.id) }}">Download {{ r.attachment_name }}</a>{% endif %}</div>
+{% if files %}<div class="card"><h3>Files from the person</h3>{% for f in files %}<p><a href="{{ url_for('service_request_file_slot', rid=r.id, fid=f.id) }}">{{ f.slot_label }}: {{ f.file_name }}</a></p>{% endfor %}</div>{% endif %}
 <div class="card"><h3>Contact the person</h3>
 <p><a class="btn" href="tel:{{ r.phone }}">Call {{ r.phone }}</a> <a class="btn secondary" href="https://wa.me/{{ wa_number }}" target="_blank" rel="noopener">WhatsApp</a>{% if r.email %} <a class="btn secondary" href="mailto:{{ r.email }}">Email app</a>{% endif %}</p>
 {% if r.email %}<form method="post" action="{{ url_for('admin_service_email', rid=r.id) }}">{{ csrf }}<label>Email subject</label><input name="subject" maxlength="150" required><label>Email message</label><textarea name="body" rows="5" maxlength="4000" required></textarea><button class="btn">Send email to {{ r.email }}</button></form>
@@ -23253,8 +23358,15 @@ def ac_home():
         teachers.sort(key=lambda t: -int(t.get("rating_count") or 0))
     live_now = _ac_live_rows()
     live_by_teacher = {str(x.get("teacher_user_id")): x for x in live_now}
+    # Upcoming group classes per teacher, so each teacher card can offer a Join class button.
+    today = datetime.now(timezone.utc).date().isoformat()
+    classes_by_teacher = {}
+    for c in sorted(_ac_rows("koja_academic_classes", {"status": "open"}, order="scheduled_date.asc", limit=1000), key=lambda c: str(c.get("scheduled_date"))):
+        if str(c.get("scheduled_date")) >= today:
+            classes_by_teacher.setdefault(str(c.get("teacher_user_id")), []).append(c)
     for t in teachers:
         t["_live"] = live_by_teacher.get(str(t.get("user_id")))
+        t["_classes"] = classes_by_teacher.get(str(t.get("user_id")), [])[:3]
     mine = _ac_teacher_for_user()
     # _ac_rows hides database errors, so an admin is told directly when the Academic tables are missing.
     if (current_user() or {}).get("is_admin") and not table_exists("koja_academic_teachers"):
@@ -23288,7 +23400,9 @@ def ac_home():
 <div class="grid">{% for t in teachers %}<div class="card"><h3>{{ t.full_name }} <small>Verified</small></h3>
 <p><strong>Subjects:</strong> {{ t.subjects }}</p><p><strong>Grades:</strong> {{ t.grade_levels or '—' }}</p>
 <p>Rated {{ '%.1f'|format(t.rating_avg or 0) }} ({{ t.rating_count or 0 }} review{{ '' if (t.rating_count or 0) == 1 else 's' }}) · {{ money(t.hourly_rate, t.currency or 'ZMW') }}/hour</p>
-{% if t._live %}<p><strong>● Live now</strong></p>{% endif %}<a class="btn" href="{{ url_for('ac_teacher_profile', tid=t.id) }}">View &amp; book</a></div>
+{% if t._live %}<p><strong>● Live now</strong></p>{% if t._live.kind == 'public' %}<a class="btn" href="{{ url_for('ac_room', kind='public', rid=t.user_id) }}">Join live now</a>{% endif %}{% endif %}
+{% for c in t._classes %}<p><strong>{{ c.title }}</strong> · {{ c.scheduled_date }} {{ c.start_time }} · {{ money(c.price_per_student, c.currency or 'ZMW') }}<br><a class="btn secondary" href="{{ url_for('ac_class', cid=c.id) }}">Join class</a></p>{% endfor %}
+<a class="btn secondary" href="{{ url_for('ac_teacher_profile', tid=t.id) }}">View &amp; book</a></div>
 {% else %}<div class="card"><p>No verified teacher matches these filters yet.</p>
 <p class="small">Try a broader subject, remove the price limit, or <a href="{{ url_for('ac_classes') }}">look at group classes</a>.</p></div>{% endfor %}</div>''',
                     teachers=teachers, q=q, subject=subject, grade=grade, max_rate=max_rate, sort=sort, subjects=subjects, mine=mine, live_now=live_now)
@@ -23347,6 +23461,14 @@ def ac_teacher_profile(tid):
     if not t or (t.get("status") != "verified" and str(t.get("user_id")) != _ac_uid() and not (current_user() or {}).get("is_admin")):
         abort(404)
     reviews = _ac_rows("koja_academic_reviews", {"teacher_id": tid}, order="created_at.desc", limit=30)
+    # Group classes this teacher runs: a join button shows as soon as the class is live.
+    t_classes = []
+    t_public_live = bool(t.get("user_id")) and any(str(x.get("teacher_user_id")) == str(t.get("user_id")) and x.get("kind") == "public" for x in _ac_live_rows())
+    if t.get("user_id"):
+        t_classes = _ac_rows("koja_academic_classes", {"teacher_user_id": str(t.get("user_id")), "status": "open"}, order="scheduled_date.asc", limit=50)
+        live_ids = {str(x.get("rid")) for x in _ac_live_rows() if x.get("kind") == "class"}
+        for c in t_classes:
+            c["_live"] = str(c.get("id")) in live_ids
     return _ac_page(t.get("full_name") or "Teacher", r'''
 <div class="card"><h2>{{ t.full_name }}</h2><p>⭐ {{ '%.1f'|format(t.rating_avg or 0) }} ({{ t.rating_count or 0 }} reviews) · {{ money(t.hourly_rate, t.currency or 'ZMW') }}/hour</p>
 <p><strong>Subjects:</strong> {{ t.subjects }}</p><p><strong>Grades:</strong> {{ t.grade_levels or '—' }}</p><p><strong>Qualification:</strong> {{ t.qualification or '—' }}</p><p>{{ t.bio or '' }}</p></div>
@@ -23357,8 +23479,9 @@ def ac_teacher_profile(tid):
 <label>Notes</label><textarea name="notes" maxlength="1000"></textarea>
 <label>Pay now (optional)</label><select name="network"><option value="">Pay later from My lessons</option>{% for o in academic_pay_networks() %}<option value="{{ o.value }}">{{ o.country }} · {{ o.label }}</option>{% endfor %}</select>
 <label>Mobile-money number</label><input name="phone" inputmode="tel" placeholder="e.g. 0971234567"><button class="btn">Book lesson</button></form></div>{% endif %}
+<div class="card"><h3>Group classes</h3>{% if t_public_live %}<p><strong>● This teacher is live now.</strong></p><a class="btn" href="{{ url_for('ac_room', kind='public', rid=t.user_id) }}">Join live now</a>{% endif %}{% for c in t_classes %}<p><strong>{{ c.title }}</strong> · {{ c.subject }} · {{ c.scheduled_date }} {{ c.start_time }} · {{ money(c.price_per_student, c.currency or 'ZMW') }}{% if c._live %} <span class="small"><strong>● LIVE NOW</strong></span>{% endif %}</p><a class="btn{% if not c._live %} secondary{% endif %}" href="{{ url_for('ac_class', cid=c.id) }}">{% if c._live %}Join live class{% else %}Join class{% endif %}</a>{% else %}<p>No group classes scheduled.</p>{% endfor %}<p class="small"><a href="{{ url_for('ac_classes') }}">Find all group classes</a></p></div>
 <div class="card"><h3>Reviews</h3>{% for r in reviews %}<p>{{ '⭐' * (r.rating|int) }} — {{ r.comment or '' }}</p>{% else %}<p>No reviews yet.</p>{% endfor %}</div>''',
-                    t=t, reviews=reviews, me=_ac_uid())
+                    t=t, reviews=reviews, me=_ac_uid(), t_classes=t_classes, t_public_live=t_public_live)
 
 
 # ---- booking with conflict check ---------------------------------------------------
@@ -23671,7 +23794,7 @@ def ac_teacher_dashboard():
         go_live = {"url": url_for("ac_room", kind="class", rid=open_classes[0]["id"]), "title": open_classes[0].get("title") or "class"}
     return _ac_page("Teacher dashboard", r'''
 <div class="hero"><h2>Teacher dashboard</h2><p>Status: <strong>{{ t.status }}</strong> · Commission: {{ pct }}%</p>
-<div class="actions"><a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Edit profile</a>{% if go_live.url %}<a class="btn" href="{{ go_live.url }}">● Go live: {{ go_live.title }}</a>{% else %}<span class="btn secondary" aria-disabled="true" title="Shows once a lesson is paid or a class is scheduled">● Go live (nothing scheduled yet)</span>{% endif %}{% if t.status == 'verified' %}<a class="btn" href="{{ url_for('ac_class_new') }}">New group class</a>{% endif %}</div></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('ac_teacher_apply') }}">Edit profile</a><a class="btn" href="{{ url_for('ac_go_live') }}">● Go live for everyone</a>{% if go_live.url %}<a class="btn" href="{{ go_live.url }}">● Go live: {{ go_live.title }}</a>{% else %}<span class="btn secondary" aria-disabled="true" title="Shows once a lesson is paid or a class is scheduled">● Go live (nothing scheduled yet)</span>{% endif %}{% if t.status == 'verified' %}<a class="btn" href="{{ url_for('ac_class_new') }}">New group class</a>{% endif %}</div></div>
 <div class="grid"><div class="card"><h3>Earned</h3>{{ money(earned, t.currency or 'ZMW') }}</div><div class="card"><h3>Paid out</h3>{{ money(paid, t.currency or 'ZMW') }}</div><div class="card"><h3>Wallet balance</h3>{{ money(balance, t.currency or 'ZMW') }}</div></div>
 <h3>Lesson requests</h3>{% for s in sessions %}<div class="card"><strong>{{ s.subject }}</strong> · {{ s.scheduled_date }} {{ s.start_time }} · {{ s.duration_minutes }} min · {{ money(s.teacher_earning, s.currency) }} after fee<br>Status: {{ s.status }} · Payment: {{ s.payment_status }} · <a href="{{ url_for('ac_teaching', kind='session', rid=s.id) }}">Materials and equipment</a>
 <div class="actions">{% if s.status == 'requested' %}<form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='accept') }}">{{ csrf }}<button class="btn">Accept</button></form><form method="post" action="{{ url_for('ac_session_action', sid=s.id, action='decline') }}">{{ csrf }}<button class="btn secondary">Decline</button></form>{% endif %}
@@ -23722,7 +23845,7 @@ def ac_classes():
         c["_live"] = str(c.get("id")) in live_class_ids
     subjects = sorted({str(c.get("subject")).strip() for c in classes if c.get("subject")}, key=str.lower)
     return _ac_page("Find a group class", r'''
-<div class="hero"><h2>Find a group class</h2><p>Live classes you can join with other students. Upcoming classes are shown first.</p>
+<div class="hero"><h2>Find a group class</h2><p>Live classes you can join with other students. Upcoming classes are shown first.</p><p><a class="btn secondary" href="{{ url_for('ac_live_now') }}">● Teachers live now</a></p>
 <div class="actions"><a class="btn secondary" href="{{ url_for('ac_home') }}">Find a tutor</a></div></div>
 <form method="get" class="card" style="display:grid;gap:8px">
 <input name="q" value="{{ q }}" placeholder="Search classes (e.g. physics, exam revision)" aria-label="Search classes">
@@ -26090,6 +26213,18 @@ def ac_attendance(cid):
 # ---- live room (LiveKit) + shared whiteboard --------------------------------------
 def _ac_room_access(kind, rid):
     uid = _ac_uid()
+    if kind == "public":
+        # Open room of a verified teacher: the teacher can start it any time; anyone logged in can join while it is live.
+        if not CV_ID_RE.match(rid or ""):
+            return None, False
+        t = first_row("koja_academic_teachers", {"user_id": rid})
+        if not t or t.get("status") != "verified":
+            return None, False
+        obj = {"id": rid, "room_name": "koja-ac-public-" + rid[:12], "title": (t.get("full_name") or "Teacher") + " · live class"}
+        if str(t.get("user_id")) == uid:
+            return obj, True
+        live = any(str(x.get("teacher_user_id")) == rid and x.get("kind") == "public" for x in _ac_live_rows())
+        return (obj, False) if live else (None, False)
     if kind == "session":
         s = first_row("koja_academic_sessions", {"id": rid})
         ok = bool(s) and s.get("status") == "accepted" and s.get("payment_status") == "paid" \
@@ -26125,7 +26260,7 @@ def ac_live_heartbeat():
     """Sent by the teacher's room page every minute while it is open. Only the teacher of that room can send it."""
     data = request.get_json(silent=True) or request.form
     kind, rid = clean(data.get("kind")), clean(data.get("rid"))
-    if kind not in ("session", "class") or not CV_ID_RE.match(rid or ""):
+    if kind not in ("session", "class", "public") or not CV_ID_RE.match(rid or ""):
         return jsonify({"ok": False}), 400
     obj, is_teacher = _ac_room_access(kind, rid)
     if not obj or not is_teacher:
@@ -26146,7 +26281,10 @@ def ac_room(kind, rid):
     if not obj:
         flash("The live room opens for confirmed, paid lessons and enrolled students.", "warning")
         return redirect(url_for("ac_home"))
-    back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
+    if kind == "public":
+        back_url = url_for("ac_live_now")
+    else:
+        back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
     return _ac_page("Live room", r'''
 <div class="card"><h2>Live room</h2><p id="ac-status">Connecting…</p>
 <div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button></div>
@@ -26155,7 +26293,7 @@ def ac_room(kind, rid):
 <canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas>
 <h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
 <h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}
-<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>
+{% if kind != 'public' %}<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
 {% if is_teacher %}<div class="actions"><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
@@ -26199,8 +26337,8 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     await room.connect(d.url,d.token);
     setStatus('Connected.');
     room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>attach(x.track)));
-    try{await room.localParticipant.enableCameraAndMicrophone()}
-    catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}
+    {% if is_teacher or kind != 'public' %}try{await room.localParticipant.enableCameraAndMicrophone()}
+    catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}{% else %}setStatus('Connected. You are watching this live class.');{% endif %}
   }catch(e){setStatus('Could not join the live room: '+e.message)}
 })();
 })();
@@ -26224,6 +26362,8 @@ def ac_board(kind, rid):
         return jsonify({"strokes": strokes})
     data = request.get_json(silent=True) or {}
     action = data.get("kind")
+    if kind == "public" and not is_teacher:
+        return jsonify({"error": "Only the teacher writes on a public room."}), 403
     if action == "clear":
         if not is_teacher:
             return jsonify({"error": "Only the teacher can clear the board."}), 403
@@ -26250,6 +26390,27 @@ def ac_board(kind, rid):
     return jsonify({"ok": True})
 
 
+@app.route("/academic/go-live")
+@login_required
+def ac_go_live():
+    """A verified teacher starts an open live class. No enrolment is needed; anyone can join while it is live."""
+    t = _ac_teacher_for_user()
+    if not t or t.get("status") != "verified":
+        flash("Your teacher profile must be verified before you go live.", "warning")
+        return redirect(url_for("ac_teacher_dashboard"))
+    return redirect(url_for("ac_room", kind="public", rid=_ac_uid()))
+
+
+@app.route("/academic/live-now")
+@login_required
+def ac_live_now():
+    rows = [x for x in _ac_live_rows() if x.get("kind") == "public"]
+    return _ac_page("Teachers live now", r'''
+<div class="hero"><h2>Teachers live now</h2><p>Open live classes. Anyone signed in can join while the teacher is live.</p></div>
+{% for x in rows %}<div class="card"><strong>{{ x.title or 'Live class' }}</strong><p class="small">{{ x.teacher_name or 'Teacher' }}</p><a class="btn" href="{{ url_for('ac_room', kind='public', rid=x.teacher_user_id) }}">Join live class</a></div>
+{% else %}<div class="card"><p>No teacher is live right now. Check back soon, or <a href="{{ url_for('ac_classes') }}">find a group class</a>.</p></div>{% endfor %}''', rows=rows)
+
+
 @app.route("/academic/room/<kind>/<rid>/token")
 @login_required
 def ac_room_token(kind, rid):
@@ -26257,7 +26418,7 @@ def ac_room_token(kind, rid):
     if not obj:
         return jsonify({"error": "Not allowed to join this room."}), 403
     try:
-        return jsonify({"token": _ac_room_token(obj.get("room_name"), current_user(), can_publish=True), "url": _livekit_server_url()})
+        return jsonify({"token": _ac_room_token(obj.get("room_name"), current_user(), can_publish=is_teacher or kind != "public"), "url": _livekit_server_url()})
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 503
 
