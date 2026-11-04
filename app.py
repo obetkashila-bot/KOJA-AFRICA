@@ -26310,17 +26310,26 @@ def ac_room(kind, rid):
 #ac-screen #ac-videos video{width:100%!important;height:100%!important;max-height:none!important;object-fit:contain;background:#000;border-radius:10px}
 #ac-screen #ac-waiting{color:#ddd;display:flex;align-items:center;justify-content:center;height:100%;margin:0}
 .ac-icon{padding:.35em .7em!important;font-size:16px!important;line-height:1}
-#ac-stage[data-mode=board] #ac-doc iframe{height:18vh!important}#ac-stage[data-mode=board] #ac-doc img{max-height:18vh!important;width:auto!important;margin:0 auto}#ac-stage[data-mode=board] #ac-doc-wrap{margin:0!important}</style>
-<div class="actions" id="ac-layout" style="margin:8px 0"><button class="btn secondary ac-icon" type="button" id="ac-layout-btn" aria-label="Change layout" title="Layout">&#x21C4;</button></div>
+#ac-stage[data-mode=board] #ac-doc iframe{height:18vh!important}#ac-stage[data-mode=board] #ac-doc img{max-height:18vh!important;width:auto!important;margin:0 auto}#ac-stage[data-mode=board] #ac-doc-wrap{margin:0!important}
+.ac-pager{display:flex;align-items:center;justify-content:center;gap:12px;padding:8px;background:#fff}
+.ac-round{width:44px;height:44px;border-radius:50%!important;padding:0!important;display:inline-flex;align-items:center;justify-content:center}
+.ac-count{min-width:64px;text-align:center;white-space:nowrap;color:#333}
+.ac-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ac-tools .btn{min-height:44px}
+#ac-doc-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-tabs{display:flex;gap:6px;margin:8px 0;border-bottom:1px solid #d6dde8}
+.ac-tabs button{flex:1;min-height:44px;border:0;background:none;color:#4a5568;font:inherit;font-weight:600;border-bottom:3px solid transparent;cursor:pointer}
+.ac-tabs button[aria-selected=true]{color:#111;border-bottom-color:#f5b82e}</style>
+<div id="ac-tabs" class="ac-tabs" role="tablist" aria-label="What to show"><button type="button" role="tab" data-tab="board" id="ac-tab-board" aria-selected="true">Board</button><button type="button" role="tab" data-tab="screen" id="ac-tab-screen" aria-selected="false">Slides</button><button type="button" role="tab" data-tab="materials" id="ac-tab-materials" aria-selected="false">Materials</button></div>
 <div id="ac-stage" style="position:relative"><div id="ac-screenbox">
 <div id="ac-doc-wrap" hidden style="margin:12px 0"><p class="small" id="ac-doc-title" style="margin:0 0 6px"></p><div id="ac-doc" style="background:#fff;border-radius:12px;overflow:hidden;min-height:360px"></div></div>
 <div id="ac-screen" class="ac-news" style="margin:12px 0;max-width:100%"><div id="ac-videos"><p id="ac-waiting">Waiting for the teacher's video…</p></div></div>
 </div><h3 id="ac-board-h">Whiteboard</h3>
 {% if not is_teacher %}<p class="small" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<div id="ac-boardbox" style="background:#fff;border-radius:12px;overflow:hidden"><canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas></div></div>
-<h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
-<h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}
+<div id="ac-matpanel" hidden><h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
+<h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}</div>
 {% if kind != 'public' %}<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
-{% if is_teacher %}<div class="actions"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" placeholder="Speak with your keyboard microphone, or type, then press Write" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write">Write on board</button></div><p class="small">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card" style="margin-top:10px"><h3>Show a document on the screen</h3><p class="small">PDF lesson or picture (PNG, JPG, WEBP), up to 25 MB. A PDF shows one page at a time: use &lsaquo; and &rsaquo; to move everyone through the slides.</p><label>Title</label><input id="ac-doc-name" maxlength="160" placeholder="e.g. Worksheet 3"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"><div class="actions"><button class="btn" type="button" id="ac-doc-show">Show on screen</button><button class="btn secondary" type="button" id="ac-doc-close">Remove from screen</button></div><p class="small" id="ac-doc-status"></p></div>{% endif %}
+{% if is_teacher %}<div class="actions ac-tools"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" placeholder="Speak with your keyboard microphone, or type, then press Write" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write">Write on board</button></div><p class="small">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card" style="margin-top:10px"><h3>Show a document on the screen</h3><p class="small">PDF lesson or picture (PNG, JPG, WEBP), up to 25 MB. A PDF shows one page at a time: use &lsaquo; and &rsaquo; to move everyone through the slides.</p><label>Title</label><input id="ac-doc-name" maxlength="160" placeholder="e.g. Worksheet 3"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"><div class="actions"><button class="btn" type="button" id="ac-doc-show">Show on screen</button><button class="btn secondary" type="button" id="ac-doc-close">Remove from screen</button></div><p class="small" id="ac-doc-status"></p></div>{% endif %}
 <div class="card" style="margin-top:10px"><h3>Who can write on the board</h3><div class="actions"><button class="btn secondary" type="button" id="ac-allow-all">Allow everyone to write</button></div><div id="ac-people" class="small"></div></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
@@ -26352,16 +26361,22 @@ function setLayout(m){
     if(m==='board'){screenbox.classList.add('ac-corner');screenEl.style.minHeight='0';docEl.style.minHeight='0'}
     else{screenbox.classList.remove('ac-corner');screenEl.style.minHeight='';docEl.style.minHeight=''}
   }
-  const lb=document.getElementById('ac-layout-btn');if(lb)lb.title='Layout: '+LAYOUT_NAMES[m]+' (tap to change)';
+  syncTabs(m);
 }
+function syncTabs(m){document.querySelectorAll('#ac-tabs [data-tab]').forEach(function(t){t.setAttribute('aria-selected',t.getAttribute('data-tab')===m?'true':'false')})}
 // Layout follows the content unless this viewer chose one: a shared document puts the screen big, otherwise stacked.
 function autoLayout(){
   let pref=null;try{pref=localStorage.getItem('koja_ac_layout')}catch(e){}
   if(pref&&LAYOUTS.indexOf(pref)>=0){setLayout(pref);return}
-  setLayout(docShown?'screen':'split');
+  setLayout(docShown?'screen':'board');
 }
-(function(){const lb=document.getElementById('ac-layout-btn');if(!lb)return;
-  lb.onclick=()=>{const cur=stageEl?stageEl.dataset.mode:'split';const next=LAYOUTS[(LAYOUTS.indexOf(cur)+1)%LAYOUTS.length];setLayout(next);try{localStorage.setItem('koja_ac_layout',next)}catch(e){}};
+(function(){const mat=document.getElementById('ac-matpanel');
+  document.querySelectorAll('#ac-tabs [data-tab]').forEach(function(t){t.onclick=function(){
+    const m=t.getAttribute('data-tab');
+    if(m==='materials'){if(stageEl)stageEl.hidden=true;if(mat)mat.hidden=false;document.querySelectorAll('#ac-tabs [data-tab]').forEach(function(x){x.setAttribute('aria-selected',x===t?'true':'false')});return}
+    if(stageEl)stageEl.hidden=false;if(mat)mat.hidden=true;
+    setLayout(m);try{localStorage.setItem('koja_ac_layout',m)}catch(e){}
+  }});
 })();
 autoLayout();
 // PDFs are shown as slides: one page at a time, fitted to the 16:9 screen. The teacher moves the room with Next/Previous.
@@ -26379,7 +26394,7 @@ function loadPdfLib(){
   });
 }
 function buildSlides(box){
-  box.innerHTML='<div id="ac-slide" style="position:relative;aspect-ratio:800/420;width:100%;background:#050b14;overflow:hidden"><canvas id="ac-slide-cv" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block"></canvas><p id="ac-slide-msg" class="small" style="position:absolute;inset:0;margin:0;color:#ddd;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px"></p></div><div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:8px;background:#fff"><button id="ac-slide-prev" class="btn secondary ac-icon" type="button" aria-label="Previous slide" title="Previous slide">&#x2039;</button><span id="ac-slide-count" class="small"></span><button id="ac-slide-next" class="btn secondary ac-icon" type="button" aria-label="Next slide" title="Next slide">&#x203A;</button></div>';
+  box.innerHTML='<div id="ac-slide" style="position:relative;aspect-ratio:800/420;width:100%;background:#050b14;overflow:hidden"><canvas id="ac-slide-cv" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block"></canvas><p id="ac-slide-msg" class="small" style="position:absolute;inset:0;margin:0;color:#ddd;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px"></p></div><div class="ac-pager"><button id="ac-slide-prev" class="btn secondary ac-icon ac-round" type="button" aria-label="Previous slide" title="Previous slide">&#x2039;</button><span id="ac-slide-count" class="small ac-count"></span><button id="ac-slide-next" class="btn secondary ac-icon ac-round" type="button" aria-label="Next slide" title="Next slide">&#x203A;</button></div>';
   const p=document.getElementById('ac-slide-prev'),n=document.getElementById('ac-slide-next');
   if(p)p.onclick=function(){goSlide(-1)};
   if(n)n.onclick=function(){goSlide(1)};
