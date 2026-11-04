@@ -26398,7 +26398,11 @@ async function renderSlide(){
     const total=pdfDoc.numPages, n=Math.min(Math.max(1,d.page||1),total);
     const page=await pdfDoc.getPage(n);
     if(my!==renderSeq)return;
-    const v1=page.getViewport({scale:1}), W=stage.clientWidth, H=stage.clientHeight;
+    const v1=page.getViewport({scale:1});
+    // The screen takes the page's own shape (a tall A4 page gets a tall screen), capped at 75% of the window height, so text stays readable.
+    stage.style.aspectRatio=v1.width+' / '+v1.height;
+    stage.style.maxHeight=Math.round(window.innerHeight*0.75)+'px';
+    const W=stage.clientWidth, H=stage.clientHeight;
     const s=Math.min(W/v1.width,H/v1.height), dpr=window.devicePixelRatio||1, vp=page.getViewport({scale:s*dpr});
     cvs.width=Math.floor(vp.width); cvs.height=Math.floor(vp.height);
     cvs.style.width=Math.floor(v1.width*s)+'px'; cvs.style.height=Math.floor(v1.height*s)+'px';
