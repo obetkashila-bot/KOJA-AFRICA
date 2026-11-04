@@ -13171,7 +13171,7 @@ def security_headers(response):
         "media-src 'self' blob: https:; "
         "connect-src 'self' https: wss:; "
         "frame-src 'self' https:; "
-        "worker-src 'self' blob:; "
+        "worker-src 'self' blob: https://cdn.jsdelivr.net; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "frame-ancestors 'self'"
@@ -26320,7 +26320,7 @@ def ac_room(kind, rid):
 <h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
 <h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}
 {% if kind != 'public' %}<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
-{% if is_teacher %}<div class="actions"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" placeholder="Speak with your keyboard microphone, or type, then press Write" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write">Write on board</button></div><p class="small">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card" style="margin-top:10px"><h3>Show a document on the screen</h3><p class="small">PDF or picture (PNG, JPG, WEBP), up to 25 MB. Everyone in the room sees it.</p><label>Title</label><input id="ac-doc-name" maxlength="160" placeholder="e.g. Worksheet 3"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"><div class="actions"><button class="btn" type="button" id="ac-doc-show">Show on screen</button><button class="btn secondary" type="button" id="ac-doc-close">Remove from screen</button></div><p class="small" id="ac-doc-status"></p></div>{% endif %}
+{% if is_teacher %}<div class="actions"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" placeholder="Speak with your keyboard microphone, or type, then press Write" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write">Write on board</button></div><p class="small">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card" style="margin-top:10px"><h3>Show a document on the screen</h3><p class="small">PDF lesson or picture (PNG, JPG, WEBP), up to 25 MB. A PDF shows one page at a time: use &lsaquo; and &rsaquo; to move everyone through the slides.</p><label>Title</label><input id="ac-doc-name" maxlength="160" placeholder="e.g. Worksheet 3"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"><div class="actions"><button class="btn" type="button" id="ac-doc-show">Show on screen</button><button class="btn secondary" type="button" id="ac-doc-close">Remove from screen</button></div><p class="small" id="ac-doc-status"></p></div>{% endif %}
 <div class="card" style="margin-top:10px"><h3>Who can write on the board</h3><div class="actions"><button class="btn secondary" type="button" id="ac-allow-all">Allow everyone to write</button></div><div id="ac-people" class="small"></div></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
@@ -26331,7 +26331,7 @@ const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');
 cx.lineWidth=2;cx.lineCap='round';cx.strokeStyle='#111';
 const box=document.getElementById('ac-videos');
 const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }};
-const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }},DOC_URL={{ doc_url|tojson }};
+const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }},DOC_URL={{ doc_url|tojson }},SLIDE_URL={{ slide_url|tojson }};
 let canDraw=IS_TEACHER;
 const CSRF_T={{ csrf_token()|tojson }};
 const stageEl=document.getElementById('ac-stage'),screenbox=document.getElementById('ac-screenbox'),boardbox=document.getElementById('ac-boardbox'),boardH=document.getElementById('ac-board-h'),screenEl=document.getElementById('ac-screen'),docEl=document.getElementById('ac-doc');
@@ -26364,16 +26364,83 @@ function autoLayout(){
   lb.onclick=()=>{const cur=stageEl?stageEl.dataset.mode:'split';const next=LAYOUTS[(LAYOUTS.indexOf(cur)+1)%LAYOUTS.length];setLayout(next);try{localStorage.setItem('koja_ac_layout',next)}catch(e){}};
 })();
 autoLayout();
+// PDFs are shown as slides: one page at a time, fitted to the 16:9 screen. The teacher moves the room with Next/Previous.
+let curDoc=null,pdfDoc=null,pdfUrl='',pdfLib=null,renderSeq=0;
+const PDFJS_BASE='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/';
+function isPdfDoc(d){return !!(d&&(d.mime||'').toLowerCase().indexOf('pdf')>=0)}
+function loadPdfLib(){
+  if(pdfLib)return Promise.resolve(pdfLib);
+  return new Promise(function(res,rej){
+    const s=document.createElement('script');
+    s.src=PDFJS_BASE+'pdf.min.js';
+    s.onload=function(){const lib=window.pdfjsLib;if(!lib){rej(new Error('pdf viewer missing'));return}lib.GlobalWorkerOptions.workerSrc=PDFJS_BASE+'pdf.worker.min.js';pdfLib=lib;res(lib)};
+    s.onerror=function(){rej(new Error('pdf viewer did not load'))};
+    document.head.appendChild(s);
+  });
+}
+function buildSlides(box){
+  box.innerHTML='<div id="ac-slide" style="position:relative;aspect-ratio:800/420;width:100%;background:#050b14;overflow:hidden"><canvas id="ac-slide-cv" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block"></canvas><p id="ac-slide-msg" class="small" style="position:absolute;inset:0;margin:0;color:#ddd;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px"></p></div><div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:8px;background:#fff"><button id="ac-slide-prev" class="btn secondary ac-icon" type="button" aria-label="Previous slide" title="Previous slide">&#x2039;</button><span id="ac-slide-count" class="small"></span><button id="ac-slide-next" class="btn secondary ac-icon" type="button" aria-label="Next slide" title="Next slide">&#x203A;</button></div>';
+  const p=document.getElementById('ac-slide-prev'),n=document.getElementById('ac-slide-next');
+  if(p)p.onclick=function(){goSlide(-1)};
+  if(n)n.onclick=function(){goSlide(1)};
+  if(!IS_TEACHER){if(p)p.style.display='none';if(n)n.style.display='none'}
+}
+async function renderSlide(){
+  const d=curDoc; if(!d)return;
+  const my=++renderSeq;
+  const msg=document.getElementById('ac-slide-msg'),cvs=document.getElementById('ac-slide-cv'),stage=document.getElementById('ac-slide'),count=document.getElementById('ac-slide-count');
+  if(!cvs||!stage)return;
+  if(msg)msg.textContent='Loading slide…';
+  try{
+    const lib=await loadPdfLib();
+    if(!pdfDoc||pdfUrl!==d.url){pdfDoc=null;pdfUrl=d.url;pdfDoc=await lib.getDocument({url:d.url,withCredentials:true}).promise}
+    if(my!==renderSeq)return;
+    const total=pdfDoc.numPages, n=Math.min(Math.max(1,d.page||1),total);
+    const page=await pdfDoc.getPage(n);
+    if(my!==renderSeq)return;
+    const v1=page.getViewport({scale:1}), W=stage.clientWidth, H=stage.clientHeight;
+    const s=Math.min(W/v1.width,H/v1.height), dpr=window.devicePixelRatio||1, vp=page.getViewport({scale:s*dpr});
+    cvs.width=Math.floor(vp.width); cvs.height=Math.floor(vp.height);
+    cvs.style.width=Math.floor(v1.width*s)+'px'; cvs.style.height=Math.floor(v1.height*s)+'px';
+    await page.render({canvasContext:cvs.getContext('2d'),viewport:vp}).promise;
+    if(my!==renderSeq)return;
+    if(msg)msg.textContent='';
+    if(count)count.textContent=n+' / '+total;
+    if(IS_TEACHER&&curDoc&&curDoc.pages!==total){curDoc.pages=total;saveSlide()}
+  }catch(e){if(my===renderSeq&&msg)msg.textContent='This slide could not be shown. Check your connection.'}
+}
+function goSlide(delta){
+  if(!IS_TEACHER||!curDoc||!pdfDoc)return;
+  const total=pdfDoc.numPages, cur=curDoc.page||1, n=Math.min(Math.max(1,cur+delta),total);
+  if(n===cur)return;
+  curDoc=Object.assign({},curDoc,{page:n,pages:total});
+  renderSlide();
+  send({doc:curDoc});
+  saveSlide();
+}
+function saveSlide(){
+  if(!IS_TEACHER||!curDoc||!curDoc.id)return;
+  fetch(SLIDE_URL,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF_T},body:JSON.stringify({eid:curDoc.id,page:curDoc.page||1,pages:curDoc.pages||0})}).catch(function(){});
+}
+window.addEventListener('resize',function(){if(curDoc&&isPdfDoc(curDoc)&&pdfDoc)renderSlide()});
 function showDoc(d){
   const wrap=document.getElementById('ac-doc-wrap'),box=document.getElementById('ac-doc'),tt=document.getElementById('ac-doc-title');
   docShown=!!(d&&d.url);
   if(typeof autoLayout==='function')autoLayout();
   if(!wrap||!box)return;
+  const same=!!(d&&d.url&&curDoc&&curDoc.id===d.id&&box.querySelector('#ac-slide'));
+  curDoc=(d&&d.url)?d:null;
+  if(!curDoc){box.innerHTML='';wrap.hidden=true;return}
+  tt.textContent='On screen: '+(curDoc.title||'Document');
+  if(isPdfDoc(curDoc)){
+    if(!same)buildSlides(box);
+    wrap.hidden=false;
+    renderSlide();
+    return;
+  }
   box.innerHTML='';
-  if(!d||!d.url){wrap.hidden=true;return}
-  tt.textContent='On screen: '+(d.title||'Document');
-  if((d.mime||'').indexOf('image/')===0){const im=document.createElement('img');im.src=d.url;im.alt=d.title||'Document';im.style.cssText='width:100%;height:auto;display:block';box.appendChild(im)}
-  else{const fr=document.createElement('iframe');fr.src=d.url;fr.title=d.title||'Document';fr.style.cssText='width:100%;height:70vh;border:0;display:block';box.appendChild(fr)}
+  if((curDoc.mime||'').indexOf('image/')===0){const im=document.createElement('img');im.src=curDoc.url;im.alt=curDoc.title||'Document';im.style.cssText='width:100%;height:auto;display:block';box.appendChild(im)}
+  else{const fr=document.createElement('iframe');fr.src=curDoc.url;fr.title=curDoc.title||'Document';fr.style.cssText='width:100%;height:70vh;border:0;display:block';box.appendChild(fr)}
   wrap.hidden=false;
 }
 function setWrite(on){canDraw=IS_TEACHER||!!on;cv.style.cursor=canDraw?'crosshair':'not-allowed';const pm=document.getElementById('ac-perm');if(pm&&!IS_TEACHER)pm.textContent=canDraw?'You can write on the board now.':'Only the teacher writes on the board. Ask your teacher to let you write.'}
@@ -26484,7 +26551,7 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
 })();
 </script>''',
                     token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid), kind=kind, rid=rid,
-                    back_url=back_url, is_teacher=is_teacher, me_id=_ac_uid(), doc_url=url_for("ac_room_doc", kind=kind, rid=rid), teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
+                    back_url=back_url, is_teacher=is_teacher, me_id=_ac_uid(), doc_url=url_for("ac_room_doc", kind=kind, rid=rid), slide_url=url_for("ac_room_slide", kind=kind, rid=rid), teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
 
 
 @app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
@@ -26505,8 +26572,11 @@ def ac_board(kind, rid):
         doc_ev = next((r for r in rows if r.get("kind") == "doc"), None)  # newest first
         if doc_ev and doc_ev.get("points"):
             p0 = doc_ev["points"][0]
-            doc = {"id": str(doc_ev.get("id")), "title": p0.get("title") or "Document", "mime": p0.get("mime") or "",
-                   "url": url_for("ac_room_doc_file", kind=kind, rid=rid, eid=str(doc_ev.get("id")))}
+            # Slide changes are stored as newer doc events that point back to the original upload (doc_id).
+            doc_id = str(p0.get("doc_id") or doc_ev.get("id"))
+            doc = {"id": doc_id, "title": p0.get("title") or "Document", "mime": p0.get("mime") or "",
+                   "url": url_for("ac_room_doc_file", kind=kind, rid=rid, eid=doc_id),
+                   "page": int(p0.get("page") or 1), "pages": int(p0.get("pages") or 0)}
         return jsonify({"strokes": strokes, "texts": texts, "can_write": can_write, "doc": doc})
     data = request.get_json(silent=True) or {}
     action = data.get("kind")
@@ -26608,6 +26678,37 @@ def ac_room_doc(kind, rid):
         return jsonify({"error": "Could not save the document."}), 503
     return jsonify({"ok": True, "id": eid, "title": title, "mime": info.get("mime_type") or "",
                     "url": url_for("ac_room_doc_file", kind=kind, rid=rid, eid=eid)})
+
+
+@app.route("/academic/room/<kind>/<rid>/slide", methods=["POST"])
+@login_required
+def ac_room_slide(kind, rid):
+    """Teacher moves the shared PDF to another slide. Saved so people who join later see the same slide."""
+    obj, is_teacher = _ac_room_access(kind, rid)
+    if not obj or not is_teacher:
+        return jsonify({"error": "Only the teacher can change the slide."}), 403
+    data = request.get_json(silent=True) or {}
+    eid = str(data.get("eid") or "")
+    if not CV_ID_RE.match(eid):
+        return jsonify({"error": "Invalid document."}), 400
+    try:
+        page = int(data["page"]) if data.get("page") is not None else 1
+        pages = int(data["pages"]) if data.get("pages") is not None else 0
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid slide number."}), 400
+    if page < 1 or pages < 0 or pages > 2000 or (pages and page > pages):
+        return jsonify({"error": "Invalid slide number."}), 400
+    key = _ac_board_key(kind, rid)
+    ev = first_row("koja_academic_board_events", {"id": eid})
+    if not ev or ev.get("room_key") != key or ev.get("kind") != "doc" or not ev.get("points"):
+        return jsonify({"error": "Document not found."}), 404
+    p0 = dict(ev["points"][0])
+    p0.update({"doc_id": eid, "page": page, "pages": pages})
+    _, err = db_insert("koja_academic_board_events", {"id": str(uuid.uuid4()), "room_key": key, "author_id": _ac_uid(),
+                                                      "kind": "doc", "points": [p0], "created_at": utc_now()})
+    if err:
+        return jsonify({"error": "Could not save the slide."}), 503
+    return jsonify({"ok": True})
 
 
 @app.route("/academic/room/<kind>/<rid>/doc/<eid>")
