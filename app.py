@@ -26303,9 +26303,9 @@ def ac_room(kind, rid):
     else:
         back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
     return _ac_page("Live room", r'''
-<div class="card"><h2>Live room</h2><p id="ac-status">Connecting…</p>
-<div class="actions"><button class="btn secondary" type="button" id="ac-leave">Leave room</button>{% if is_teacher %}<button class="btn secondary ac-icon" type="button" id="ac-share" aria-label="Share screen" title="Share screen">&#x1F5A5;</button>{% endif %}</div>
-<style>.ac-corner{position:absolute!important;right:10px;bottom:10px;width:36%;min-width:150px;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.45);border-radius:12px;overflow:hidden}#ac-screenbox{position:relative}.ac-news{position:relative;aspect-ratio:16/9;background:#050b14;border-radius:14px;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+<div class="card ac-sk"><svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="koja-sketch"><feTurbulence type="fractalNoise" baseFrequency="0.06" numOctaves="2" seed="7"/><feDisplacementMap in="SourceGraphic" scale="2.2"/></filter></svg><h2 class="ac-words">Live room</h2><p id="ac-status" class="ac-words">Connecting…</p>
+<div class="actions"><button class="btn secondary" type="button" id="ac-leave" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4H7v16h8M11 12h10M18 9l3 3-3 3"/></svg></span><span class="ac-words">Leave room</span></button>{% if is_teacher %}{% endif %}</div>
+<style>.ac-corner{position:absolute!important;right:10px;bottom:10px;width:36%;min-width:150px;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.45);border-radius:12px;overflow:hidden;touch-action:none;cursor:move}#ac-screenbox{position:relative}.ac-news{position:relative;aspect-ratio:16/9;background:#050b14;border-radius:14px;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 #ac-screen #ac-videos{position:absolute;inset:0;display:grid!important;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));grid-auto-rows:1fr;gap:4px;padding:4px;width:auto!important}
 #ac-screen #ac-videos video{width:100%!important;height:100%!important;max-height:none!important;object-fit:contain;background:#000;border-radius:10px}
 #ac-screen #ac-waiting{color:#ddd;display:flex;align-items:center;justify-content:center;height:100%;margin:0}
@@ -26319,19 +26319,27 @@ def ac_room(kind, rid):
 #ac-doc-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ac-tabs{display:flex;gap:6px;margin:8px 0;border-bottom:1px solid #d6dde8}
 .ac-tabs button{flex:1;min-height:44px;border:0;background:none;color:#4a5568;font:inherit;font-weight:600;border-bottom:3px solid transparent;cursor:pointer}
-.ac-tabs button[aria-selected=true]{color:#111;border-bottom-color:#f5b82e}</style>
-<div id="ac-tabs" class="ac-tabs" role="tablist" aria-label="What to show"><button type="button" role="tab" data-tab="board" id="ac-tab-board" aria-selected="true">Board</button><button type="button" role="tab" data-tab="screen" id="ac-tab-screen" aria-selected="false">Slides</button><button type="button" role="tab" data-tab="materials" id="ac-tab-materials" aria-selected="false">Materials</button></div>
+.ac-tabs button[aria-selected=true]{color:#111;border-bottom-color:#f5b82e}
+.ac-sk svg{filter:url(#koja-sketch);overflow:visible}
+.ac-toolbar{display:flex;justify-content:space-between;align-items:center;gap:2px;margin:10px 0;padding:6px 10px;border:2px solid #1f2937;border-radius:999px;background:#fff;overflow-x:auto}.ac-toolbar>button,.ac-toolbar>label{width:40px!important;height:40px!important;min-height:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;background:transparent!important;color:#111!important;border:0!important;box-shadow:none!important;cursor:pointer;flex:0 0 auto}.ac-toolbar>button:hover,.ac-toolbar>label:hover{background:#eef2f7!important}.ac-toolbar .ac-ic{margin:0!important}
+.ac-words{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.ac-sk .ac-ic svg{width:20px;height:20px}
+.ac-sk button .ac-ic{display:inline-flex;vertical-align:middle;margin-right:6px}
+@media (min-width:760px){
+#ac-tabs{display:none!important}#ac-stage{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}#ac-screenbox{grid-column:1;grid-row:1 / span 2;min-width:0}#ac-board-h{grid-column:2;grid-row:1;margin:0}#ac-boardbox{grid-column:2;grid-row:2;min-width:0}#ac-perm{grid-column:2;grid-row:3;margin:6px 0 0}}</style>
+<div id="ac-tabs" class="ac-tabs" role="tablist" aria-label="What to show"><button type="button" role="tab" data-tab="board" id="ac-tab-board" aria-selected="true" aria-label="Board" title="Board"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/></svg><span class="ac-words">Board</span></button><button type="button" role="tab" data-tab="screen" id="ac-tab-screen" aria-selected="false" aria-label="Slides" title="Slides"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21l4-4 4 4"/></svg><span class="ac-words">Slides</span></button><button type="button" role="tab" data-tab="materials" id="ac-tab-materials" aria-selected="false" aria-label="Materials" title="Materials"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="ac-words">Materials</span></button></div>
 <div id="ac-stage" style="position:relative"><div id="ac-screenbox">
-<div id="ac-doc-wrap" hidden style="margin:12px 0"><p class="small" id="ac-doc-title" style="margin:0 0 6px"></p><div id="ac-doc" style="background:#fff;border-radius:12px;overflow:hidden;min-height:360px"></div></div>
-<div id="ac-screen" class="ac-news" style="margin:12px 0;max-width:100%"><div id="ac-videos"><p id="ac-waiting">Waiting for the teacher's video…</p></div></div>
-</div><h3 id="ac-board-h">Whiteboard</h3>
-{% if not is_teacher %}<p class="small" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<div id="ac-boardbox" style="background:#fff;border-radius:12px;overflow:hidden"><canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas></div></div>
-<div id="ac-matpanel" hidden><h3>Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
-<h3>Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}</div>
-{% if kind != 'public' %}<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
-{% if is_teacher %}<div class="actions ac-tools"><button class="btn" type="button" id="ac-listen">● Write what I say</button><button class="btn secondary" type="button" id="ac-clear">Clear board</button></div><p class="small" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" placeholder="Speak with your keyboard microphone, or type, then press Write" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write">Write on board</button></div><p class="small">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card" style="margin-top:10px"><h3>Show a document on the screen</h3><p class="small">PDF lesson or picture (PNG, JPG, WEBP), up to 25 MB. A PDF shows one page at a time: use &lsaquo; and &rsaquo; to move everyone through the slides.</p><label>Title</label><input id="ac-doc-name" maxlength="160" placeholder="e.g. Worksheet 3"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"><div class="actions"><button class="btn" type="button" id="ac-doc-show">Show on screen</button><button class="btn secondary" type="button" id="ac-doc-close">Remove from screen</button></div><p class="small" id="ac-doc-status"></p></div>{% endif %}
-<div class="card" style="margin-top:10px"><h3>Who can write on the board</h3><div class="actions"><button class="btn secondary" type="button" id="ac-allow-all">Allow everyone to write</button></div><div id="ac-people" class="small"></div></div>{% endif %}</div>
+<div id="ac-doc-wrap" hidden style="margin:12px 0"><p class="small ac-words" id="ac-doc-title" style="margin:0 0 6px"></p><div id="ac-doc" style="background:#fff;border-radius:12px;overflow:hidden;min-height:360px"></div></div>
+<div id="ac-screen" class="ac-news" style="margin:12px 0;max-width:100%"><div id="ac-videos"><p id="ac-waiting" role="img" aria-label="Waiting for the teacher's video" style="display:flex;align-items:center;justify-content:center;color:#9fb0cc"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></p></div></div>
+</div><h3 id="ac-board-h" class="ac-words">Whiteboard</h3>
+{% if not is_teacher %}<p class="small ac-words" id="ac-perm">Only the teacher writes on the board. Ask your teacher to let you write.</p>{% endif %}<div id="ac-boardbox" style="background:#fff;border-radius:12px;overflow:hidden"><canvas id="ac-board" width="800" height="420" style="width:100%;background:#fff;border:1px solid #ccc;touch-action:none"></canvas></div></div>
+<div id="ac-matpanel" hidden><h3 class="ac-words">Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
+<h3 class="ac-words">Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}</div>
+{% if kind != 'public' %}<p class="ac-words"><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
+{% if is_teacher %}<div class="ac-toolbar" role="toolbar" aria-label="Teacher tools"><button class="btn" type="button" id="ac-listen" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg></span><span class="ac-lbl ac-words">Write what I say</span></button><button class="btn secondary ac-icon" type="button" id="ac-share" data-no-icon aria-label="Share screen" title="Share screen"><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span></button><label for="ac-doc-file" class="btn secondary" data-no-icon title="Choose a PDF or picture" aria-label="Choose a PDF or picture" style="display:inline-flex;align-items:center;margin-bottom:8px;cursor:pointer"><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v4h16v-4"/></svg></span></label><button class="btn" type="button" id="ac-doc-show" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16V8M8 12l4-4 4 4"/></svg></span><span class="ac-words">Show on screen</span></button><button class="btn secondary" type="button" id="ac-doc-close" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></span><span class="ac-words">Remove from screen</span></button><button class="btn secondary" type="button" id="ac-clear" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></span><span class="ac-words">Clear board</span></button><button class="btn secondary" type="button" id="ac-allow-all" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="ac-words">Allow everyone to write</span></button></div><div id="ac-requests"></div><p class="small ac-words" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" aria-label="Type or speak a line to write on the board" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></span><span class="ac-words">Write on board</span></button></div><p class="small ac-words">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card ac-words" style="margin-top:10px"><h3 class="ac-words">Show a document on the screen</h3><p class="small ac-words">PDF lesson or picture (PNG, JPG, WEBP), up to 25 MB. A PDF shows one page at a time: use &lsaquo; and &rsaquo; to move everyone through the slides.</p><input id="ac-doc-name" maxlength="160" aria-label="Title" class="ac-words"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" aria-label="Choose a PDF or picture" class="ac-words"><p class="small ac-words" id="ac-doc-status"></p></div>{% endif %}
+<div class="card" style="margin-top:10px"><h3 class="ac-words">Who can write on the board</h3><div id="ac-people" class="small"></div></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
+{% if not is_teacher and kind != 'public' %}<div class="ac-toolbar" role="toolbar" aria-label="Your tools"><button type="button" id="ac-hand" data-no-icon aria-label="Ask to speak" title="Ask to speak" aria-pressed="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v7M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-3l-3.5-4.5a2 2 0 0 1 3-2.5L6 13"/></svg></button></div>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <script>
 (function(){
@@ -26340,7 +26348,7 @@ const cv=document.getElementById('ac-board'),cx=cv.getContext('2d');
 cx.lineWidth=2;cx.lineCap='round';cx.strokeStyle='#111';
 const box=document.getElementById('ac-videos');
 const BOARD={{ board_url|tojson }},TOKEN={{ token_url|tojson }},BACK={{ back_url|tojson }};
-const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }},DOC_URL={{ doc_url|tojson }},SLIDE_URL={{ slide_url|tojson }};
+const ME={{ me_id|tojson }},IS_TEACHER={{ is_teacher|tojson }},DOC_URL={{ doc_url|tojson }},SLIDE_URL={{ slide_url|tojson }},MY_NAME={{ me_name|tojson }};
 let canDraw=IS_TEACHER;
 const CSRF_T={{ csrf_token()|tojson }};
 const stageEl=document.getElementById('ac-stage'),screenbox=document.getElementById('ac-screenbox'),boardbox=document.getElementById('ac-boardbox'),boardH=document.getElementById('ac-board-h'),screenEl=document.getElementById('ac-screen'),docEl=document.getElementById('ac-doc');
@@ -26349,8 +26357,10 @@ const LAYOUT_NAMES={split:'Stacked: screen above board',board:'Board big, screen
 let docShown=false;
 function setLayout(m){
   if(!stageEl||!boardbox||!screenbox)return;
+  if(window.matchMedia&&window.matchMedia('(min-width:760px)').matches)m='split';
   if(LAYOUTS.indexOf(m)<0)m='split';
   stageEl.dataset.mode=m;
+  if(screenbox){screenbox.style.left='';screenbox.style.top='';screenbox.style.right='';screenbox.style.bottom=''}
   if(m==='screen'){
     if(boardbox.parentNode!==screenbox)screenbox.appendChild(boardbox);
     boardbox.classList.add('ac-corner');screenbox.classList.remove('ac-corner');
@@ -26364,6 +26374,30 @@ function setLayout(m){
   syncTabs(m);
 }
 function syncTabs(m){document.querySelectorAll('#ac-tabs [data-tab]').forEach(function(t){t.setAttribute('aria-selected',t.getAttribute('data-tab')===m?'true':'false')})}
+// The corner screen can be dragged over the whiteboard (board-big layout). It stays inside the board area.
+(function(){
+  if(!screenbox||!stageEl)return;
+  let drag=null;
+  screenbox.addEventListener('pointerdown',function(e){
+    if(!screenbox.classList.contains('ac-corner'))return;
+    if(e.target.closest&&e.target.closest('button,a,input,textarea'))return;
+    const sr=screenbox.getBoundingClientRect();
+    drag={dx:e.clientX-sr.left,dy:e.clientY-sr.top};
+    try{screenbox.setPointerCapture(e.pointerId)}catch(_){}
+    e.preventDefault();
+  });
+  screenbox.addEventListener('pointermove',function(e){
+    if(!drag)return;
+    const sg=stageEl.getBoundingClientRect(),w=screenbox.offsetWidth,h=screenbox.offsetHeight;
+    let x=e.clientX-sg.left-drag.dx,y=e.clientY-sg.top-drag.dy;
+    x=Math.min(Math.max(0,x),Math.max(0,stageEl.clientWidth-w));
+    y=Math.min(Math.max(0,y),Math.max(0,stageEl.clientHeight-h));
+    screenbox.style.left=x+'px';screenbox.style.top=y+'px';screenbox.style.right='auto';screenbox.style.bottom='auto';
+  });
+  function endDrag(){drag=null}
+  screenbox.addEventListener('pointerup',endDrag);
+  screenbox.addEventListener('pointercancel',endDrag);
+})();
 // Layout follows the content unless this viewer chose one: a shared document puts the screen big, otherwise stacked.
 function autoLayout(){
   let pref=null;try{pref=localStorage.getItem('koja_ac_layout')}catch(e){}
@@ -26394,7 +26428,7 @@ function loadPdfLib(){
   });
 }
 function buildSlides(box){
-  box.innerHTML='<div id="ac-slide" style="position:relative;aspect-ratio:800/420;width:100%;background:#050b14;overflow:hidden"><canvas id="ac-slide-cv" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block"></canvas><p id="ac-slide-msg" class="small" style="position:absolute;inset:0;margin:0;color:#ddd;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px"></p></div><div class="ac-pager"><button id="ac-slide-prev" class="btn secondary ac-icon ac-round" type="button" aria-label="Previous slide" title="Previous slide">&#x2039;</button><span id="ac-slide-count" class="small ac-count"></span><button id="ac-slide-next" class="btn secondary ac-icon ac-round" type="button" aria-label="Next slide" title="Next slide">&#x203A;</button></div>';
+  box.innerHTML='<div id="ac-slide" style="position:relative;aspect-ratio:800/420;width:100%;background:#050b14;overflow:hidden"><canvas id="ac-slide-cv" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block"></canvas><p id="ac-slide-msg" class="small" style="position:absolute;inset:0;margin:0;color:#ddd;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px"></p></div><div class="ac-pager"><button id="ac-slide-prev" class="btn secondary ac-icon ac-round" type="button" aria-label="Previous slide" title="Previous slide" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></span></button><span id="ac-slide-count" class="small ac-count"></span><button id="ac-slide-next" class="btn secondary ac-icon ac-round" type="button" aria-label="Next slide" title="Next slide" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></span></button></div>';
   const p=document.getElementById('ac-slide-prev'),n=document.getElementById('ac-slide-next');
   if(p)p.onclick=function(){goSlide(-1)};
   if(n)n.onclick=function(){goSlide(1)};
@@ -26442,6 +26476,7 @@ function saveSlide(){
   fetch(SLIDE_URL,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF_T},body:JSON.stringify({eid:curDoc.id,page:curDoc.page||1,pages:curDoc.pages||0})}).catch(function(){});
 }
 window.addEventListener('resize',function(){if(curDoc&&isPdfDoc(curDoc)&&pdfDoc)renderSlide()});
+window.addEventListener('resize',function(){autoLayout()});
 function showDoc(d){
   const wrap=document.getElementById('ac-doc-wrap'),box=document.getElementById('ac-doc'),tt=document.getElementById('ac-doc-title');
   docShown=!!(d&&d.url);
@@ -26464,7 +26499,7 @@ function showDoc(d){
 }
 function setWrite(on){canDraw=IS_TEACHER||!!on;cv.style.cursor=canDraw?'crosshair':'not-allowed';const pm=document.getElementById('ac-perm');if(pm&&!IS_TEACHER)pm.textContent=canDraw?'You can write on the board now.':'Only the teacher writes on the board. Ask your teacher to let you write.'}
 let room=null;
-function setStatus(t){st.textContent=t}
+function setStatus(t){st.textContent=t;st.classList.toggle('ac-words',!/could not|failed|blocked|not supported|stopped|not allowed/i.test(t))}
 function drawText(t,x,y){cx.font='22px sans-serif';cx.fillStyle='#111';cx.fillText(t,x,y);cx.fillStyle='#111'}
 let lineY=40;
 function wrapLines(text){const words=text.split(/\s+/),out=[];let line='';cx.font='22px sans-serif';for(const w of words){const test=line?line+' '+w:w;if(cx.measureText(test).width>740&&line){out.push(line);line=w}else line=test}if(line)out.push(line);return out}
@@ -26482,7 +26517,7 @@ cv.onpointerup=endStroke;cv.onpointercancel=endStroke;
 const clr=document.getElementById('ac-clear');
 if(clr)clr.onclick=()=>{clearBoard();send({c:1});save({kind:'clear'})};
 const shb=document.getElementById('ac-share');let sharing=false;
-if(shb)shb.onclick=async()=>{try{if(!room)return;sharing=!sharing;await room.localParticipant.setScreenShareEnabled(sharing);shb.textContent=sharing?'\u23F9':'\u{1F5A5}';shb.title=sharing?'Stop sharing':'Share screen'}catch(e){sharing=false;setStatus('Screen sharing is blocked or not supported on this device.')}};
+if(shb)shb.onclick=async()=>{try{if(!room)return;sharing=!sharing;await room.localParticipant.setScreenShareEnabled(sharing);shb.innerHTML='<span class="ac-ic">'+(sharing?'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>':'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>')+'</span>';shb.title=sharing?'Stop sharing':'Share screen'}catch(e){sharing=false;setStatus('Screen sharing is blocked or not supported on this device.')}};
 if(IS_TEACHER){
   const perm={};let allOn=false;
   const allBtn=document.getElementById('ac-allow-all');
@@ -26520,6 +26555,7 @@ if(IS_TEACHER){
   if(tBtn)tBtn.onclick=goType;
   if(tIn)tIn.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();goType()}};
 }
+function setLbl(t){const l=document.querySelector('#ac-listen .ac-lbl');if(l)l.textContent=t}
 function writeLine(text){
   if(!text)return;
   for(const line of wrapLines(text)){
@@ -26535,10 +26571,10 @@ if(lb){
     let rec=null,on=false;
     const make=()=>{const r=new SR();r.continuous=true;r.interimResults=false;r.lang='en-US';
       r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal)writeLine(e.results[i][0].transcript.trim())}};
-      r.onerror=e=>{if(lst)lst.textContent='Speech stopped: '+(e.error||'error')+'. Press the button to start again.';on=false;lb.textContent='● Write what I say'};
+      r.onerror=e=>{if(lst)lst.textContent='Speech stopped: '+(e.error||'error')+'. Press the button to start again.';on=false;setLbl('Write what I say')};
       r.onend=()=>{if(on){try{r.start()}catch(_){}}};return r};
     lb.onclick=()=>{
-      if(on){on=false;try{rec&&rec.stop()}catch(_){}lb.textContent='● Write what I say';if(lst)lst.textContent='Stopped. Press the button to write again.';return}
+      if(on){on=false;try{rec&&rec.stop()}catch(_){}setLbl('Write what I say');if(lst)lst.textContent='Stopped. Press the button to write again.';return}
       try{rec=make();rec.start();on=true;lb.textContent='■ Stop writing';if(lst)lst.textContent='Listening… speak clearly. Each finished sentence appears on the board.'}
       catch(e){if(lst)lst.textContent='Could not start listening. Allow the microphone and try again.'}
     };
@@ -26552,25 +26588,39 @@ document.getElementById('ac-leave').onclick=async()=>{try{if(room)await room.dis
     if(!d.token){setStatus(d.error||'Live video is not configured. You can still use the whiteboard.');return}
     const LK=window.LivekitClient;
     if(!LK){setStatus('Video library did not load. Check your connection and reload.');return}
-    room=new LK.Room();
+    const pending=new Map();
+    const CHECK_SVG='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+    const X_SVG='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    let speaking=false;
+    function renderRequests(){const box=document.getElementById('ac-requests');if(!box)return;box.innerHTML='';pending.forEach(function(name,id){const row=document.createElement('div');row.className='ac-req';row.style.cssText='display:flex;align-items:center;gap:8px;margin:6px 0';const nm=document.createElement('span');nm.textContent=name;nm.style.flex='1';const ok=document.createElement('button');ok.type='button';ok.className='btn';ok.setAttribute('aria-label','Allow to speak and write');ok.title='Allow';ok.innerHTML=CHECK_SVG;ok.onclick=function(){approve(id)};const no=document.createElement('button');no.type='button';no.className='btn secondary';no.setAttribute('aria-label','Not now');no.title='Not now';no.innerHTML=X_SVG;no.onclick=function(){deny(id)};row.append(nm,ok,no);box.appendChild(row)})}
+    function approve(id){pending.delete(id);renderRequests();send({g:{u:id,on:true}});send({ok:{u:id,on:true}});save({kind:'grant',u:id,on:true})}
+    function deny(id){pending.delete(id);renderRequests();send({ok:{u:id,on:false}})}
+    function setHandState(){const h=document.getElementById('ac-hand');if(!h)return;h.setAttribute('aria-pressed',speaking?'true':'false');h.setAttribute('aria-label',speaking?'Stop speaking':'Ask to speak');h.title=h.getAttribute('aria-label')}
+    async function enableMic(on){try{await room.localParticipant.setMicrophoneEnabled(on);speaking=on;setHandState()}catch(e){setStatus('Your microphone is blocked. Allow access in your browser and try again.')}}
+    function handleRequest(o){
+      if(o.req&&IS_TEACHER&&o.req.u){if(o.req.on)pending.set(o.req.u,String(o.req.name||'Learner').slice(0,60));else pending.delete(o.req.u);renderRequests()}
+      if(o.ok&&o.ok.u===ME){if(o.ok.on)enableMic(true);else setStatus('Your teacher is not ready for you to speak yet.')}
+    }
+    document.addEventListener('click',function(e){const h=e.target.closest&&e.target.closest('#ac-hand');if(!h||IS_TEACHER)return;if(speaking){enableMic(false);send({req:{u:ME,name:MY_NAME,on:false}});return}send({req:{u:ME,name:MY_NAME,on:true}});setStatus('Request sent. Your teacher will allow you to speak.')});
+    room=new LK.Room({audioCaptureDefaults:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
     const shown=new Set();
     function attach(track){if(!track||shown.has(track.sid)||(track.kind!=='video'&&track.kind!=='audio'))return;shown.add(track.sid);const el=track.attach();el.style.width='100%';if(track.kind==='video'){el.style.maxHeight='45vh';el.style.background='#000';el.style.objectFit='contain';el.style.borderRadius='12px';const w=document.getElementById('ac-waiting');if(w)w.remove()}box.appendChild(el)}
     room.on(LK.RoomEvent.TrackSubscribed,(track)=>attach(track));
-    room.on(LK.RoomEvent.LocalTrackPublished,(pub)=>attach(pub.track));
+    room.on(LK.RoomEvent.LocalTrackPublished,(pub)=>{if(pub.track&&pub.track.kind==='video')attach(pub.track)});
     room.on(LK.RoomEvent.TrackUnsubscribed,(track)=>{shown.delete(track.sid);track.detach().forEach(el=>el.remove())});
-    room.on(LK.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)drawStroke(o.s);if(o.c){clearBoard();lineY=40}if(o.t)drawText(o.t,o.x,o.y);if(o.g&&(o.g.u==='*'||o.g.u===ME))setWrite(o.g.on);if(o.doc!==undefined)showDoc(o.doc)}catch(_){}});
+    room.on(LK.RoomEvent.DataReceived,b=>{try{const o=JSON.parse(new TextDecoder().decode(b));if(o.s)drawStroke(o.s);if(o.c){clearBoard();lineY=40}if(o.t)drawText(o.t,o.x,o.y);if(o.g&&(o.g.u==='*'||o.g.u===ME))setWrite(o.g.on);if(o.doc!==undefined)showDoc(o.doc);handleRequest(o)}catch(_){}});
     room.on(LK.RoomEvent.Disconnected,()=>setStatus('Disconnected. Reload the page to rejoin.'));
     await room.connect(d.url,d.token);
     setStatus('Connected.');
     room.remoteParticipants.forEach(p=>p.trackPublications.forEach(x=>attach(x.track)));
-    {% if is_teacher or kind != 'public' %}try{await room.localParticipant.enableCameraAndMicrophone()}
-    catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}{% else %}setStatus('Connected. You are watching this live class.');{% endif %}
+    {% if is_teacher %}try{await room.localParticipant.enableCameraAndMicrophone()}
+    catch(e){setStatus('Connected. Your camera or microphone is blocked, so you are watching only. Allow access in your browser and reload.')}{% else %}setStatus('Connected. {% if kind != 'public' %}Press the hand to ask to speak.{% else %}You are watching this live class.{% endif %}');{% endif %}
   }catch(e){setStatus('Could not join the live room: '+e.message)}
 })();
 })();
 </script>''',
                     token_url=url_for("ac_room_token", kind=kind, rid=rid), board_url=url_for("ac_board", kind=kind, rid=rid), kind=kind, rid=rid,
-                    back_url=back_url, is_teacher=is_teacher, me_id=_ac_uid(), doc_url=url_for("ac_room_doc", kind=kind, rid=rid), slide_url=url_for("ac_room_slide", kind=kind, rid=rid), teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
+                    back_url=back_url, is_teacher=is_teacher, me_id=_ac_uid(), me_name=((current_user() or {}).get('full_name') or 'Learner'), doc_url=url_for("ac_room_doc", kind=kind, rid=rid), slide_url=url_for("ac_room_slide", kind=kind, rid=rid), teaching_mats=_ac_teaching_rows(kind, rid)[0], teaching_eqs=_ac_teaching_rows(kind, rid)[1])
 
 
 @app.route("/academic/room/<kind>/<rid>/board", methods=["GET", "POST"])
