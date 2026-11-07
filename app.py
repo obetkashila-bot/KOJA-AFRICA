@@ -23486,7 +23486,7 @@ def ac_college_view(slug):
 {% for k in courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
 {% if k.description %}<p class="small">{{ k.description }}</p>{% endif %}
-{% if user and not is_owner %}
+{% if not is_owner and not user %}<p><a class="btn" href="{{ url_for('login', next=request.path) }}">Sign in to apply</a></p>{% endif %}{% if user and not is_owner %}
   {% if k.id in mine_ids %}<p class="small">You have an application. <a href="{{ url_for('ac_my_applications') }}">See your applications</a></p>
   {% else %}<a class="btn" href="{{ url_for('ac_college_apply', slug=c.slug, cid=k.id) }}">Apply for this course</a>{% endif %}
 {% endif %}
@@ -23624,8 +23624,10 @@ def _college_student_number(c):
     name = c.get("name") or ""
     prefix = "NKU" if "nkumbi" in name.lower() else (re.sub(r"[^A-Z]", "", name.upper())[:3] or "COL").ljust(3, "X")
     year = utc_now()[:4]
-    issued = [x for x in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000) if x.get("student_number")]
-    return "%s%s%04d" % (prefix, year, len(issued) + 1)
+    head = prefix + year
+    # Count across all colleges that share this prefix, so numbers never repeat.
+    issued = [x for x in _ac_rows("koja_college_applications", {}, limit=20000) if str(x.get("student_number") or "").startswith(head)]
+    return "%s%04d" % (head, len(issued) + 1)
 
 
 @app.route("/academic/college/<slug>/apply/<cid>", methods=["GET", "POST"])
@@ -23723,7 +23725,7 @@ def ac_application_view(aid):
     return _ac_page("Application", r'''
 <div class="card"><h2>{{ course.title }}</h2><p class="small">{{ c.name }}{% if intake %} · {{ intake.name }}{% endif %}</p>
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
-{% if a.decision_note %}<p class="small"><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
+{% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if a.decision_note %}<p class="small"><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
 {% if not is_owner and a.status == 'offered' %}
 <div class="card"><h3>You have an offer</h3>
 <form method="post" action="{{ url_for('ac_application_respond', aid=a.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="action" value="accept" type="submit">Accept offer</button></form>
@@ -23909,7 +23911,7 @@ def ac_college_admissions(slug):
     seats_used = {i["id"]: sum(1 for x in everything if x.get("intake_id") == i["id"] and x.get("status") in ("accepted", "enrolled")) for i in intakes}
     return _ac_page("Admissions", r'''
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a></p>
+<p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a></p>
 <p class="small">
 <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
@@ -23969,6 +23971,388 @@ def ac_college_admissions_csv(slug):
     return Response(out.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": 'attachment; filename="%s-admissions.csv"' % (secure_filename(c.get("slug") or "college") or "college"),
                              "Cache-Control": "private, no-store"})
+
+
+# ---- college Phase 1: fees, payments, hostels, rooms, bedspaces -------------------
+def _fin_student_ok(a):
+    return bool(a and a.get("status") in ("accepted", "enrolled"))
+
+
+def _fin_totals(aid):
+    charges = _ac_rows("koja_college_charges", {"application_id": aid}, order="created_at.asc", limit=500)
+    payments = _ac_rows("koja_college_payments", {"application_id": aid}, order="created_at.desc", limit=500)
+    total = round(sum(float(x.get("amount") or 0) for x in charges), 2)
+    paid = round(sum(float(x.get("amount") or 0) for x in payments if x.get("status") == "verified"), 2)
+    return charges, payments, total, paid, round(total - paid, 2)
+
+
+def _college_students(c, statuses=("accepted", "enrolled")):
+    return [a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.asc", limit=2000)
+            if a.get("status") in statuses]
+
+
+def _bed_in_college(c, bid):
+    b = first_row("koja_accommodation_bedspaces", {"id": bid}) if bid else None
+    if not b:
+        return None
+    r = first_row("koja_accommodation_rooms", {"id": b["room_id"]})
+    h = first_row("koja_accommodation_hostels", {"id": r["hostel_id"]}) if r else None
+    if not h or h.get("college_id") != c["id"]:
+        return None
+    return {"bed": b, "room": r, "hostel": h}
+
+
+def _college_beds(c):
+    """Every bedspace in the college with its label and any active occupant."""
+    names = {a["id"]: a.get("full_name") for a in _college_students(c, ("accepted", "enrolled", "draft", "submitted", "under_review", "offered", "declined", "rejected"))}
+    active = {x["bedspace_id"]: x for x in _ac_rows("koja_accommodation_allocations", {"college_id": c["id"], "status": "active"}, limit=5000)}
+    tree = []
+    for h in _ac_rows("koja_accommodation_hostels", {"college_id": c["id"]}, order="name.asc", limit=200):
+        rooms = []
+        for r in _ac_rows("koja_accommodation_rooms", {"hostel_id": h["id"]}, order="room_code.asc", limit=500):
+            beds = []
+            for b in _ac_rows("koja_accommodation_bedspaces", {"room_id": r["id"]}, order="number.asc", limit=500):
+                al = active.get(b["id"])
+                beds.append({"id": b["id"], "number": b["number"], "alloc": al,
+                             "occupant": names.get(al["application_id"], "Student") if al else None})
+            rooms.append({"room": r, "beds": beds})
+        tree.append({"hostel": h, "rooms": rooms})
+    return tree
+
+
+@app.route("/academic/college/<slug>/finance")
+@login_required
+def ac_college_finance(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(404)
+    students = _college_students(c)
+    rows = []
+    for a in students:
+        _, _, total, paid, bal = _fin_totals(a["id"])
+        rows.append({"a": a, "total": total, "paid": paid, "bal": bal})
+    names = {a["id"]: a.get("full_name") for a in students}
+    pending = _ac_rows("koja_college_payments", {"college_id": c["id"], "status": "pending"}, order="created_at.asc", limit=500)
+    return _ac_page("Fees and payments", r'''
+<div class="card"><h2>Fees and payments: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a></p>
+<h3>Payments waiting to be confirmed</h3>
+{% for p in pending %}<div class="card" style="margin:8px 0"><strong>{{ names.get(p.application_id, 'Student') }}</strong>
+<p class="small">{{ p.method }} · reference {{ p.reference }} · {{ p.amount }}</p>
+{% if p.slip_path %}<p class="small"><a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">View bank slip</a></p>{% endif %}
+<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="decision" value="verified" type="submit">Confirm payment</button></form>
+<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" name="decision" value="rejected" type="submit">Reject</button></form></div>
+{% else %}<p class="small">No payments waiting.</p>{% endfor %}
+</div>
+<div class="card"><h3>Student balances</h3>
+{% for r in rows %}<p><a href="{{ url_for('ac_application_money', aid=r.a.id) }}">{{ r.a.full_name }}</a>{% if r.a.student_number %} · {{ r.a.student_number }}{% endif %} · charged {{ '%.2f' % r.total }} · paid {{ '%.2f' % r.paid }} · <strong>balance {{ '%.2f' % r.bal }}</strong></p>
+{% else %}<p class="small">No accepted or enrolled students yet.</p>{% endfor %}
+</div>
+<div class="card"><h3>Add a charge</h3>
+<form method="post" action="{{ url_for('ac_college_charge_add', slug=c.slug) }}">{{ csrf }}
+<label>Student<select name="application_id">{% for a in students %}<option value="{{ a.id }}">{{ a.full_name }}{% if a.student_number %} ({{ a.student_number }}){% endif %}</option>{% endfor %}</select></label>
+<label>Description<input name="description" required maxlength="150" placeholder="e.g. Tuition fees"></label>
+<label>Amount<input name="amount" type="number" min="0.01" step="0.01" required></label>
+<button class="btn" type="submit">Add charge</button></form></div>''', c=c, rows=rows, students=students, names=names, pending=pending, csrf_ok=True)
+
+
+@app.route("/academic/college/<slug>/charge", methods=["POST"])
+@login_required
+def ac_college_charge_add(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    back = url_for("ac_college_finance", slug=slug)
+    a = first_row("koja_college_applications", {"id": request.form.get("application_id"), "college_id": c["id"]})
+    if not _fin_student_ok(a):
+        flash("Choose an accepted or enrolled student.", "danger")
+        return redirect(back)
+    desc = clean(request.form.get("description"))[:150]
+    amount = _ac_num(request.form.get("amount"), 0, 0, 1e9)
+    if not desc or amount <= 0:
+        flash("Add a description and an amount.", "danger")
+        return redirect(back)
+    _, err = db_insert("koja_college_charges", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": a["id"],
+                       "description": desc, "amount": round(amount, 2), "currency": "ZMW", "created_at": utc_now()})
+    flash("Charge added." if not err else "Could not add the charge.", "success" if not err else "danger")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/payment/<pid>/decide", methods=["POST"])
+@login_required
+def ac_college_payment_decide(slug, pid):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    p = first_row("koja_college_payments", {"id": pid, "college_id": c["id"]})
+    if not p:
+        abort(404)
+    decision = request.form.get("decision")
+    if decision not in ("verified", "rejected"):
+        abort(400)
+    if p.get("status") != "pending":
+        flash("This payment has already been decided.", "info")
+        return redirect(url_for("ac_college_finance", slug=slug))
+    db_update("koja_college_payments", {"id": pid}, {"status": decision, "verified_at": utc_now(), "verified_by": _ac_uid()})
+    flash("Payment confirmed. The balance is updated." if decision == "verified" else "Payment rejected.", "success")
+    return redirect(url_for("ac_college_finance", slug=slug))
+
+
+@app.route("/academic/application/<aid>/money")
+@login_required
+def ac_application_money(aid):
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a:
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    is_owner = c.get("owner_user_id") == _ac_uid()
+    is_student = a.get("student_user_id") == _ac_uid()
+    if not is_owner and not is_student:
+        abort(404)
+    if not _fin_student_ok(a):
+        return _ac_page("Fees and payments", r'''<div class="card"><h2>Fees and payments</h2>
+<p>Fees and payments open once your application is accepted.</p>
+<p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''', a=a)
+    charges, payments, total, paid, bal = _fin_totals(aid)
+    return _ac_page("Fees and payments", r'''
+<div class="card"><h2>Fees and payments</h2><p class="small">{{ c.name }} · {{ a.full_name }}{% if a.student_number %} · {{ a.student_number }}{% endif %}</p>
+<p>Charged: <strong>{{ '%.2f' % total }}</strong> · Paid (confirmed): <strong>{{ '%.2f' % paid }}</strong> · Balance: <strong>{{ '%.2f' % bal }}</strong></p>
+<p class="small">Only payments the college has confirmed reduce your balance.</p></div>
+<div class="card"><h3>Charges</h3>
+{% for x in charges %}<p class="small">{{ x.description }}: {{ '%.2f' % x.amount }}</p>{% else %}<p class="small">No charges yet.</p>{% endfor %}</div>
+<div class="card"><h3>Payments</h3>
+{% for p in payments %}<p class="small">{{ p.created_at[:10] }} · {{ p.amount }} · reference {{ p.reference }} · <strong>{{ p.status }}</strong>{% if p.slip_path %} · <a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">slip</a>{% endif %}</p>
+{% else %}<p class="small">No payments yet.</p>{% endfor %}</div>
+{% if is_student %}
+<div class="card"><h3>Record a payment</h3>
+<p class="small">Pay at Zanaco, then enter the reference from your deposit. The college confirms it against its bank statement before it counts.</p>
+<form method="post" enctype="multipart/form-data" action="{{ url_for('ac_application_payment', aid=a.id) }}">{{ csrf }}
+<label>Amount<input name="amount" type="number" min="0.01" step="0.01" required></label>
+<label>Zanaco reference<input name="reference" required maxlength="60"></label>
+<label>Deposit slip (optional)<input type="file" name="slip" accept=".pdf,.png,.jpg,.jpeg,.webp"></label>
+<button class="btn" type="submit">Record payment</button></form></div>
+{% endif %}''', a=a, c=c, charges=charges, payments=payments, total=total, paid=paid, bal=bal, is_student=is_student, csrf_ok=True)
+
+
+@app.route("/academic/application/<aid>/payment", methods=["POST"])
+@login_required
+def ac_application_payment(aid):
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a or a.get("student_user_id") != _ac_uid() or not _fin_student_ok(a):
+        abort(404)
+    back = url_for("ac_application_money", aid=aid)
+    amount = _ac_num(request.form.get("amount"), 0, 0, 1e9)
+    reference = clean(request.form.get("reference"))[:60]
+    if amount <= 0 or not reference:
+        flash("Enter the amount and the Zanaco reference.", "danger")
+        return redirect(back)
+    row = {"id": str(uuid.uuid4()), "college_id": a["college_id"], "application_id": aid, "amount": round(amount, 2),
+           "method": "zanaco", "reference": reference, "status": "pending", "created_at": utc_now()}
+    slip = request.files.get("slip")
+    info = None
+    if slip and slip.filename:
+        info, uerr = upload_storage(slip, folder="college-payment-slips", public=False,
+                                    max_mb=COLLEGE_DOC_MB, allowed=COLLEGE_DOC_TYPES)
+        if uerr:
+            flash(uerr, "danger")
+            return redirect(back)
+        row.update(slip_path=info["path"], slip_mime=info.get("mime_type") or "", slip_name=info.get("file_name") or slip.filename)
+    _, err = db_insert("koja_college_payments", row)
+    if err:
+        if info:
+            delete_storage(info["path"])
+        flash("Could not record this payment. Check the reference is not already used at this college.", "danger")
+        return redirect(back)
+    flash("Payment recorded. It will count once the college confirms it.", "success")
+    return redirect(back)
+
+
+@app.route("/academic/payment/<pid>/slip")
+@login_required
+def ac_payment_slip(pid):
+    p = first_row("koja_college_payments", {"id": pid})
+    if not p or not p.get("slip_path"):
+        abort(404)
+    a = first_row("koja_college_applications", {"id": p["application_id"]}) or {}
+    c = first_row("koja_colleges", {"id": a.get("college_id")}) or {}
+    if c.get("owner_user_id") != _ac_uid() and a.get("student_user_id") != _ac_uid():
+        abort(404)
+    return _stream_private_file(p["slip_path"], p.get("slip_mime"), p.get("slip_name"))
+
+
+@app.route("/academic/college/<slug>/accommodation")
+@login_required
+def ac_college_accommodation(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(404)
+    tree = _college_beds(c)
+    students = [a for a in _college_students(c, ("enrolled",))]
+    seated = {x["application_id"] for x in _ac_rows("koja_accommodation_allocations", {"college_id": c["id"], "status": "active"}, limit=5000)}
+    free_students = [a for a in students if a["id"] not in seated]
+    free_beds = [(h["hostel"]["name"], r["room"]["room_code"], b) for h in tree for r in h["rooms"] for b in r["beds"] if not b["alloc"]]
+    return _ac_page("Hostels and rooms", r'''
+<div class="card"><h2>Hostels and rooms: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a></p>
+{% for h in tree %}<h3>{{ h.hostel.name }}</h3>
+{% for r in h.rooms %}<div class="card" style="margin:8px 0"><strong>Room {{ r.room.room_code }}</strong> <span class="small">· {{ r.beds|length }} bedspace(s)</span>
+{% for b in r.beds %}<p class="small">Bed {{ b.number }}: {% if b.alloc %}{{ b.occupant }} <form method="post" action="{{ url_for('ac_college_release', slug=c.slug, alloc_id=b.alloc.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" type="submit">Release</button></form>{% else %}<em>free</em>{% endif %}</p>{% endfor %}
+</div>{% else %}<p class="small">No rooms yet.</p>{% endfor %}
+{% else %}<p>No hostels yet.</p>{% endfor %}
+</div>
+<div class="card"><h3>Add a hostel</h3>
+<form method="post" action="{{ url_for('ac_college_hostel_add', slug=c.slug) }}">{{ csrf }}<label>Hostel name<input name="name" required maxlength="100"></label><button class="btn" type="submit">Add hostel</button></form></div>
+<div class="card"><h3>Add a room</h3>
+<p class="small">The room gets one bedspace for each place (bed 1, bed 2 and so on).</p>
+<form method="post" action="{{ url_for('ac_college_room_add', slug=c.slug) }}">{{ csrf }}
+<label>Hostel<select name="hostel_id">{% for h in tree %}<option value="{{ h.hostel.id }}">{{ h.hostel.name }}</option>{% endfor %}</select></label>
+<label>Room code<input name="room_code" required maxlength="20" placeholder="e.g. A01"></label>
+<label>Places (bedspaces)<input name="capacity" type="number" min="1" max="200" required></label>
+<button class="btn" type="submit">Add room</button></form></div>
+<div class="card"><h3>Allocate a student</h3>
+<p class="small">Only enrolled students can be allocated. A student can have one bedspace at a time.</p>
+<form method="post" action="{{ url_for('ac_college_allocate', slug=c.slug) }}">{{ csrf }}
+<label>Student<select name="application_id">{% for a in free_students %}<option value="{{ a.id }}">{{ a.full_name }}{% if a.student_number %} ({{ a.student_number }}){% endif %}</option>{% endfor %}</select></label>
+<label>Free bedspace<select name="bedspace_id">{% for hn, rc, b in free_beds %}<option value="{{ b.id }}">{{ hn }} · Room {{ rc }} · Bed {{ b.number }}</option>{% endfor %}</select></label>
+<button class="btn" type="submit">Allocate</button></form></div>''',
+                    c=c, tree=tree, free_students=free_students, free_beds=free_beds, csrf_ok=True)
+
+
+@app.route("/academic/college/<slug>/hostel", methods=["POST"])
+@login_required
+def ac_college_hostel_add(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    name = clean(request.form.get("name"))[:100]
+    if not name:
+        flash("Add a hostel name.", "danger")
+    else:
+        _, err = db_insert("koja_accommodation_hostels", {"id": str(uuid.uuid4()), "college_id": c["id"], "name": name, "created_at": utc_now()})
+        flash("Hostel added." if not err else "Could not add the hostel. The name may already exist.", "success" if not err else "danger")
+    return redirect(url_for("ac_college_accommodation", slug=slug))
+
+
+@app.route("/academic/college/<slug>/room", methods=["POST"])
+@login_required
+def ac_college_room_add(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    hostel = first_row("koja_accommodation_hostels", {"id": request.form.get("hostel_id"), "college_id": c["id"]})
+    code = clean(request.form.get("room_code"))[:20]
+    places = int(_ac_num(request.form.get("capacity"), 0, 0, 200))
+    if not hostel or not code or places < 1:
+        flash("Choose a hostel, add a room code and at least one place.", "danger")
+        return redirect(url_for("ac_college_accommodation", slug=slug))
+    room_id = str(uuid.uuid4())
+    _, err = db_insert("koja_accommodation_rooms", {"id": room_id, "hostel_id": hostel["id"], "room_code": code,
+                       "capacity": places, "created_at": utc_now()})
+    if err:
+        flash("Could not add the room. The room code may already exist in this hostel.", "danger")
+        return redirect(url_for("ac_college_accommodation", slug=slug))
+    for n in range(1, places + 1):
+        db_insert("koja_accommodation_bedspaces", {"id": str(uuid.uuid4()), "room_id": room_id, "number": n, "created_at": utc_now()})
+    flash("Room added with %d bedspace(s)." % places, "success")
+    return redirect(url_for("ac_college_accommodation", slug=slug))
+
+
+@app.route("/academic/college/<slug>/allocate", methods=["POST"])
+@login_required
+def ac_college_allocate(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    back = url_for("ac_college_accommodation", slug=slug)
+    a = first_row("koja_college_applications", {"id": request.form.get("application_id"), "college_id": c["id"]})
+    if not a or a.get("status") != "enrolled":
+        flash("Only enrolled students can be allocated.", "danger")
+        return redirect(back)
+    if not _bed_in_college(c, request.form.get("bedspace_id")):
+        flash("Choose a bedspace in this college.", "danger")
+        return redirect(back)
+    _, err = db_insert("koja_accommodation_allocations", {"id": str(uuid.uuid4()), "college_id": c["id"],
+                       "bedspace_id": request.form.get("bedspace_id"), "application_id": a["id"],
+                       "status": "active", "created_at": utc_now()})
+    flash("Student allocated." if not err else "That bedspace is taken, or the student already has one.", "success" if not err else "danger")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/allocation/<alloc_id>/release", methods=["POST"])
+@login_required
+def ac_college_release(slug, alloc_id):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    al = first_row("koja_accommodation_allocations", {"id": alloc_id, "college_id": c["id"]})
+    if not al:
+        abort(404)
+    if al.get("status") == "active":
+        db_update("koja_accommodation_allocations", {"id": alloc_id}, {"status": "released", "released_at": utc_now()})
+    flash("Bedspace released.", "success")
+    return redirect(url_for("ac_college_accommodation", slug=slug))
+
+
+@app.route("/academic/application/<aid>/room")
+@login_required
+def ac_application_room(aid):
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a or a.get("student_user_id") != _ac_uid():
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    current = first_row("koja_accommodation_allocations", {"application_id": aid, "status": "active"})
+    current_label = None
+    if current:
+        info = _bed_in_college(c, current["bedspace_id"])
+        if info:
+            current_label = "%s · Room %s · Bed %s" % (info["hostel"]["name"], info["room"]["room_code"], info["bed"]["number"])
+    free = []
+    if a.get("status") == "enrolled":
+        for h in _college_beds(c):
+            for r in h["rooms"]:
+                for b in r["beds"]:
+                    if not b["alloc"]:
+                        free.append({"id": b["id"], "label": "%s · Room %s · Bed %s" % (h["hostel"]["name"], r["room"]["room_code"], b["number"])})
+    return _ac_page("Room", r'''
+<div class="card"><h2>Room</h2><p class="small">{{ c.name }}</p>
+{% if a.status != 'enrolled' %}<p>Room booking opens once you are enrolled.</p>
+{% else %}
+<p>Your room: <strong>{{ current_label or 'not allocated yet' }}</strong></p>
+<h3>{{ 'Change your room' if current_label else 'Choose a room' }}</h3>
+{% for f in free %}<form method="post" action="{{ url_for('ac_application_reserve', aid=a.id) }}" style="margin:6px 0">{{ csrf }}<input type="hidden" name="bedspace_id" value="{{ f.id }}"><button class="btn secondary" type="submit">{{ f.label }}</button></form>
+{% else %}<p class="small">No free bedspaces right now.</p>{% endfor %}
+{% endif %}
+<p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
+                    a=a, c=c, current_label=current_label, free=free, csrf_ok=True)
+
+
+@app.route("/academic/application/<aid>/reserve", methods=["POST"])
+@login_required
+def ac_application_reserve(aid):
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a or a.get("student_user_id") != _ac_uid() or a.get("status") != "enrolled":
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    back = url_for("ac_application_room", aid=aid)
+    bid = request.form.get("bedspace_id")
+    if not _bed_in_college(c, bid):
+        flash("That bedspace is not in this college.", "danger")
+        return redirect(back)
+    if first_row("koja_accommodation_allocations", {"bedspace_id": bid, "status": "active"}):
+        flash("That bedspace has just been taken. Please choose another.", "danger")
+        return redirect(back)
+    old = first_row("koja_accommodation_allocations", {"application_id": aid, "status": "active"})
+    if old:
+        db_update("koja_accommodation_allocations", {"id": old["id"]}, {"status": "released", "released_at": utc_now()})
+    _, err = db_insert("koja_accommodation_allocations", {"id": str(uuid.uuid4()), "college_id": c["id"], "bedspace_id": bid,
+                       "application_id": aid, "status": "active", "created_at": utc_now()})
+    if err:
+        if old:
+            db_update("koja_accommodation_allocations", {"id": old["id"]}, {"status": "active", "released_at": None})
+        flash("That bedspace has just been taken. Please choose another.", "danger")
+        return redirect(back)
+    flash("Room reserved.", "success")
+    return redirect(back)
 
 
 # ---- teacher application / profile ------------------------------------------------
