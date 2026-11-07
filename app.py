@@ -10905,6 +10905,7 @@ def admin():
 <div class="actions">
 <a class="btn" href="{{ url_for('admin_users') }}">Users</a>
 <a class="btn success" href="{{ url_for('admin_assignments') }}"> Assignments & Answers</a>
+<a class="btn success" href="{{ url_for('admin_colleges') }}"> Colleges</a>
 <a class="btn success" href="{{ url_for('admin_approvals') }}"> Approval Centre</a>
 <a class="btn" href="{{ url_for('admin_email_settings') }}"> Email Management</a>
 <a class="btn success" href="{{ url_for('admin_market') }}">️ KOJA Market</a>
@@ -10932,6 +10933,44 @@ def admin_users():
 {% for u in rows %}<tr><td>{{ u.get("full_name") or u.get("name") }}</td><td>{{ u.get("email") }}</td><td>{{ u.get("phone") or "" }}</td><td>{{ u.get("role") or "" }}</td><td>{{ "Yes" if u.get("is_admin") else "No" }}</td></tr>{% endfor %}
 </table></div>
 """,rows=rows)
+
+@app.route("/admin/colleges")
+@admin_required
+def admin_colleges():
+    rows = _ac_rows("koja_colleges", order="created_at.desc", limit=500)
+    counts = {}
+    for c in rows:
+        apps = _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)
+        counts[c["id"]] = len([a for a in apps if a.get("status") != "draft"])
+    return _ac_page("Colleges (admin)", r'''
+<div class="card"><h2>Colleges</h2><p class="small">Verify a college to show it to students. Suspend it to hide it again.</p>
+<p><a class="btn secondary" href="{{ url_for('admin') }}">Back to admin</a></p></div>
+{% for c in rows %}<div class="card" style="margin:8px 0"><h3>{{ c.name }}</h3>
+<p class="small">{{ c.location or '' }} · {{ c.contact or '' }} · status <strong>{{ c.status }}</strong> · {{ counts.get(c.id, 0) }} application(s)</p>
+<p><a class="btn secondary" href="{{ url_for('ac_college_view', slug=c.slug) }}">Open college</a>
+<a class="btn secondary" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a>
+<a class="btn secondary" href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees</a></p>
+<form method="post" action="{{ url_for('admin_college_status', cid=c.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="status" value="verified" type="submit">Verify</button></form>
+<form method="post" action="{{ url_for('admin_college_status', cid=c.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" name="status" value="suspended" type="submit">Suspend</button></form>
+<form method="post" action="{{ url_for('admin_college_status', cid=c.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" name="status" value="pending" type="submit">Set to pending</button></form>
+</div>
+{% else %}<div class="card"><p>No colleges registered yet.</p></div>{% endfor %}''',
+                    rows=rows, counts=counts, csrf_ok=True)
+
+
+@app.route("/admin/colleges/<cid>/status", methods=["POST"])
+@admin_required
+def admin_college_status(cid):
+    status = request.form.get("status")
+    if status not in ("pending", "verified", "suspended"):
+        abort(400)
+    c = first_row("koja_colleges", {"id": cid})
+    if not c:
+        abort(404)
+    _, err = db_update("koja_colleges", {"id": cid}, {"status": status, "updated_at": utc_now()})
+    flash(("College is now %s." % status) if not err else "Could not change the status.", "success" if not err else "danger")
+    return redirect(url_for("admin_colleges"))
+
 
 @app.route("/admin/assignments", methods=["GET"])
 @admin_required
@@ -23419,6 +23458,48 @@ def _college_by_slug(slug):
     return first_row("koja_colleges", {"slug": slug})
 
 
+NKUMBI_PROGRAMMES = [
+    ("Diploma in Animal Science", "Agriculture (diploma with Mulungushi University)"),
+    ("Diploma in Crop Science", "Agriculture (diploma with Mulungushi University)"),
+    ("Diploma in Sustainable Agriculture", "Agriculture (diploma with Mulungushi University)"),
+    ("General Agriculture (Craft Certificate and Trade Test)", "Agriculture"),
+    ("Agricultural Mechanics (Craft Certificate and Trade Test)", "Agriculture"),
+    ("Diploma in ZiCA (Zambia Institute of Chartered Accountants)", "Business and Management: Accountancy and Finance"),
+    ("Diploma in Accountancy / Government Accounting", "Business and Management: Accountancy and Finance"),
+    ("Accounting Technician Diploma (ATD)", "Business and Management: Accountancy and Finance"),
+    ("Diploma in Agribusiness Management", "Business and Management: Management and Administration"),
+    ("Diploma or Certificate in Human Resource Management", "Business and Management: Management and Administration"),
+    ("Management Studies and Business Administration", "Business and Management: Management and Administration"),
+    ("Project Management", "Business and Management: Management and Administration"),
+    ("Public Administration", "Business and Management: Management and Administration"),
+    ("Advanced Certificate in Secretarial and Office Management", "Business and Management: Management and Administration"),
+    ("Automotive Mechanics", "Engineering and Trades (craft certificates and trade tests)"),
+    ("Auto Electrical", "Engineering and Trades (craft certificates and trade tests)"),
+    ("Metal Fabrication and Welding", "Engineering and Trades (craft certificates and trade tests)"),
+    ("Bricklaying and Plastering", "Engineering and Trades (craft certificates and trade tests)"),
+    ("Carpentry and Joinery", "Engineering and Trades (craft certificates and trade tests)"),
+    ("Electrical and Electronics / Power Electrical", "Engineering and Trades (craft certificates and trade tests)"),
+    ("Secondary School Teaching Diploma", "Teacher Education and Secondary: subject combinations include Mathematics, Biology, Home Economics and Civic Education"),
+    ("Secondary School (Grade 8 to 12, GCE centre)", "Teacher Education and Secondary"),
+    ("Driving Courses", "Additional programmes"),
+]
+
+
+def _college_seed_programmes(c):
+    """Loads the Nkumbi programme list once, when the college has no courses yet. Returns an error message or None."""
+    if "nkumbi" not in (c.get("name") or "").lower():
+        return None
+    if _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=1):
+        return None
+    for i, (title, dept) in enumerate(NKUMBI_PROGRAMMES, start=1):
+        _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title, "course_code": "%02d" % i,
+                           "description": dept + ". Fee to be confirmed with the college.", "fee": 0,
+                           "currency": "ZMW", "created_at": utc_now()})
+        if err:
+            return str(err)[:300]
+    return None
+
+
 @app.route("/academic/colleges")
 def ac_colleges():
     rows = _ac_rows("koja_colleges", {"status": "verified"}, order="name.asc", limit=300)
@@ -23469,24 +23550,27 @@ def ac_college_new():
 def ac_college_view(slug):
     c = _college_by_slug(slug)
     uid = _ac_uid()
-    is_owner = bool(c and uid and c.get("owner_user_id") == uid)
-    if not c or (c.get("status") != "verified" and not is_owner):
+    is_owner = bool(c and uid and c.get("owner_user_id") == uid) or bool(c and (current_user() or {}).get("is_admin"))
+    is_admin = bool((current_user() or {}).get("is_admin"))
+    if not c or (c.get("status") != "verified" and not is_owner and not is_admin):
         abort(404)
+    seed_err = _college_seed_programmes(c) if is_owner or uid else None
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
     enrolments = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=500) if is_owner else []
     mine_ids = set()
     if uid and not is_owner:
         mine_ids = {e.get("course_id") for e in _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": uid}, limit=500)}
     return _ac_page(c.get("name") or "College", r'''
-<div class="card"><h2>{{ c.name }}</h2>
+<div class="card">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:120px;display:block;margin:0 auto 10px"> {% endif %}<h2>{{ c.name }}</h2>
 <p class="small">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</p>
 {% if c.about %}<p>{{ c.about }}</p>{% endif %}
 {% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}
 </div>
-<div class="card"><h3>Courses</h3>{% if is_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
-{% for k in courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>
+<div class="card"><h3>Courses</h3>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
+{% for k in courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
 {% if k.description %}<p class="small">{{ k.description }}</p>{% endif %}
+{% if is_owner %}<form method="post" action="{{ url_for('ac_course_set_code', cid=k.id) }}" class="small">{{ csrf }}<label>Course code (2 digits) <input name="course_code" value="{{ k.course_code or '' }}" maxlength="2" style="width:70px"></label> <button class="btn secondary" type="submit">Save code</button></form>{% endif %}
 {% if not is_owner and not user %}<p><a class="btn" href="{{ url_for('login', next=request.path) }}">Sign in to apply</a></p>{% endif %}{% if user and not is_owner %}
   {% if k.id in mine_ids %}<p class="small">You have an application. <a href="{{ url_for('ac_my_applications') }}">See your applications</a></p>
   {% else %}<a class="btn" href="{{ url_for('ac_college_apply', slug=c.slug, cid=k.id) }}">Apply for this course</a>{% endif %}
@@ -23497,6 +23581,7 @@ def ac_college_view(slug):
 <div class="card"><h3>Add a course</h3>
 <form method="post" action="{{ url_for('ac_college_course_add', slug=c.slug) }}">{{ csrf }}
 <label>Course title<input name="title" required maxlength="150"></label>
+<label>Course code (2 digits, optional: the next free number is used if blank)<input name="course_code" maxlength="2" placeholder="e.g. 06"></label>
 <label>Fee<input name="fee" type="number" min="0" step="0.01" value="0"></label>
 <label>Currency<input name="currency" value="ZMW" maxlength="3"></label>
 <label>Description<textarea name="description" rows="3" maxlength="1000"></textarea></label>
@@ -23505,20 +23590,64 @@ def ac_college_view(slug):
 <p class="small">{{ enrolments|length }} application(s) so far.</p>
 <p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a></p></div>
 {% endif %}''',
-                    c=c, courses=courses, is_owner=is_owner, enrolments=enrolments, mine_ids=mine_ids, user=current_user())
+                    c=c, courses=courses, is_owner=is_owner, enrolments=enrolments, mine_ids=mine_ids, user=current_user(), seed_err=seed_err)
+
+
+def _course_code_2(v):
+    """Two-digit course code (01 to 99), or None when the value is not a valid code."""
+    raw = re.sub(r"\D", "", str(v or "").strip())
+    if not raw or len(raw) > 2 or int(raw) < 1:
+        return None
+    return raw.zfill(2)
+
+
+def _course_code_taken(c, code, except_cid=None):
+    return any(k.get("course_code") == code and k.get("id") != except_cid
+               for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300))
+
+
+def _next_course_code(c):
+    used = {int(k["course_code"]) for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)
+            if _course_code_2(k.get("course_code"))}
+    n = 1
+    while n in used:
+        n += 1
+    return "%02d" % n if n <= 99 else None
+
+
+@app.route("/academic/course/<cid>/code", methods=["POST"])
+@login_required
+def ac_course_set_code(cid):
+    k = first_row("koja_college_courses", {"id": cid})
+    if not k:
+        abort(404)
+    c = first_row("koja_colleges", {"id": k["college_id"]}) or {}
+    if not _college_is_owner(c):
+        abort(403)
+    code = _course_code_2(request.form.get("course_code"))
+    if not code or _course_code_taken(c, code, except_cid=cid):
+        flash("Course code must be two digits (01 to 99) and not used by another course in this college.", "danger")
+    else:
+        _, err = db_update("koja_college_courses", {"id": cid}, {"course_code": code})
+        flash(("Course code set to %s." % code) if not err else "Could not change the course code.", "success" if not err else "danger")
+    return redirect(url_for("ac_college_view", slug=c.get("slug")))
 
 
 @app.route("/academic/college/<slug>/course", methods=["POST"])
 @login_required
 def ac_college_course_add(slug):
     c = _college_by_slug(slug)
-    if not c or c.get("owner_user_id") != _ac_uid():
+    if not _college_is_owner(c):
         abort(403)
     title = clean(request.form.get("title"))[:150]
     if not title:
         flash("Add a course title.", "danger")
         return redirect(url_for("ac_college_view", slug=slug))
-    _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title,
+    code = _course_code_2(request.form.get("course_code")) if clean(request.form.get("course_code")) else _next_course_code(c)
+    if not code or _course_code_taken(c, code):
+        flash("Course code must be two digits (01 to 99) and not used by another course in this college.", "danger")
+        return redirect(url_for("ac_college_view", slug=slug))
+    _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title, "course_code": code,
                       "description": clean(request.form.get("description"))[:1000],
                       "fee": _ac_num(request.form.get("fee"), 0), "currency": (re.sub(r"[^A-Z]", "", clean(request.form.get("currency")).upper())[:3] or "ZMW"),
                       "created_at": utc_now()})
@@ -23537,7 +23666,10 @@ COLLEGE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _college_is_owner(c):
-    return bool(c and _ac_uid() and c.get("owner_user_id") == _ac_uid())
+    """True for the college's own account, and for KOJA administrators (who oversee every college)."""
+    if not c:
+        return False
+    return bool((current_user() or {}).get("is_admin")) or bool(_ac_uid() and c.get("owner_user_id") == _ac_uid())
 
 
 def _college_csv_cell(v):
@@ -23621,14 +23753,15 @@ def _college_submit_problem(c, aid, v, docs):
     return None
 
 
-def _college_student_number(c):
-    name = c.get("name") or ""
-    prefix = "NKU" if "nkumbi" in name.lower() else (re.sub(r"[^A-Z]", "", name.upper())[:3] or "COL").ljust(3, "X")
-    year = utc_now()[:4]
-    head = prefix + year
-    # Count across all colleges that share this prefix, so numbers never repeat.
+def _college_student_number(c, course=None, intake=None):
+    """Student number: year + two-digit course code + a sequence, e.g. 202506003 (2025, course 06, student 003).
+    The year is the intake's opening year (or this year if the intake has no date).
+    The sequence counts every number already issued with the same year and code, so numbers never repeat."""
+    opens = str((intake or {}).get("opens_on") or "")
+    year = opens[:4] if re.match(r"^\d{4}", opens) else utc_now()[:4]
+    head = year + (_course_code_2((course or {}).get("course_code")) or "00")
     issued = [x for x in _ac_rows("koja_college_applications", {}, limit=20000) if str(x.get("student_number") or "").startswith(head)]
-    return "%s%04d" % (head, len(issued) + 1)
+    return "%s%03d" % (head, len(issued) + 1)
 
 
 @app.route("/academic/college/<slug>/apply/<cid>", methods=["GET", "POST"])
@@ -23663,7 +23796,7 @@ def ac_college_apply(slug, cid):
             _, err = db_insert("koja_college_applications", dict(v, id=aid, college_id=c["id"], course_id=cid,
                                student_user_id=uid, status="draft", created_at=utc_now(), updated_at=utc_now()))
         if err:
-            flash("Could not save your application. Please try again.", "danger")
+            flash("Could not save your application: " + str(err)[:300], "danger")
             return redirect(back)
         if request.form.get("action") == "submit":
             docs = _ac_rows("koja_college_application_documents", {"application_id": aid}, limit=20)
@@ -23713,7 +23846,7 @@ def ac_application_view(aid):
     if not a:
         abort(404)
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
-    is_owner = c.get("owner_user_id") == _ac_uid()
+    is_owner = _college_is_owner(c)
     is_student = a.get("student_user_id") == _ac_uid()
     if not is_student and not is_owner:
         abort(404)
@@ -23727,6 +23860,7 @@ def ac_application_view(aid):
 <div class="card"><h2>{{ course.title }}</h2><p class="small">{{ c.name }}{% if intake %} · {{ intake.name }}{% endif %}</p>
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
 {% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if a.decision_note %}<p class="small"><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
+{% if a.status in ('offered', 'accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_letter', aid=a.id) }}">Acceptance letter</a></p>{% endif %}
 {% if not is_owner and a.status == 'offered' %}
 <div class="card"><h3>You have an offer</h3>
 <form method="post" action="{{ url_for('ac_application_respond', aid=a.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="action" value="accept" type="submit">Accept offer</button></form>
@@ -23849,7 +23983,7 @@ def ac_application_doc(aid, did):
     if not a:
         abort(404)
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
-    if c.get("owner_user_id") != _ac_uid() and a.get("student_user_id") != _ac_uid():
+    if not _college_is_owner(c) and a.get("student_user_id") != _ac_uid():
         abort(404)
     d = first_row("koja_college_application_documents", {"id": did, "application_id": aid})
     if not d:
@@ -23889,10 +24023,80 @@ def ac_application_decide(aid):
         abort(400)
     updates = {"status": status, "decision_note": clean(request.form.get("note"))[:1000], "updated_at": utc_now()}
     if status == "enrolled" and not a.get("student_number"):
-        updates["student_number"] = _college_student_number(c)
+        course = first_row("koja_college_courses", {"id": a.get("course_id")}) or {}
+        intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
+        updates["student_number"] = _college_student_number(c, course, intake)
     db_update("koja_college_applications", {"id": aid}, updates)
     flash("Decision saved.", "success")
     return redirect(url_for("ac_application_view", aid=aid))
+
+
+@app.route("/academic/application/<aid>/letter")
+@login_required
+def ac_application_letter(aid):
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a:
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    is_owner = _college_is_owner(c)
+    is_student = a.get("student_user_id") == _ac_uid()
+    if not is_student and not is_owner:
+        abort(404)
+    # A student can print the letter once they have an offer; the college and admins can print it for any submitted application.
+    if is_student and not is_owner and a.get("status") not in ("offered", "accepted", "enrolled"):
+        abort(404)
+    if a.get("status") == "draft":
+        abort(404)
+    course = first_row("koja_college_courses", {"id": a["course_id"]}) or {}
+    intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
+    today = datetime.utcnow().strftime("%d %B %Y")
+    return _ac_page("Acceptance letter", r"""
+<style>
+  .letter{background:#fff;color:#111;max-width:780px;margin:0 auto;padding:36px 40px;border:1px solid #ddd;line-height:1.55;font-size:15px}
+  .letter h1{font-size:22px;margin:0 0 4px}
+  .letter .head{border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:22px}
+  .letter .meta{color:#444;font-size:13px}
+  .letter table{border-collapse:collapse;margin:14px 0}
+  .letter td{padding:4px 14px 4px 0;vertical-align:top}
+  @media print{ .no-print{display:none !important} .letter{border:0;padding:0} }
+</style>
+<p class="no-print"><button class="btn" type="button" onclick="window.print()">Print or save as PDF</button>
+ <a class="btn secondary" href="{{ url_for('ac_application_view', aid=a.id) }}">Back to application</a></p>
+<div class="letter">
+  <div class="head">
+    {% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:110px;display:block;margin:0 auto 10px">{% endif %}
+    <h1>{{ c.name }}</h1>
+    <div class="meta">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</div>
+  </div>
+  <p>{{ today }}</p>
+  <p><strong>{{ a.full_name }}</strong>{% if a.address %}<br>{{ a.address }}{% endif %}{% if a.email %}<br>{{ a.email }}{% endif %}</p>
+  <p><strong>Re: Offer of admission to {{ course.title }}</strong></p>
+  <p>Dear {{ a.full_name }},</p>
+  <p>We are pleased to inform you that you have been offered admission to <strong>{{ course.title }}</strong>{% if intake %} for the <strong>{{ intake.name }}</strong> intake{% endif %} at {{ c.name }}.</p>
+  <table>
+    <tr><td>Programme</td><td>{{ course.title }}</td></tr>
+    {% if intake %}<tr><td>Intake</td><td>{{ intake.name }}{% if intake.opens_on %} (opens {{ intake.opens_on }}){% endif %}</td></tr>{% endif %}
+    {% if a.student_number %}<tr><td>Student number</td><td><strong>{{ a.student_number }}</strong></td></tr>{% endif %}
+    <tr><td>Application reference</td><td>{{ a.id[:8] | upper }}</td></tr>
+  </table>
+  <p>To accept this offer, sign in to KOJA and open your application to confirm. Your student number and the next steps, including fees and accommodation, will be shown there.</p>
+  <p><strong>Confirmation of your admission.</strong> Your admission is confirmed once at least 50% of the fees due for the semester are paid on or before <strong>[fee deadline date]</strong>.</p>
+  <p><strong>Medical examination.</strong> All new students must undergo a medical examination at <strong>[medical centre]</strong> at a fee of <strong>[medical fee]</strong>.</p>
+  <p><strong>How to pay.</strong> You may pay your fees at any of these:</p>
+  <ul>
+    <li>Bank deposit, quoting your student number: <strong>[bank name, account name and account number]</strong></li>
+    <li>Mobile money: <strong>[mobile money number or USSD code]</strong></li>
+  </ul>
+  <p>Please note that cash payments will not be accepted.</p>
+  <p><strong>Refunds.</strong> A request for a refund of fees attracts a penalty of <strong>[penalty percentage before programme start]</strong> of the total fees paid if made before the programme starts, and <strong>[penalty percentage before late registration ends]</strong> if made before late registration ends. After that, no refunds will be accepted.</p>
+  <p><strong>Accommodation.</strong> The college has limited accommodation. Do not pay for accommodation until a bed space has been offered to you. [Accommodation details: self-catering or otherwise, and how to apply.]</p>
+  <p><strong>Validity.</strong> This offer is valid only for the <strong>[academic year]</strong> academic year and cannot be deferred to another academic year.</p>
+  <p><strong>Conditions of admission.</strong> Please read and comply with the conditions of admission [attached / available on request].</p>
+  {% if a.decision_note %}<p><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
+  <p>We look forward to welcoming you{% if intake %} for the {{ intake.name }} intake{% endif %}.</p>
+  <p style="margin-top:36px">______________________________<br>[Signatory name]<br>[Signatory title], {{ c.name }}</p>
+</div>
+""", c=c, a=a, course=course, intake=intake, today=today)
 
 
 @app.route("/academic/college/<slug>/admissions")
@@ -24106,7 +24310,7 @@ def ac_application_money(aid):
     if not a:
         abort(404)
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
-    is_owner = c.get("owner_user_id") == _ac_uid()
+    is_owner = _college_is_owner(c)
     is_student = a.get("student_user_id") == _ac_uid()
     if not is_owner and not is_student:
         abort(404)
@@ -24176,7 +24380,7 @@ def ac_payment_slip(pid):
         abort(404)
     a = first_row("koja_college_applications", {"id": p["application_id"]}) or {}
     c = first_row("koja_colleges", {"id": a.get("college_id")}) or {}
-    if c.get("owner_user_id") != _ac_uid() and a.get("student_user_id") != _ac_uid():
+    if not _college_is_owner(c) and a.get("student_user_id") != _ac_uid():
         abort(404)
     return _stream_private_file(p["slip_path"], p.get("slip_mime"), p.get("slip_name"))
 
