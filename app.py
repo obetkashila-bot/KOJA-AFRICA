@@ -25007,15 +25007,51 @@ def _ca_manager_check(slug):
     return c
 
 
+def _ca_user_email():
+    return clean((current_user() or {}).get("email") or "").lower()
+
+
+def _ca_my_assignments(c):
+    """Module assignments for the signed-in lecturer in this college (by account email)."""
+    email = _ca_user_email()
+    if not c or not email:
+        return []
+    return _ac_rows("koja_college_module_lecturers", {"college_id": c["id"], "email": email}, order="created_at.asc", limit=300)
+
+
+def _ca_can_module(c, course_id, module):
+    """Owner and KOJA admins can touch any module. A lecturer only their assigned modules."""
+    if _college_is_owner(c):
+        return True
+    return any(r["course_id"] == course_id and r["module"] == module for r in _ca_my_assignments(c))
+
+
+def _ca_access_check(slug):
+    """Owner, or a lecturer with at least one assigned module. Module-level checks happen in each route."""
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    if _college_is_owner(c) or _ca_my_assignments(c):
+        return c
+    abort(403)
+
+
 @app.route("/academic/college/<slug>/ca", methods=["GET", "POST"])
 @login_required
 def ac_ca_manage(slug):
-    c = _ca_manager_check(slug)
+    c = _ca_access_check(slug)
     is_admin = bool((current_user() or {}).get("is_admin"))
+    is_owner = _college_is_owner(c)
+    mine = [] if is_owner else _ca_my_assignments(c)
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    if not is_owner:
+        mine_courses = {r["course_id"] for r in mine}
+        courses = [k for k in courses if k["id"] in mine_courses]
     course_ids = {k["id"] for k in courses}
     if request.method == "POST":
         action = request.form.get("action")
+        if action != "scores" and not is_owner:
+            abort(403)
         course_id = clean(request.form.get("course_id"))
         module = clean(request.form.get("module"))[:120]
         back = url_for("ac_ca_manage", slug=slug, course_id=course_id, module=module)
@@ -25039,6 +25075,8 @@ def ac_ca_manage(slug):
         if course_id not in course_ids or not module:
             flash("Choose a course and enter the module.", "danger")
             return redirect(back)
+        if not _ca_can_module(c, course_id, module):
+            abort(403)
         if action == "component":
             name = clean(request.form.get("name"))[:80]
             max_score = _ac_num(request.form.get("max_score"), 0, 0, 1000)
@@ -25123,16 +25161,19 @@ def ac_ca_manage(slug):
     locked = _ca_is_locked(course_id, module) if course_id and module else False
     rows = [{"app": a, "result": _ca_result(comps, scores, a["id"]), "cells": [scores.get((x["id"], a["id"])) for x in comps]} for a in students]
     module_names = _course_module_names(c["id"], course_id) if course_id else []
-    if module and module not in module_names:
+    if not is_owner:
+        module_names = [r["module"] for r in mine if r["course_id"] == course_id]
+    if module and module not in module_names and _ca_can_module(c, course_id, module):
         module_names = module_names + [module]
+    lecturers = _ac_rows("koja_college_module_lecturers", {"college_id": c["id"], "course_id": course_id, "module": module}, order="created_at.asc", limit=100) if is_owner and course_id and module else []
     return _ac_page("Continuous assessment", r'''
 <div class="card"><h2>Continuous assessment: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p>
+{% if is_owner %}<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p>{% endif %}
 <form method="get"><label>Course<select name="course_id">{% for k in courses %}<option value="{{ k.id }}" {{ 'selected' if k.id == course_id }}>{{ k.title }}</option>{% endfor %}</select></label>
 <label>Module<select name="module" required>{% for m in module_names %}<option value="{{ m }}" {{ 'selected' if m == module }}>{{ m }}</option>{% else %}<option value="">No modules for this programme yet</option>{% endfor %}</select></label>
 <button class="btn" type="submit">Open</button></form></div>
 
-<div class="card"><h3>Settings</h3>
+{% if is_owner %}<div class="card"><h3>Settings</h3>
 <form method="post">{{ csrf }}<input type="hidden" name="action" value="settings">
 <label>Exam start date (the CA deadline is 5 days before this)<input type="date" name="exam_start" value="{{ settings.exam_start or '' }}"></label>
 <label>Or set the CA deadline directly (no score changes after this date)<input type="date" name="ca_deadline" value="{{ settings.ca_deadline or '' }}"></label>
@@ -25140,19 +25181,28 @@ def ac_ca_manage(slug):
 <label>Fee percentage needed to register<input type="number" name="registration_fee_percent" min="0" max="100" step="1" value="{{ settings.registration_fee_percent if settings.registration_fee_percent is not none else 50 }}"></label>
 <label>Fee percentage needed for exam clearance<input type="number" name="exam_fee_percent" min="0" max="100" step="1" value="{{ settings.exam_fee_percent if settings.exam_fee_percent is not none else 100 }}"></label>
 <label>CA weight out of 100 (the rest is the exam; e.g. 40 means 40 CA / 60 exam)<input type="number" name="ca_out_of" min="1" max="100" step="1" value="{{ settings.ca_out_of if settings.ca_out_of is not none else 40 }}"></label>
-<button class="btn secondary" type="submit">Save settings</button></form></div>
+<button class="btn secondary" type="submit">Save settings</button></form></div>{% endif %}
 
 {% if course_id and module %}
 <div class="card"><h3>CA components for {{ module }}</h3>
 <p class="small">Weights must add up to exactly {{ out_of }}. Current total: <strong>{{ weight_total }}</strong>{% if weights_ok %} · ready to publish{% endif %}.</p>
 <table style="width:100%;border-collapse:collapse"><tr><th align="left">Component</th><th>Maximum</th><th>Weight (out of {{ out_of }})</th></tr>
 {% for x in comps %}<tr style="border-top:1px solid #ddd"><td>{{ x.name }}</td><td align="center">{{ x.max_score }}</td><td align="center">{{ x.weight }}</td></tr>{% else %}<tr><td colspan="3" class="small">No components yet.</td></tr>{% endfor %}</table>
-{% if not locked %}<form method="post" style="margin-top:10px">{{ csrf }}<input type="hidden" name="action" value="component"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}">
+{% if not locked and is_owner %}<form method="post" style="margin-top:10px">{{ csrf }}<input type="hidden" name="action" value="component"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}">
 <label>Name (e.g. Assignment 1)<input name="name" required maxlength="80"></label>
 <label>Maximum score (e.g. 20)<input name="max_score" type="number" min="1" step="0.5" required></label>
 <label>Weight out of {{ out_of }} (e.g. 10)<input name="weight" type="number" min="0" max="{{ out_of }}" step="0.5" required></label>
 <button class="btn secondary" type="submit">Add component</button></form>{% endif %}
 </div>
+
+{% if course_id and module and is_owner %}
+<div class="card"><h3>Lecturers for {{ module }}</h3>
+<p class="small">A lecturer signs in with their KOJA account email and can enter and upload scores for this module only. Only you can change components, settings or publish.</p>
+{% for L in lecturers %}<form method="post" style="display:inline-block;margin:4px 12px 4px 0">{{ csrf }}<strong>{{ L.email }}</strong> <button class="btn secondary" type="submit" formaction="{{ url_for('ac_ca_lecturer_remove', slug=c.slug, lid=L.id) }}">Remove</button></form>{% else %}<p class="small">No lecturer assigned to this module yet.</p>{% endfor %}
+<form method="post" action="{{ url_for('ac_ca_lecturer_add', slug=c.slug) }}" style="margin-top:10px">{{ csrf }}<input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}">
+<label>Lecturer's KOJA account email<input type="email" name="email" required maxlength="200"></label>
+<button class="btn" type="submit">Assign lecturer</button></form></div>
+{% endif %}
 
 <div class="card"><h3>Scores</h3>
 {% if locked %}<p><strong>Published and locked.</strong> {% if is_admin %}<form method="post" style="display:inline">{{ csrf }}<input type="hidden" name="action" value="unlock"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}"><button class="btn secondary" type="submit">Reopen (admin)</button></form>{% endif %}</p>{% endif %}
@@ -25168,7 +25218,7 @@ def ac_ca_manage(slug):
 <td align="center"><strong>{{ r.result[0] }}</strong>{% if not r.result[1] %} <span class="small">incomplete</span>{% endif %}</td></tr>{% endfor %}</table></div>
 {% if not locked %}<p><button class="btn" type="submit">Save scores</button></p>{% endif %}
 </form>
-{% if not locked and weights_ok %}<form method="post" style="margin-top:10px">{{ csrf }}<input type="hidden" name="action" value="publish"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}"><button class="btn" type="submit">Publish CA (locks it)</button></form>{% endif %}
+{% if not locked and weights_ok and is_owner %}<form method="post" style="margin-top:10px">{{ csrf }}<input type="hidden" name="action" value="publish"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}"><button class="btn" type="submit">Publish CA (locks it)</button></form>{% endif %}
 {% else %}<p class="small">Students registered for this module will appear here. Students register from their portal.</p>{% endif %}
 </div>
 {% endif %}''',
@@ -25176,14 +25226,79 @@ def ac_ca_manage(slug):
                     locked=locked, is_admin=is_admin, settings=_ca_settings(c), out_of=_ca_out_of(c),
                     weight_total=round(sum(float(x.get("weight") or 0) for x in comps), 2),
                     weights_ok=_ca_weights_ok(comps, _ca_out_of(c)), deadline_passed=_ca_deadline_passed(c),
-                    effective_deadline=_ca_effective_deadline(c), csrf_ok=True)
+                    effective_deadline=_ca_effective_deadline(c), csrf_ok=True, is_owner=is_owner, lecturers=lecturers)
+
+
+@app.route("/academic/college/<slug>/ca/lecturer", methods=["POST"])
+@login_required
+def ac_ca_lecturer_add(slug):
+    c = _ca_manager_check(slug)
+    course_id = clean(request.form.get("course_id"))
+    module = clean(request.form.get("module"))[:120]
+    email = clean(request.form.get("email")).lower()[:200]
+    back = url_for("ac_ca_manage", slug=slug, course_id=course_id, module=module)
+    course_ids = {k["id"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
+    if course_id not in course_ids or module not in _course_module_names(c["id"], course_id):
+        flash("Choose a module from the programme list.", "danger")
+    elif not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        flash("Enter the lecturer's email address.", "danger")
+    else:
+        user = find_user_by_email(email)
+        if not user or not user.get("id"):
+            flash("No KOJA account uses that email yet. Ask the lecturer to sign up first.", "danger")
+        else:
+            _, err = db_insert("koja_college_module_lecturers", {"id": str(uuid.uuid4()), "college_id": c["id"], "course_id": course_id,
+                               "module": module, "email": email, "created_at": utc_now()})
+            if err:
+                flash("That lecturer is already assigned to this module.", "info")
+            else:
+                _college_audit(c, "lecturer.assigned", "%s to %s" % (email, module))
+                flash("Lecturer assigned. They can see this module when they sign in with that email.", "success")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/ca/lecturer/<lid>/remove", methods=["POST"])
+@login_required
+def ac_ca_lecturer_remove(slug, lid):
+    c = _ca_manager_check(slug)
+    L = first_row("koja_college_module_lecturers", {"id": lid, "college_id": c["id"]})
+    if L:
+        db_delete("koja_college_module_lecturers", {"id": lid})
+        _college_audit(c, "lecturer.removed", "%s from %s" % (L.get("email"), L.get("module")))
+        flash("Lecturer removed from the module.", "success")
+        return redirect(url_for("ac_ca_manage", slug=slug, course_id=L.get("course_id"), module=L.get("module")))
+    flash("That assignment no longer exists.", "info")
+    return redirect(url_for("ac_ca_manage", slug=slug))
+
+
+@app.route("/academic/lecturer")
+@login_required
+def ac_lecturer_home():
+    email = _ca_user_email()
+    items = []
+    for r in (_ac_rows("koja_college_module_lecturers", {"email": email}, order="created_at.asc", limit=500) if email else []):
+        col = (_ac_rows("koja_colleges", {"id": r["college_id"]}, limit=1) or [None])[0]
+        crs = (_ac_rows("koja_college_courses", {"id": r["course_id"]}, limit=1) or [None])[0]
+        if not col or not col.get("slug"):
+            continue
+        items.append({"college": col.get("name") or "College", "course": (crs or {}).get("title") or "", "module": r["module"],
+                      "url": url_for("ac_ca_manage", slug=col["slug"], course_id=r["course_id"], module=r["module"])})
+    return _ac_page("My modules", r'''
+<div class="card"><h2>My modules</h2>
+<p class="small">These are the modules assigned to you. You can enter and upload continuous assessment scores for them.</p>
+{% if items %}<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><tr><th align="left">College</th><th align="left">Programme</th><th align="left">Module</th><th></th></tr>
+{% for x in items %}<tr style="border-top:1px solid #ddd"><td>{{ x.college }}</td><td>{{ x.course }}</td><td>{{ x.module }}</td><td><a class="btn secondary" href="{{ x.url }}">Open CA</a></td></tr>{% endfor %}</table></div>
+{% else %}<p>No modules are assigned to your account yet. Ask the college administrator to assign you using your KOJA account email.</p>{% endif %}
+</div>''', items=items)
 
 
 @app.route("/academic/college/<slug>/ca/template")
 @login_required
 def ac_ca_template(slug):
-    c = _ca_manager_check(slug)
+    c = _ca_access_check(slug)
     course_id, module = clean(request.args.get("course_id")), clean(request.args.get("module"))[:120]
+    if not _ca_can_module(c, course_id, module):
+        abort(403)
     comps = _ca_components(course_id, module)
     if not comps:
         flash("Add the components for this module first.", "danger")
@@ -25207,8 +25322,10 @@ def ac_ca_template(slug):
 @app.route("/academic/college/<slug>/ca/upload", methods=["POST"])
 @login_required
 def ac_ca_upload(slug):
-    c = _ca_manager_check(slug)
+    c = _ca_access_check(slug)
     course_id, module = clean(request.form.get("course_id")), clean(request.form.get("module"))[:120]
+    if not _ca_can_module(c, course_id, module):
+        abort(403)
     back = url_for("ac_ca_manage", slug=slug, course_id=course_id, module=module)
     f = request.files.get("file")
     if not f or not f.filename.lower().endswith(".xlsx"):
