@@ -23559,20 +23559,30 @@ def ac_college_view(slug):
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
     enrolments = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=500) if is_owner else []
     mine_ids = set()
+    enrolled_app = None
     if uid and not is_real_owner:
-        mine_ids = {e.get("course_id") for e in _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": uid}, limit=500)}
+        mine = _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": uid}, limit=500)
+        mine_ids = {e.get("course_id") for e in mine}
+        # once a place is accepted or enrolled here, the student uses college services instead of applying again
+        enrolled_app = next((e for e in mine if e.get("status") in ("offered", "accepted", "enrolled")), None)
     return _ac_page(c.get("name") or "College", r'''
 <div class="card">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:120px;display:block;margin:0 auto 10px"> {% endif %}<h2>{{ c.name }}</h2>
 <p class="small">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</p>
 {% if c.about %}<p>{{ c.about }}</p>{% endif %}
 {% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}
 </div>
+{% if enrolled_app and enrolled_app.status == 'offered' %}<div class="card"><h3>You have an offer</h3>
+<p class="small">You have been offered a place here. You do not need to apply again. Open your application to accept or decline the offer.</p>
+<p><a class="btn" href="{{ url_for('ac_application_view', aid=enrolled_app.id) }}">Respond to your offer</a></p></div>
+{% elif enrolled_app %}<div class="card"><h3>You have been admitted</h3>
+<p class="small">You have an accepted place{% if enrolled_app.student_number %} · student number <strong>{{ enrolled_app.student_number }}</strong>{% endif %}. You do not need to apply again. Use college services for fees, rooms and your application.</p>
+<p><a class="btn" href="{{ url_for('ac_student_portal', aid=enrolled_app.id) }}">College services</a> <a class="btn secondary" href="{{ url_for('ac_application_money', aid=enrolled_app.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=enrolled_app.id) }}">Room</a></p></div>{% endif %}
 <div class="card"><h3>Courses</h3>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
 {% for k in courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
 {% if k.description %}<p class="small">{{ k.description }}</p>{% endif %}
 {% if is_owner %}<form method="post" action="{{ url_for('ac_course_set_code', cid=k.id) }}" class="small">{{ csrf }}<label>Course code (2 digits) <input name="course_code" value="{{ k.course_code or '' }}" maxlength="2" style="width:70px"></label> <button class="btn secondary" type="submit">Save code</button></form>{% endif %}
-{% if not is_real_owner and not user %}<p><a class="btn" href="{{ url_for('login', next=request.path) }}">Sign in to apply</a></p>{% endif %}{% if user and not is_real_owner %}
+{% if not is_real_owner and not user %}<p><a class="btn" href="{{ url_for('login', next=request.path) }}">Sign in to apply</a></p>{% endif %}{% if user and not is_real_owner and not enrolled_app %}
   {% if k.id in mine_ids %}<p class="small">You have an application. <a href="{{ url_for('ac_my_applications') }}">See your applications</a></p>
   {% else %}<a class="btn" href="{{ url_for('ac_college_apply', slug=c.slug, cid=k.id) }}">Apply for this course</a>{% endif %}
 {% endif %}
@@ -23591,7 +23601,7 @@ def ac_college_view(slug):
 <p class="small">{{ enrolments|length }} application(s) so far.</p>
 <p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a></p></div>
 {% endif %}''',
-                    c=c, courses=courses, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, user=current_user(), seed_err=seed_err)
+                    c=c, courses=courses, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err)
 
 
 def _course_code_2(v):
@@ -23869,7 +23879,9 @@ def ac_application_view(aid):
     return _ac_page("Application", r'''
 <div class="card"><h2>{{ course.title }}</h2><p class="small">{{ c.name }}{% if intake %} · {{ intake.name }}{% endif %}</p>
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
-{% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if a.decision_note %}<p class="small"><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
+{% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if is_owner and not is_student %}<form method="post" action="{{ url_for('ac_application_union', aid=a.id) }}" class="small" style="margin:6px 0">{{ csrf }}<label><input type="checkbox" name="union_member" value="1" {{ 'checked' if a.union_member }}> Union member (verified by the college)</label> <button class="btn secondary" type="submit">Save</button></form>
+<p><a class="btn secondary" href="{{ url_for('ac_svc_marks', aid=a.id) }}">Enter marks</a> <a class="btn secondary" href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk</a></p>{% endif %}
+{% if a.decision_note %}<p class="small"><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
 {% if a.status in ('offered', 'accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_letter', aid=a.id) }}">Acceptance letter</a></p>{% endif %}
 {% if not is_owner and a.status == 'offered' %}
 <div class="card"><h3>You have an offer</h3>
@@ -24016,6 +24028,8 @@ def ac_application_respond(aid):
         abort(400)
     new_status = "accepted" if action == "accept" else "declined"
     db_update("koja_college_applications", {"id": aid}, {"status": new_status, "updated_at": utc_now()})
+    if action == "decline":
+        _release_beds(aid)
     flash("Offer accepted. The college will confirm your enrolment." if action == "accept" else "Offer declined.", "success")
     return redirect(url_for("ac_application_view", aid=aid))
 
@@ -24038,7 +24052,774 @@ def ac_application_decide(aid):
         intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
         updates["student_number"] = _college_student_number(c, course, intake)
     db_update("koja_college_applications", {"id": aid}, updates)
+    if status == "rejected":
+        _release_beds(aid)
     flash("Decision saved.", "success")
+    return redirect(url_for("ac_application_view", aid=aid))
+
+
+@app.route("/academic/services/<aid>")
+@login_required
+def ac_student_portal(aid):
+    """Student information portal for an application: the menu of college services."""
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a or a.get("student_user_id") != _ac_uid():
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    course = first_row("koja_college_courses", {"id": a["course_id"]}) or {}
+    intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
+    can_use = a.get("status") in ("accepted", "enrolled")
+    return _ac_page("Student portal", r"""
+<style>
+  .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
+  .portal-menu{display:flex;flex-direction:column;gap:6px}
+  .portal-menu a,.portal-menu span{display:block;padding:9px 12px;border:1px solid #ddd;border-radius:6px;text-decoration:none;color:inherit;background:#fff}
+  .portal-menu a:hover{background:#f5f5f5}
+  .portal-menu .off{color:#888;background:#fafafa;cursor:default}
+  .portal-menu .off small{display:block;font-size:11px}
+  @media (max-width:760px){ .portal{grid-template-columns:1fr} }
+</style>
+<div class="card"><h2>{{ c.name }}</h2><p class="small">UNIVERSITY INFORMATION SYSTEM · Current user: <strong>{{ a.student_number or a.full_name }}</strong> · Basic student</p></div>
+<div class="portal">
+  <nav class="portal-menu">
+    <a href="{{ url_for('ac_student_portal', aid=a.id) }}">Home</a>
+    {% if can_use %}<a href="{{ url_for('ac_application_room', aid=a.id) }}">Apply for Accommodation</a>
+    {% else %}<span class="off">Apply for Accommodation<small>Opens once you accept your place</small></span>{% endif %}
+    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk Inbox</a>
+    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk Support</a>
+    <a href="{{ url_for('ac_application_view', aid=a.id) }}">Personal Information</a>
+    <a href="{{ url_for('ac_svc_ca', aid=a.id) }}">View CA</a>
+    <a href="{{ url_for('ac_svc_grades', aid=a.id) }}">Grades</a>
+    <a href="{{ url_for('ac_application_money', aid=a.id) }}">Payments</a>
+    <a href="{{ url_for('ac_application_money', aid=a.id) }}">Payment Options</a>
+    <a href="{{ url_for('ac_svc_timetable', aid=a.id) }}">Timetable</a>
+    <a href="{{ url_for('ac_svc_evaluation', aid=a.id) }}">Course Evaluation</a>
+    <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Course registration</a>
+    <a href="{{ url_for('ac_svc_docket', aid=a.id) }}">Print Exam Docket</a>
+    <a href="{{ url_for('ac_change_password') }}">Change Password</a>
+    <a href="{{ url_for('logout') }}">Logout</a>
+  </nav>
+  <div>
+    <div class="card"><h3>Home</h3>
+      <p><strong>Name:</strong> {{ a.full_name }}</p>
+      <p><strong>Programme:</strong> {{ course.title }}</p>
+      {% if intake %}<p><strong>Intake:</strong> {{ intake.name }}</p>{% endif %}
+      <p><strong>Status:</strong> {{ a.status | replace('_', ' ') }}</p>
+      {% if a.student_number %}<p><strong>Student number:</strong> {{ a.student_number }}</p>{% endif %}
+      {% if a.status in ('offered', 'accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_letter', aid=a.id) }}">Acceptance letter</a></p>{% endif %}
+    </div>
+    {% if a.status == 'offered' %}<div class="card"><h3>Your offer</h3><p class="small">Open Personal Information to accept or decline your offer.</p></div>{% endif %}
+  </div>
+</div>""", a=a, c=c, course=course, intake=intake, can_use=can_use)
+
+
+# ---- student services: helpdesk, grades and CA, timetable, registration, docket, evaluation ----
+SVC_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+SVC_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _svc_app(aid, allow_manager=False):
+    """Loads an application for the student services pages. The student, and (when allowed) the college's staff, can open it."""
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a:
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    is_student = a.get("student_user_id") == _ac_uid()
+    is_manager = _college_is_owner(c)
+    if not is_student and not (allow_manager and is_manager):
+        abort(404)
+    course = first_row("koja_college_courses", {"id": a["course_id"]}) or {}
+    return a, c, course, is_student, is_manager
+
+
+def _svc_can_use(a):
+    return a.get("status") in ("accepted", "enrolled")
+
+
+def _svc_back(aid):
+    return url_for("ac_student_portal", aid=aid)
+
+
+@app.route("/academic/services/<aid>/helpdesk", methods=["GET", "POST"])
+@login_required
+def ac_svc_helpdesk(aid):
+    a, c, course, is_student, is_manager = _svc_app(aid, allow_manager=True)
+    back = url_for("ac_application_view", aid=aid) if is_manager and not is_student else _svc_back(aid)
+    if request.method == "POST":
+        body = clean(request.form.get("body"))[:1000]
+        if not body:
+            flash("Write your message first.", "danger")
+        else:
+            sender = "student" if is_student else "college"
+            _, err = db_insert("koja_college_messages", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": aid,
+                               "sender": sender, "body": body, "created_at": utc_now()})
+            flash("Message sent." if not err else "Could not send your message. Please try again.", "success" if not err else "danger")
+        return redirect(url_for("ac_svc_helpdesk", aid=aid))
+    thread = _ac_rows("koja_college_messages", {"application_id": aid}, order="created_at.asc", limit=500)
+    return _ac_page("Helpdesk", r'''
+<div class="card"><h2>Helpdesk</h2><p class="small">{{ c.name }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h3>Messages</h3>
+{% for m in thread %}<div style="margin:8px 0;padding:8px;border-radius:6px;background:{{ '#f1f5f9' if m.sender == 'student' else '#ecfdf5' }}"><strong>{{ 'Student' if m.sender == 'student' else 'College' }}</strong> <span class="small">{{ m.created_at[:16].replace('T', ' ') }}</span><p style="margin:4px 0;white-space:pre-wrap">{{ m.body }}</p></div>
+{% else %}<p class="small">No messages yet.</p>{% endfor %}
+</div>
+<div class="card"><h3>{{ 'Reply to the student' if is_manager and not is_student else 'Message the college' }}</h3>
+<form method="post">{{ csrf }}<textarea name="body" rows="4" maxlength="1000" required style="width:100%"></textarea>
+<p><button class="btn" type="submit">Send</button></p></form></div>''',
+                    a=a, c=c, back=back, thread=thread, is_manager=is_manager, is_student=is_student, csrf_ok=True)
+
+
+def _svc_student_academic(aid, title, template, extra=None):
+    a, c, course, is_student, is_manager = _svc_app(aid)
+    if not is_student:
+        abort(404)
+    if not _svc_can_use(a):
+        return _ac_page(title, r'''<div class="card"><h2>%s</h2><p>This opens once you accept your place.</p>
+<p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''' % title, back=_svc_back(aid))
+    return template(a, c, course, extra or {})
+
+
+@app.route("/academic/services/<aid>/grades")
+@login_required
+def ac_svc_grades(aid):
+    def build(a, c, course, extra):
+        marks = _ac_rows("koja_college_marks", {"application_id": aid}, order="module.asc", limit=300)
+        return _ac_page("Grades", r'''
+<div class="card"><h2>Grades</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>CA</th><th>Exam</th><th>Grade</th></tr>
+{% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ m.ca_mark if m.ca_mark is not none else '-' }}</td><td align="center">{{ m.exam_mark if m.exam_mark is not none else '-' }}</td><td align="center"><strong>{{ m.grade or '-' }}</strong></td></tr>
+{% else %}<tr><td colspan="4" class="small">No grades posted yet.</td></tr>{% endfor %}</table></div>''',
+                         back=_svc_back(aid), c=c, course=course, marks=marks)
+    return _svc_student_academic(aid, "Grades", build)
+
+
+@app.route("/academic/application/<aid>/marks", methods=["GET", "POST"])
+@login_required
+def ac_svc_marks(aid):
+    a, c, course, is_student, is_manager = _svc_app(aid, allow_manager=True)
+    if not is_manager:
+        abort(403)
+    if request.method == "POST":
+        module = clean(request.form.get("module"))[:120]
+        grade = clean(request.form.get("grade")).upper()[:5] or None
+        if not module:
+            flash("Enter the module name.", "danger")
+        else:
+            values = {"ca_mark": _ac_num(request.form.get("ca"), None, 0, 100) if clean(request.form.get("ca")) else None,
+                      "exam_mark": _ac_num(request.form.get("exam"), None, 0, 100) if clean(request.form.get("exam")) else None,
+                      "grade": grade}
+            existing = first_row("koja_college_marks", {"application_id": aid, "module": module})
+            if existing:
+                _, err = db_update("koja_college_marks", {"id": existing["id"]}, values)
+            else:
+                _, err = db_insert("koja_college_marks", dict(values, id=str(uuid.uuid4()), college_id=c["id"],
+                                                             application_id=aid, module=module, created_at=utc_now()))
+            flash("Marks saved." if not err else "Could not save the marks.", "success" if not err else "danger")
+        return redirect(url_for("ac_svc_marks", aid=aid))
+    marks = _ac_rows("koja_college_marks", {"application_id": aid}, order="module.asc", limit=300)
+    return _ac_page("Marks", r'''
+<div class="card"><h2>Marks: {{ a.full_name }}</h2><p class="small">{{ course.title }} · {{ c.name }}</p>
+<p><a class="btn secondary" href="{{ url_for('ac_application_view', aid=a.id) }}">Back to application</a></p></div>
+<div class="card"><h3>Enter a mark</h3>
+<form method="post">{{ csrf }}
+<label>Module<input name="module" required maxlength="120"></label>
+<label>CA mark (0 to 100)<input name="ca" type="number" min="0" max="100" step="0.5"></label>
+<label>Exam mark (0 to 100)<input name="exam" type="number" min="0" max="100" step="0.5"></label>
+<label>Grade<input name="grade" maxlength="5" placeholder="e.g. A"></label>
+<button class="btn" type="submit">Save marks</button></form></div>
+<div class="card"><h3>Posted marks</h3><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>CA</th><th>Exam</th><th>Grade</th></tr>
+{% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ m.ca_mark if m.ca_mark is not none else '-' }}</td><td align="center">{{ m.exam_mark if m.exam_mark is not none else '-' }}</td><td align="center">{{ m.grade or '-' }}</td></tr>
+{% else %}<tr><td colspan="4" class="small">No marks yet.</td></tr>{% endfor %}</table></div>''',
+                    a=a, c=c, course=course, marks=marks, csrf_ok=True)
+
+
+@app.route("/academic/college/<slug>/timetable", methods=["GET", "POST"])
+@login_required
+def ac_svc_timetable_manage(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    course_ids = {k["id"] for k in courses}
+    if request.method == "POST":
+        cid = clean(request.form.get("course_id"))
+        module = clean(request.form.get("module"))[:120]
+        day = clean(request.form.get("day"))
+        starts, ends = clean(request.form.get("starts")), clean(request.form.get("ends"))
+        if cid not in course_ids or not module or day not in SVC_DAYS or not SVC_TIME_RE.match(starts) or not SVC_TIME_RE.match(ends):
+            flash("Choose a course, a module, a day and start and end times (HH:MM).", "danger")
+        else:
+            _, err = db_insert("koja_college_timetable", {"id": str(uuid.uuid4()), "college_id": c["id"], "course_id": cid,
+                               "module": module, "day": day, "starts": starts, "ends": ends,
+                               "venue": clean(request.form.get("venue"))[:120] or None,
+                               "lecturer": clean(request.form.get("lecturer"))[:120] or None, "created_at": utc_now()})
+            flash("Timetable slot added." if not err else "Could not add the slot.", "success" if not err else "danger")
+        return redirect(url_for("ac_svc_timetable_manage", slug=slug))
+    slots = _ac_rows("koja_college_timetable", {"college_id": c["id"]}, order="created_at.asc", limit=2000)
+    names = {k["id"]: k["title"] for k in courses}
+    return _ac_page("Timetable", r'''
+<div class="card"><h2>Timetable: {{ c.name }}</h2><p class="small"><a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a></p></div>
+<div class="card"><h3>Add a slot</h3>
+<form method="post">{{ csrf }}
+<label>Course<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
+<label>Module<input name="module" required maxlength="120"></label>
+<label>Day<select name="day" required>{% for d in days %}<option>{{ d }}</option>{% endfor %}</select></label>
+<label>Starts (HH:MM)<input name="starts" required placeholder="08:00" maxlength="5"></label>
+<label>Ends (HH:MM)<input name="ends" required placeholder="10:00" maxlength="5"></label>
+<label>Venue<input name="venue" maxlength="120"></label>
+<label>Lecturer<input name="lecturer" maxlength="120"></label>
+<button class="btn" type="submit">Add slot</button></form></div>
+<div class="card"><h3>Slots</h3>{% for s in slots %}<p class="small"><strong>{{ s.module }}</strong> · {{ names.get(s.course_id, '') }} · {{ s.day }} {{ s.starts }}–{{ s.ends }} · {{ s.venue or '' }}</p>{% else %}<p class="small">No slots yet.</p>{% endfor %}</div>''',
+                    c=c, courses=courses, days=SVC_DAYS, slots=slots, names=names, csrf_ok=True)
+
+
+def _svc_day_key(slot):
+    return (SVC_DAYS.index(slot.get("day")) if slot.get("day") in SVC_DAYS else 9, slot.get("starts") or "")
+
+
+@app.route("/academic/services/<aid>/timetable")
+@login_required
+def ac_svc_timetable(aid):
+    def build(a, c, course, extra):
+        slots = sorted(_ac_rows("koja_college_timetable", {"course_id": a["course_id"]}, limit=500), key=_svc_day_key)
+        return _ac_page("Timetable", r'''
+<div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card">{% for s in slots %}<p><strong>{{ s.module }}</strong><br><span class="small">{{ s.day }} · {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}{% if s.lecturer %} · {{ s.lecturer }}{% endif %}</span></p>
+{% else %}<p class="small">The timetable has not been posted yet.</p>{% endfor %}</div>''',
+                         back=_svc_back(aid), c=c, course=course, slots=slots)
+    return _svc_student_academic(aid, "Timetable", build)
+
+
+@app.route("/academic/services/<aid>/registration", methods=["GET", "POST"])
+@login_required
+def ac_svc_registration(aid):
+    def build(a, c, course, extra):
+        ok, total, paid = _svc_registration_ok(a, c)
+        if not ok:
+            return _ac_page("Course registration", r'''
+<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p>
+<p>You can register once you have paid at least {{ pct }}% of your fees. Paid {{ '%.2f' % paid }} of {{ '%.2f' % total }}.</p>
+<p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''', c=c, course=course, pct=int(float(_ca_settings(c).get("registration_fee_percent") if _ca_settings(c).get("registration_fee_percent") is not None else 50)), paid=paid, total=total, back=_svc_back(aid))
+        modules = sorted({s["module"] for s in _ac_rows("koja_college_timetable", {"course_id": a["course_id"]}, limit=500)})
+        if request.method == "POST":
+            chosen = [m for m in request.form.getlist("module") if m in modules]
+            db_delete("koja_college_registrations", {"application_id": aid})
+            rows = [{"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": aid, "module": m, "created_at": utc_now()} for m in chosen]
+            if rows:
+                _, err = db_insert("koja_college_registrations", rows, returning="minimal")
+                if err:
+                    flash("Could not save your registration. Please try again.", "danger")
+                    return redirect(url_for("ac_svc_registration", aid=aid))
+            flash("Registration saved.", "success")
+            return redirect(url_for("ac_svc_registration", aid=aid))
+        taken = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
+        return _ac_page("Course registration", r'''
+<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><form method="post">{{ csrf }}
+{% for m in modules %}<label style="display:block;margin:6px 0"><input type="checkbox" name="module" value="{{ m }}" {{ 'checked' if m in taken }}> {{ m }}</label>
+{% else %}<p class="small">No modules have been posted for your course yet.</p>{% endfor %}
+{% if modules %}<p><button class="btn" type="submit">Save registration</button></p>{% endif %}</form></div>''',
+                         back=_svc_back(aid), c=c, course=course, modules=modules, taken=taken)
+    return _svc_student_academic(aid, "Course registration", build)
+
+
+@app.route("/academic/services/<aid>/evaluation", methods=["GET", "POST"])
+@login_required
+def ac_svc_evaluation(aid):
+    def build(a, c, course, extra):
+        existing = first_row("koja_college_evaluations", {"application_id": aid})
+        if request.method == "POST" and not existing:
+            rating = clean(request.form.get("rating"))
+            if rating.isdigit() and 1 <= int(rating) <= 5:
+                _, err = db_insert("koja_college_evaluations", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": aid,
+                                   "rating": int(rating), "comment": clean(request.form.get("comment"))[:1000] or None, "created_at": utc_now()})
+                flash("Thank you for your evaluation." if not err else "Could not save your evaluation.", "success" if not err else "danger")
+                return redirect(url_for("ac_svc_evaluation", aid=aid))
+            flash("Choose a rating from 1 to 5.", "danger")
+        return _ac_page("Course evaluation", r'''
+<div class="card"><h2>Course evaluation</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+{% if existing %}<div class="card"><p>Thank you. You rated this course <strong>{{ existing.rating }}/5</strong>.</p>{% if existing.comment %}<p class="small">{{ existing.comment }}</p>{% endif %}</div>
+{% else %}<div class="card"><form method="post">{{ csrf }}
+<label>Rating (1 = poor, 5 = excellent)<select name="rating" required><option value="">Choose</option>{% for n in [1,2,3,4,5] %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select></label>
+<label>Comments (optional)<textarea name="comment" rows="4" maxlength="1000" style="width:100%"></textarea></label>
+<button class="btn" type="submit">Submit evaluation</button></form></div>{% endif %}''',
+                         back=_svc_back(aid), c=c, course=course, existing=existing, csrf_ok=True)
+    return _svc_student_academic(aid, "Course evaluation", build)
+
+
+@app.route("/account/password", methods=["GET", "POST"])
+@login_required
+def ac_change_password():
+    uid = _ac_uid()
+    table = None
+    profile = None
+    for t in ("profiles", "koja_users", "users"):
+        rows = db_select(t, filters={"id": uid}, limit=1)
+        if rows:
+            table, profile = t, rows[0]
+            break
+    if request.method == "POST":
+        if not profile or not profile.get("password_hash"):
+            flash("Your password is managed by your sign-in provider and cannot be changed here.", "danger")
+        elif not password_matches(profile, request.form.get("current") or ""):
+            flash("Your current password is not correct.", "danger")
+        else:
+            new, confirm = request.form.get("new") or "", request.form.get("confirm") or ""
+            if len(new) < 8:
+                flash("The new password must be at least 8 characters.", "danger")
+            elif new != confirm:
+                flash("The new passwords do not match.", "danger")
+            else:
+                _, err = db_update(table, {"id": uid}, {"password_hash": generate_password_hash(new)})
+                flash("Password changed." if not err else "Could not change the password. Please try again.", "success" if not err else "danger")
+                return redirect(url_for("ac_change_password"))
+    managed = not profile or not profile.get("password_hash")
+    return _ac_page("Change password", r'''
+<div class="card"><h2>Change password</h2>
+{% if managed %}<p>Your password is managed by your sign-in provider and cannot be changed here.</p>
+{% else %}<form method="post">{{ csrf }}
+<label>Current password<input type="password" name="current" required></label>
+<label>New password (at least 8 characters)<input type="password" name="new" required minlength="8"></label>
+<label>Confirm new password<input type="password" name="confirm" required minlength="8"></label>
+<button class="btn" type="submit">Change password</button></form>{% endif %}</div>''', managed=managed)
+
+
+# ---- continuous assessment (CA): components, raw scores, publishing, clearances --------------
+CA_OUT_OF = 40
+CA_EXAM_FEE_PERCENT_DEFAULT = 100
+CA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _ca_settings(c):
+    return first_row("koja_college_settings", {"college_id": c["id"]}) or {}
+
+
+def _ca_out_of(c):
+    try:
+        return float(_ca_settings(c).get("ca_out_of") or CA_OUT_OF)
+    except (TypeError, ValueError):
+        return float(CA_OUT_OF)
+
+
+def _ca_effective_deadline(c):
+    """The explicit CA deadline, or 5 days before the exam start date (the university rule)."""
+    st = _ca_settings(c)
+    dl = str(st.get("ca_deadline") or "")
+    if CA_DATE_RE.match(dl):
+        return dl
+    ex = str(st.get("exam_start") or "")
+    if CA_DATE_RE.match(ex):
+        try:
+            return (datetime.strptime(ex, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    return None
+
+
+def _ca_deadline_passed(c):
+    dl = _ca_effective_deadline(c)
+    return bool(dl) and utc_now()[:10] > dl
+
+
+def _fees_percent_ok(a, percent):
+    _, _, total, paid, _ = _fin_totals(a["id"])
+    return total <= 0 or paid + 0.005 >= total * float(percent) / 100.0, total, paid
+
+
+def _ca_is_locked(course_id, module):
+    return first_row("koja_college_ca_locks", {"course_id": course_id, "module": module}) is not None
+
+
+def _ca_components(course_id, module):
+    rows = _ac_rows("koja_college_ca_components", {"course_id": course_id, "module": module}, limit=100)
+    return sorted(rows, key=lambda r: r.get("created_at") or "")
+
+
+def _ca_module_students(c, course_id, module):
+    reg_ids = {r["application_id"] for r in _ac_rows("koja_college_registrations", {"college_id": c["id"], "module": module}, limit=5000)}
+    apps = _ac_rows("koja_college_applications", {"college_id": c["id"], "course_id": course_id}, order="created_at.asc", limit=5000)
+    return [a for a in apps if a.get("id") in reg_ids and a.get("status") in ("accepted", "enrolled")]
+
+
+def _ca_score_map(components):
+    scores = {}
+    for comp in components:
+        for s in _ac_rows("koja_college_ca_scores", {"component_id": comp["id"]}, limit=5000):
+            scores[(comp["id"], s["application_id"])] = float(s["raw"])
+    return scores
+
+
+def _ca_result(components, scores, aid):
+    """Weighted CA for one student. Returns (total out of 40, complete?)."""
+    total, complete = 0.0, bool(components)
+    for comp in components:
+        raw = scores.get((comp["id"], aid))
+        if raw is None:
+            complete = False
+            continue
+        max_score = float(comp.get("max_score") or 0) or 1.0
+        total += raw / max_score * float(comp.get("weight") or 0)
+    return round(total, 2), complete
+
+
+def _ca_weights_ok(components, out_of=CA_OUT_OF):
+    return bool(components) and abs(sum(float(x.get("weight") or 0) for x in components) - float(out_of)) < 0.01
+
+
+def _ca_manager_check(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    return c
+
+
+@app.route("/academic/college/<slug>/ca", methods=["GET", "POST"])
+@login_required
+def ac_ca_manage(slug):
+    c = _ca_manager_check(slug)
+    is_admin = bool((current_user() or {}).get("is_admin"))
+    courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    course_ids = {k["id"] for k in courses}
+    if request.method == "POST":
+        action = request.form.get("action")
+        course_id = clean(request.form.get("course_id"))
+        module = clean(request.form.get("module"))[:120]
+        back = url_for("ac_ca_manage", slug=slug, course_id=course_id, module=module)
+        if action == "settings":
+            dl = clean(request.form.get("ca_deadline")) or None
+            ex = clean(request.form.get("exam_start")) or None
+            if (dl and not CA_DATE_RE.match(dl)) or (ex and not CA_DATE_RE.match(ex)):
+                flash("The dates must be valid dates.", "danger")
+            else:
+                pct = _ac_num(request.form.get("exam_fee_percent"), CA_EXAM_FEE_PERCENT_DEFAULT, 0, 100)
+                reg_pct = _ac_num(request.form.get("registration_fee_percent"), 50, 0, 100)
+                out_of = _ac_num(request.form.get("ca_out_of"), CA_OUT_OF, 1, 100)
+                payload = {"college_id": c["id"], "ca_deadline": dl, "exam_start": ex, "exam_fee_percent": pct,
+                           "registration_fee_percent": reg_pct, "ca_out_of": out_of, "updated_at": utc_now()}
+                if _ca_settings(c):
+                    _, err = db_update("koja_college_settings", {"college_id": c["id"]}, payload)
+                else:
+                    _, err = db_insert("koja_college_settings", payload)
+                flash("Settings saved." if not err else "Could not save the settings.", "success" if not err else "danger")
+            return redirect(back)
+        if course_id not in course_ids or not module:
+            flash("Choose a course and enter the module.", "danger")
+            return redirect(back)
+        if action == "component":
+            name = clean(request.form.get("name"))[:80]
+            max_score = _ac_num(request.form.get("max_score"), 0, 0, 1000)
+            weight = _ac_num(request.form.get("weight"), 0, 0, _ca_out_of(c))
+            if not name or max_score <= 0:
+                flash("Give the component a name and a maximum score.", "danger")
+            elif sum(float(x.get("weight") or 0) for x in _ca_components(course_id, module)) + weight > _ca_out_of(c) + 0.01:
+                flash("The weights for this module cannot add up to more than %d." % _ca_out_of(c), "danger")
+            else:
+                _, err = db_insert("koja_college_ca_components", {"id": str(uuid.uuid4()), "college_id": c["id"], "course_id": course_id,
+                                   "module": module, "name": name, "max_score": max_score, "weight": weight, "created_at": utc_now()})
+                flash("Component added." if not err else "Could not add the component. The name may already exist.", "success" if not err else "danger")
+            return redirect(back)
+        if action == "scores":
+            if _ca_is_locked(course_id, module) and not is_admin:
+                flash("This CA is published and locked. Only KOJA administrators can reopen it.", "danger")
+                return redirect(back)
+            if _ca_deadline_passed(c) and not is_admin:
+                flash("The CA deadline has passed, so scores can no longer be changed.", "danger")
+                return redirect(back)
+            comps = {x["id"]: x for x in _ca_components(course_id, module)}
+            scores = _ca_score_map(list(comps.values()))
+            students = {a["id"] for a in _ca_module_students(c, course_id, module)}
+            saved, problems = 0, 0
+            for key, value in request.form.items():
+                m = re.match(r"^score_([0-9a-f-]{36})_([0-9a-f-]{36})$", key)
+                if not m or m.group(1) not in comps or m.group(2) not in students or not clean(value):
+                    continue
+                cid, aid = m.group(1), m.group(2)
+                try:
+                    raw = float(clean(value))
+                except ValueError:
+                    problems += 1
+                    continue
+                if raw < 0 or raw > float(comps[cid]["max_score"]):
+                    problems += 1
+                    continue
+                if (cid, aid) in scores:
+                    _, err = db_update("koja_college_ca_scores", {"component_id": cid, "application_id": aid}, {"raw": raw, "updated_at": utc_now()})
+                else:
+                    _, err = db_insert("koja_college_ca_scores", {"id": str(uuid.uuid4()), "college_id": c["id"], "component_id": cid,
+                                       "application_id": aid, "raw": raw, "created_at": utc_now()})
+                if err:
+                    problems += 1
+                else:
+                    saved += 1
+            flash("Saved %d score(s)%s." % (saved, (", %d invalid and skipped (check the maximum scores)" % problems) if problems else ""),
+                  "success" if not problems else "danger")
+            return redirect(back)
+        if action == "publish":
+            if _ca_is_locked(course_id, module):
+                flash("This CA is already published.", "info")
+                return redirect(back)
+            comps = _ca_components(course_id, module)
+            if not _ca_weights_ok(comps, _ca_out_of(c)):
+                flash("The component weights for this module must add up to exactly %d before you publish." % _ca_out_of(c), "danger")
+                return redirect(back)
+            scores = _ca_score_map(comps)
+            incomplete = [a for a in _ca_module_students(c, course_id, module) if not _ca_result(comps, scores, a["id"])[1]]
+            if incomplete:
+                flash("%d student(s) are missing scores. Complete every component before you publish." % len(incomplete), "danger")
+                return redirect(back)
+            _, err = db_insert("koja_college_ca_locks", {"id": str(uuid.uuid4()), "college_id": c["id"], "course_id": course_id,
+                               "module": module, "published_at": utc_now(), "published_by": _ac_uid()})
+            flash("CA published. Students can now see it and it is locked." if not err else "Could not publish.", "success" if not err else "danger")
+            return redirect(back)
+        if action == "unlock":
+            if not is_admin:
+                abort(403)
+            db_delete("koja_college_ca_locks", {"course_id": course_id, "module": module})
+            flash("CA reopened for editing.", "success")
+            return redirect(back)
+        abort(400)
+
+    course_id = clean(request.args.get("course_id")) or (courses[0]["id"] if courses else "")
+    if course_id not in course_ids:
+        course_id = courses[0]["id"] if courses else ""
+    module = clean(request.args.get("module"))[:120]
+    comps = _ca_components(course_id, module) if course_id and module else []
+    students = _ca_module_students(c, course_id, module) if course_id and module else []
+    scores = _ca_score_map(comps)
+    locked = _ca_is_locked(course_id, module) if course_id and module else False
+    rows = [{"app": a, "result": _ca_result(comps, scores, a["id"]), "cells": [scores.get((x["id"], a["id"])) for x in comps]} for a in students]
+    return _ac_page("Continuous assessment", r'''
+<div class="card"><h2>Continuous assessment: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p>
+<form method="get"><label>Course<select name="course_id">{% for k in courses %}<option value="{{ k.id }}" {{ 'selected' if k.id == course_id }}>{{ k.title }}</option>{% endfor %}</select></label>
+<label>Module<input name="module" value="{{ module }}" maxlength="120" required></label>
+<button class="btn" type="submit">Open</button></form></div>
+
+<div class="card"><h3>Settings</h3>
+<form method="post">{{ csrf }}<input type="hidden" name="action" value="settings">
+<label>Exam start date (the CA deadline is 5 days before this)<input type="date" name="exam_start" value="{{ settings.exam_start or '' }}"></label>
+<label>Or set the CA deadline directly (no score changes after this date)<input type="date" name="ca_deadline" value="{{ settings.ca_deadline or '' }}"></label>
+<p class="small">Effective CA deadline: <strong>{{ effective_deadline or 'not set' }}</strong></p>
+<label>Fee percentage needed to register<input type="number" name="registration_fee_percent" min="0" max="100" step="1" value="{{ settings.registration_fee_percent if settings.registration_fee_percent is not none else 50 }}"></label>
+<label>Fee percentage needed for exam clearance<input type="number" name="exam_fee_percent" min="0" max="100" step="1" value="{{ settings.exam_fee_percent if settings.exam_fee_percent is not none else 100 }}"></label>
+<label>CA weight out of 100 (the rest is the exam; e.g. 40 means 40 CA / 60 exam)<input type="number" name="ca_out_of" min="1" max="100" step="1" value="{{ settings.ca_out_of if settings.ca_out_of is not none else 40 }}"></label>
+<button class="btn secondary" type="submit">Save settings</button></form></div>
+
+{% if course_id and module %}
+<div class="card"><h3>CA components for {{ module }}</h3>
+<p class="small">Weights must add up to exactly {{ out_of }}. Current total: <strong>{{ weight_total }}</strong>{% if weights_ok %} · ready to publish{% endif %}.</p>
+<table style="width:100%;border-collapse:collapse"><tr><th align="left">Component</th><th>Maximum</th><th>Weight (out of {{ out_of }})</th></tr>
+{% for x in comps %}<tr style="border-top:1px solid #ddd"><td>{{ x.name }}</td><td align="center">{{ x.max_score }}</td><td align="center">{{ x.weight }}</td></tr>{% else %}<tr><td colspan="3" class="small">No components yet.</td></tr>{% endfor %}</table>
+{% if not locked %}<form method="post" style="margin-top:10px">{{ csrf }}<input type="hidden" name="action" value="component"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}">
+<label>Name (e.g. Assignment 1)<input name="name" required maxlength="80"></label>
+<label>Maximum score (e.g. 20)<input name="max_score" type="number" min="1" step="0.5" required></label>
+<label>Weight out of {{ out_of }} (e.g. 10)<input name="weight" type="number" min="0" max="{{ out_of }}" step="0.5" required></label>
+<button class="btn secondary" type="submit">Add component</button></form>{% endif %}
+</div>
+
+<div class="card"><h3>Scores</h3>
+{% if locked %}<p><strong>Published and locked.</strong> {% if is_admin %}<form method="post" style="display:inline">{{ csrf }}<input type="hidden" name="action" value="unlock"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}"><button class="btn secondary" type="submit">Reopen (admin)</button></form>{% endif %}</p>{% endif %}
+{% if deadline_passed %}<p class="small" style="color:#b00">The CA deadline has passed.</p>{% endif %}
+<p><a class="btn secondary" href="{{ url_for('ac_ca_template', slug=c.slug, course_id=course_id, module=module) }}">Download Excel template</a></p>
+<form method="post" enctype="multipart/form-data">{{ csrf }}<input type="hidden" name="action" value="upload"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}">
+<label>Or upload the filled Excel template<input type="file" name="file" accept=".xlsx"></label> <button class="btn secondary" type="submit" formaction="{{ url_for('ac_ca_upload', slug=c.slug) }}">Upload scores</button></form>
+{% if comps and students %}
+<form method="post">{{ csrf }}<input type="hidden" name="action" value="scores"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}">
+<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Student number</th><th align="left">Name</th>{% for x in comps %}<th>{{ x.name }} (/{{ x.max_score }})</th>{% endfor %}<th>CA /{{ out_of }}</th></tr>
+{% for r in rows %}<tr style="border-top:1px solid #ddd"><td>{{ r.app.student_number or '-' }}</td><td>{{ r.app.full_name }}</td>
+{% for x in comps %}<td><input name="score_{{ x.id }}_{{ r.app.id }}" type="number" min="0" max="{{ x.max_score }}" step="0.5" value="{{ r.cells[loop.index0] if r.cells[loop.index0] is not none else '' }}" style="width:80px"{{ ' disabled' if locked or deadline_passed and not is_admin }}></td>{% endfor %}
+<td align="center"><strong>{{ r.result[0] }}</strong>{% if not r.result[1] %} <span class="small">incomplete</span>{% endif %}</td></tr>{% endfor %}</table></div>
+{% if not locked %}<p><button class="btn" type="submit">Save scores</button></p>{% endif %}
+</form>
+{% if not locked and weights_ok %}<form method="post" style="margin-top:10px">{{ csrf }}<input type="hidden" name="action" value="publish"><input type="hidden" name="course_id" value="{{ course_id }}"><input type="hidden" name="module" value="{{ module }}"><button class="btn" type="submit">Publish CA (locks it)</button></form>{% endif %}
+{% else %}<p class="small">Students registered for this module will appear here. Students register from their portal.</p>{% endif %}
+</div>
+{% endif %}''',
+                    c=c, courses=courses, course_id=course_id, module=module, comps=comps, rows=rows, students=students,
+                    locked=locked, is_admin=is_admin, settings=_ca_settings(c), out_of=_ca_out_of(c),
+                    weight_total=round(sum(float(x.get("weight") or 0) for x in comps), 2),
+                    weights_ok=_ca_weights_ok(comps, _ca_out_of(c)), deadline_passed=_ca_deadline_passed(c),
+                    effective_deadline=_ca_effective_deadline(c), csrf_ok=True)
+
+
+@app.route("/academic/college/<slug>/ca/template")
+@login_required
+def ac_ca_template(slug):
+    c = _ca_manager_check(slug)
+    course_id, module = clean(request.args.get("course_id")), clean(request.args.get("module"))[:120]
+    comps = _ca_components(course_id, module)
+    if not comps:
+        flash("Add the components for this module first.", "danger")
+        return redirect(url_for("ac_ca_manage", slug=slug))
+    from openpyxl import Workbook
+    from io import BytesIO
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CA scores"
+    headers = ["Student number", "Application ID"] + ["%s (max %s)" % (x["name"], int(float(x["max_score"]))) for x in comps]
+    ws.append(headers)
+    for a in _ca_module_students(c, course_id, module):
+        ws.append([a.get("student_number") or "", a["id"]])
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="ca-%s.xlsx"' % (secure_filename(module) or "module")})
+
+
+@app.route("/academic/college/<slug>/ca/upload", methods=["POST"])
+@login_required
+def ac_ca_upload(slug):
+    c = _ca_manager_check(slug)
+    course_id, module = clean(request.form.get("course_id")), clean(request.form.get("module"))[:120]
+    back = url_for("ac_ca_manage", slug=slug, course_id=course_id, module=module)
+    f = request.files.get("file")
+    if not f or not f.filename.lower().endswith(".xlsx"):
+        flash("Choose the Excel (.xlsx) template you filled in.", "danger")
+        return redirect(back)
+    if _ca_is_locked(course_id, module) or (_ca_deadline_passed(c) and not (current_user() or {}).get("is_admin")):
+        flash("This CA is locked or past its deadline, so no scores were uploaded.", "danger")
+        return redirect(back)
+    from openpyxl import load_workbook
+    try:
+        ws = load_workbook(f, read_only=True, data_only=True).active
+    except Exception:
+        flash("That file could not be read. Use the template from this page.", "danger")
+        return redirect(back)
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        flash("The file is empty.", "danger")
+        return redirect(back)
+    comps = _ca_components(course_id, module)
+    by_header = {}
+    for x in comps:
+        by_header["%s (max %s)" % (x["name"], int(float(x["max_score"])))] = x
+    header = [str(h or "") for h in rows[0]]
+    col_comp = {i: by_header[h] for i, h in enumerate(header) if h in by_header}
+    if not col_comp:
+        flash("No component columns matched. Download a fresh template.", "danger")
+        return redirect(back)
+    students = {a["id"]: a for a in _ca_module_students(c, course_id, module)}
+    by_number = {str(a.get("student_number") or ""): a for a in students.values() if a.get("student_number")}
+    scores = _ca_score_map(comps)
+    saved, skipped = 0, 0
+    for row in rows[1:]:
+        if not row or all(v in (None, "") for v in row):
+            continue
+        aid_cell = str(row[1] or "").strip() if len(row) > 1 else ""
+        number = str(row[0] or "").strip().replace(".0", "")
+        app_row = students.get(aid_cell) or by_number.get(number)
+        if not app_row:
+            skipped += 1
+            continue
+        for i, comp in col_comp.items():
+            if i >= len(row) or row[i] in (None, ""):
+                continue
+            try:
+                raw = float(row[i])
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+            if raw < 0 or raw > float(comp["max_score"]):
+                skipped += 1
+                continue
+            if (comp["id"], app_row["id"]) in scores:
+                _, err = db_update("koja_college_ca_scores", {"component_id": comp["id"], "application_id": app_row["id"]}, {"raw": raw, "updated_at": utc_now()})
+            else:
+                _, err = db_insert("koja_college_ca_scores", {"id": str(uuid.uuid4()), "college_id": c["id"], "component_id": comp["id"],
+                                   "application_id": app_row["id"], "raw": raw, "created_at": utc_now()})
+            if err:
+                skipped += 1
+            else:
+                saved += 1
+    flash("Uploaded %d score(s). %d row(s) or value(s) skipped (unknown student, or outside the maximum)." % (saved, skipped), "success" if not skipped else "info")
+    return redirect(back)
+
+
+def _svc_registration_ok(a, c):
+    ok, total, paid = _fees_percent_ok(a, _ca_settings(c).get("registration_fee_percent") if _ca_settings(c).get("registration_fee_percent") is not None else 50)
+    return ok, total, paid
+
+
+def _svc_clearances(a, c):
+    """Exam clearance: fees paid enough (financial) and every registered module published with complete CA (academic)."""
+    _, _, total, paid, balance = _fin_totals(a["id"])
+    pct = float(_ca_settings(c).get("exam_fee_percent") if _ca_settings(c).get("exam_fee_percent") is not None else CA_EXAM_FEE_PERCENT_DEFAULT)
+    fees_ok = total <= 0 or paid + 0.005 >= total * pct / 100.0
+    reasons = []
+    if not fees_ok:
+        reasons.append("Fees: at least %s%% of your fees must be paid. Paid %.2f of %.2f." % (int(pct) if pct == int(pct) else pct, paid, total))
+    regs = sorted({r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": a["id"]}, limit=300)})
+    if not regs:
+        reasons.append("Register your modules first.")
+    for m in regs:
+        comps = _ca_components(a["course_id"], m)
+        if not _ca_is_locked(a["course_id"], m):
+            reasons.append("%s: CA is not published yet." % m)
+        elif not _ca_result(comps, _ca_score_map(comps), a["id"])[1]:
+            reasons.append("%s: your CA is incomplete." % m)
+    return {"fees_ok": fees_ok, "paid": paid, "total": total, "balance": balance, "modules": regs, "reasons": reasons, "cleared": fees_ok and not reasons}
+
+
+@app.route("/academic/services/<aid>/ca")
+@login_required
+def ac_svc_ca(aid):
+    def build(a, c, course, extra):
+        regs = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
+        comp_mods = {x["module"] for x in _ac_rows("koja_college_ca_components", {"course_id": a["course_id"]}, limit=500)}
+        rows = []
+        for m in sorted(regs | comp_mods):
+            comps = _ca_components(a["course_id"], m)
+            published = _ca_is_locked(a["course_id"], m)
+            total, complete = _ca_result(comps, _ca_score_map(comps), aid) if comps else (0.0, False)
+            rows.append({"module": m, "published": published, "total": total if (published and complete) else None,
+                         "parts": [{"name": x["name"], "max": x["max_score"], "raw": _ca_score_map([x]).get((x["id"], aid))} for x in comps] if published else []})
+        return _ac_page("View CA", r'''
+<div class="card"><h2>View CA</h2><p class="small">{{ c.name }} · continuous assessment</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+{% for r in rows %}<div class="card"><h3>{{ r.module }}</h3>
+{% if not r.published %}<p class="small">Not published yet. Your CA appears here once your lecturer publishes it.</p>
+{% elif r.total is none %}<p class="small">Your CA is incomplete. Please check with the college.</p>
+{% else %}<p>CA: <strong>{{ r.total }} / {{ out_of }}</strong></p>
+<table style="width:100%;border-collapse:collapse">{% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ p.name }}</td><td align="center">{{ p.raw if p.raw is not none else '-' }} / {{ p.max }}</td></tr>{% endfor %}</table>{% endif %}
+</div>{% else %}<div class="card"><p class="small">You have no registered modules yet.</p></div>{% endfor %}''',
+                         back=_svc_back(aid), c=c, rows=rows, out_of=_ca_out_of(c))
+    return _svc_student_academic(aid, "View CA", build)
+
+
+@app.route("/academic/services/<aid>/docket")
+@login_required
+def ac_svc_docket(aid):
+    def build(a, c, course, extra):
+        cl = _svc_clearances(a, c)
+        if not cl["cleared"]:
+            return _ac_page("Exam docket", r'''
+<div class="card"><h2>Exam docket</h2><p class="small">{{ c.name }}</p>
+<p><strong>Your exam docket is not available yet.</strong></p>
+<ul>{% for r in cl.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+<p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''', c=c, cl=cl, back=_svc_back(aid))
+        slots = _ac_rows("koja_college_timetable", {"course_id": a["course_id"]}, limit=500)
+        lines = [{"module": m, "slots": sorted([s for s in slots if s["module"] == m], key=_svc_day_key)} for m in cl["modules"]]
+        return _ac_page("Exam docket", r'''
+<div class="card"><h2>Exam docket</h2><p class="small">{{ c.name }}</p>
+<p><strong>Name:</strong> {{ a.full_name }}<br><strong>Student number:</strong> {{ a.student_number or 'not issued yet' }}<br><strong>Programme:</strong> {{ course.title }}</p>
+<p class="small">Fees paid: {{ '%.2f' % cl.paid }} of {{ '%.2f' % cl.total }} · Balance {{ '%.2f' % cl.balance }}</p>
+<p class="no-print"><button class="btn" type="button" onclick="window.print()">Print docket</button> <a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th align="left">Day and time</th><th align="left">Venue</th></tr>
+{% for l in lines %}{% for s in l.slots %}<tr style="border-top:1px solid #ddd"><td>{{ l.module }}</td><td>{{ s.day }} {{ s.starts }}–{{ s.ends }}</td><td>{{ s.venue or '' }}</td></tr>{% else %}<tr style="border-top:1px solid #ddd"><td>{{ l.module }}</td><td colspan="2" class="small">Time not posted yet</td></tr>{% endfor %}{% endfor %}</table></div>''',
+                         a=a, c=c, course=course, cl=cl, lines=lines, back=_svc_back(aid))
+    return _svc_student_academic(aid, "Exam docket", build)
+
+
+@app.route("/academic/application/<aid>/union", methods=["POST"])
+@login_required
+def ac_application_union(aid):
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a:
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    if not _college_is_owner(c):
+        abort(403)
+    _, err = db_update("koja_college_applications", {"id": aid}, {"union_member": bool(request.form.get("union_member")), "updated_at": utc_now()})
+    flash("Union membership saved." if not err else "Could not save union membership.", "success" if not err else "danger")
     return redirect(url_for("ac_application_view", aid=aid))
 
 
@@ -24129,7 +24910,7 @@ def ac_college_admissions(slug):
     seats_used = {i["id"]: sum(1 for x in everything if x.get("intake_id") == i["id"] and x.get("status") in ("accepted", "enrolled")) for i in intakes}
     return _ac_page("Admissions", r'''
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a></p>
+<p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a></p>
 <p class="small">
 <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· {{ drafts }} draft(s): students have started but not submitted yet</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
@@ -24218,6 +24999,17 @@ def _bed_in_college(c, bid):
     if not h or h.get("college_id") != c["id"]:
         return None
     return {"bed": b, "room": r, "hostel": h}
+
+
+def _bed_rule_problem(a, info):
+    """Why this student may not take this bed, or None if they may.
+    Hostels with a gender are for that gender only; rooms marked union_only are for union members only."""
+    hostel_gender = (info.get("hostel") or {}).get("gender")
+    if hostel_gender and a.get("gender") != hostel_gender:
+        return "This hostel is for %s students." % ("female" if hostel_gender == "female" else "male")
+    if (info.get("room") or {}).get("union_only") and not a.get("union_member"):
+        return "This room is reserved for union members."
+    return None
 
 
 def _college_beds(c):
@@ -24418,6 +25210,9 @@ def ac_college_accommodation(slug):
 </div>{% else %}<p class="small">No rooms yet.</p>{% endfor %}
 {% else %}<p>No hostels yet.</p>{% endfor %}
 </div>
+<div class="card"><h3>Standard layout (hostels A to M)</h3>
+<p class="small">Creates Hostels A to M, each with rooms 1 to 17. Hostels A to G are for women, H to M for men. Rooms 6, 7 and 16 take 2 students and are for union members; the other rooms take 6. Running it again adds only what is missing and updates the gender and union rules on existing hostels and rooms.</p>
+<form method="post" action="{{ url_for('ac_college_standard_block', slug=c.slug) }}">{{ csrf }}<button class="btn" type="submit">Set up standard layout</button></form></div>
 <div class="card"><h3>Add a hostel</h3>
 <form method="post" action="{{ url_for('ac_college_hostel_add', slug=c.slug) }}">{{ csrf }}<label>Hostel name<input name="name" required maxlength="100"></label><button class="btn" type="submit">Add hostel</button></form></div>
 <div class="card"><h3>Add a room</h3>
@@ -24475,6 +25270,76 @@ def ac_college_room_add(slug):
     return redirect(url_for("ac_college_accommodation", slug=slug))
 
 
+# Standard boys' accommodation layout: hostels A to M, each with rooms 1 to 17.
+# Rooms 6, 7 and 16 take 2 students; every other room takes 6.
+STANDARD_HOSTEL_LETTERS = [chr(code) for code in range(ord("A"), ord("M") + 1)]
+STANDARD_ROOM_COUNT = 17
+STANDARD_SMALL_ROOMS = {6, 7, 16}
+STANDARD_SMALL_CAPACITY = 2
+STANDARD_CAPACITY = 6
+STANDARD_HOSTEL_GENDER = {letter: ("female" if letter <= "G" else "male") for letter in STANDARD_HOSTEL_LETTERS}
+
+
+@app.route("/academic/college/<slug>/accommodation/standard", methods=["POST"])
+@login_required
+def ac_college_standard_block(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    back = url_for("ac_college_accommodation", slug=slug)
+    have = {h["name"]: h["id"] for h in _ac_rows("koja_accommodation_hostels", {"college_id": c["id"]}, limit=500)}
+    hostel_ids = {}
+    new_hostels = []
+    for letter in STANDARD_HOSTEL_LETTERS:
+        name = "Hostel %s" % letter
+        if name in have:
+            hostel_ids[name] = have[name]
+            db_update("koja_accommodation_hostels", {"id": have[name]}, {"gender": STANDARD_HOSTEL_GENDER[letter]})
+        else:
+            hid = str(uuid.uuid4())
+            hostel_ids[name] = hid
+            new_hostels.append({"id": hid, "college_id": c["id"], "name": name, "gender": STANDARD_HOSTEL_GENDER[letter], "created_at": utc_now()})
+    if new_hostels:
+        _, err = db_insert("koja_accommodation_hostels", new_hostels, returning="minimal")
+        if err:
+            flash("Could not create the hostels. Please try again.", "danger")
+            return redirect(back)
+    new_rooms, new_beds = [], []
+    for name, hid in hostel_ids.items():
+        existing_rooms = {r["room_code"]: r for r in _ac_rows("koja_accommodation_rooms", {"hostel_id": hid}, limit=500)}
+        for number in range(1, STANDARD_ROOM_COUNT + 1):
+            code = str(number)
+            union = number in STANDARD_SMALL_ROOMS
+            if code in existing_rooms:
+                if existing_rooms[code].get("union_only") != union:
+                    db_update("koja_accommodation_rooms", {"id": existing_rooms[code]["id"]}, {"union_only": union})
+                continue
+            places = STANDARD_SMALL_CAPACITY if union else STANDARD_CAPACITY
+            rid = str(uuid.uuid4())
+            new_rooms.append({"id": rid, "hostel_id": hid, "room_code": code, "capacity": places, "union_only": union, "created_at": utc_now()})
+            for bed in range(1, places + 1):
+                new_beds.append({"id": str(uuid.uuid4()), "room_id": rid, "number": bed, "created_at": utc_now()})
+    if new_rooms:
+        _, err = db_insert("koja_accommodation_rooms", new_rooms, returning="minimal")
+        if err:
+            flash("Could not create the rooms. Please try again.", "danger")
+            return redirect(back)
+    for start in range(0, len(new_beds), 500):
+        _, err = db_insert("koja_accommodation_bedspaces", new_beds[start:start + 500], returning="minimal")
+        if err:
+            flash("Some bed spaces could not be created. Please check the hostels page.", "danger")
+            return redirect(back)
+    flash("Standard layout ready: %d new room(s) and %d bed space(s). Existing hostels and rooms were left as they were."
+          % (len(new_rooms), len(new_beds)), "success")
+    return redirect(back)
+
+
+def _release_beds(aid):
+    """Frees every active bed held by this application (used when a place is declined or rejected)."""
+    for old in _ac_rows("koja_accommodation_allocations", {"application_id": aid, "status": "active"}, limit=20):
+        db_update("koja_accommodation_allocations", {"id": old["id"]}, {"status": "released", "released_at": utc_now()})
+
+
 @app.route("/academic/college/<slug>/allocate", methods=["POST"])
 @login_required
 def ac_college_allocate(slug):
@@ -24483,11 +25348,16 @@ def ac_college_allocate(slug):
         abort(403)
     back = url_for("ac_college_accommodation", slug=slug)
     a = first_row("koja_college_applications", {"id": request.form.get("application_id"), "college_id": c["id"]})
-    if not a or a.get("status") != "enrolled":
-        flash("Only enrolled students can be allocated.", "danger")
+    if not a or a.get("status") not in ("accepted", "enrolled"):
+        flash("Only students who have accepted their place can be allocated a bed.", "danger")
         return redirect(back)
-    if not _bed_in_college(c, request.form.get("bedspace_id")):
+    info = _bed_in_college(c, request.form.get("bedspace_id"))
+    if not info:
         flash("Choose a bedspace in this college.", "danger")
+        return redirect(back)
+    problem = _bed_rule_problem(a, info)
+    if problem:
+        flash(problem, "danger")
         return redirect(back)
     _, err = db_insert("koja_accommodation_allocations", {"id": str(uuid.uuid4()), "college_id": c["id"],
                        "bedspace_id": request.form.get("bedspace_id"), "application_id": a["id"],
@@ -24525,18 +25395,19 @@ def ac_application_room(aid):
         if info:
             current_label = "%s · Room %s · Bed %s" % (info["hostel"]["name"], info["room"]["room_code"], info["bed"]["number"])
     free = []
-    if a.get("status") == "enrolled":
+    if a.get("status") in ("accepted", "enrolled"):
         for h in _college_beds(c):
             for r in h["rooms"]:
                 for b in r["beds"]:
-                    if not b["alloc"]:
+                    if not b["alloc"] and not _bed_rule_problem(a, {"hostel": h["hostel"], "room": r["room"]}):
                         free.append({"id": b["id"], "label": "%s · Room %s · Bed %s" % (h["hostel"]["name"], r["room"]["room_code"], b["number"])})
     return _ac_page("Room", r'''
 <div class="card"><h2>Room</h2><p class="small">{{ c.name }}</p>
-{% if a.status != 'enrolled' %}<p>Room booking opens once you are enrolled.</p>
+{% if a.status not in ('accepted', 'enrolled') %}<p>Room booking opens once you accept your place.</p>
 {% else %}
 <p>Your room: <strong>{{ current_label or 'not allocated yet' }}</strong></p>
 <h3>{{ 'Change your room' if current_label else 'Choose a room' }}</h3>
+<p class="small">Hostels A to G are for women and H to M for men. Rooms 6, 7 and 16 are for union members. You only see beds you can take.</p>
 {% for f in free %}<form method="post" action="{{ url_for('ac_application_reserve', aid=a.id) }}" style="margin:6px 0">{{ csrf }}<input type="hidden" name="bedspace_id" value="{{ f.id }}"><button class="btn secondary" type="submit">{{ f.label }}</button></form>
 {% else %}<p class="small">No free bedspaces right now.</p>{% endfor %}
 {% endif %}
@@ -24548,13 +25419,18 @@ def ac_application_room(aid):
 @login_required
 def ac_application_reserve(aid):
     a = first_row("koja_college_applications", {"id": aid})
-    if not a or a.get("student_user_id") != _ac_uid() or a.get("status") != "enrolled":
+    if not a or a.get("student_user_id") != _ac_uid() or a.get("status") not in ("accepted", "enrolled"):
         abort(404)
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
     back = url_for("ac_application_room", aid=aid)
     bid = request.form.get("bedspace_id")
-    if not _bed_in_college(c, bid):
+    info = _bed_in_college(c, bid)
+    if not info:
         flash("That bedspace is not in this college.", "danger")
+        return redirect(back)
+    problem = _bed_rule_problem(a, info)
+    if problem:
+        flash(problem, "danger")
         return redirect(back)
     if first_row("koja_accommodation_allocations", {"bedspace_id": bid, "status": "active"}):
         flash("That bedspace has just been taken. Please choose another.", "danger")
