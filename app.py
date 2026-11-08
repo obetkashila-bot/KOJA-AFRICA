@@ -24235,6 +24235,13 @@ def ac_student_portal(aid):
     mattress = first_row("koja_mattress_allocations", {"application_id": aid, "college_id": a["college_id"]})
     if mattress and mattress.get("status") == "cancelled":
         mattress = None
+    room_alloc = first_row("koja_accommodation_allocations", {"application_id": aid, "status": "active"})
+    room_label = None
+    if room_alloc:
+        rinfo = _bed_in_college(c, room_alloc["bedspace_id"])
+        if rinfo:
+            room_label = "%s · Room %s · Bed %s" % (rinfo["hostel"]["name"], rinfo["room"]["room_code"], rinfo["bed"]["number"])
+    room_status = ("Provisional reservation" if _accommodation_gate(c, a) else "Confirmed") if room_label else None
     return _ac_page("Student portal", r"""
 <style>
   .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
@@ -24280,19 +24287,21 @@ def ac_student_portal(aid):
       {% for r in receipts %}<p class="small">{{ r.receipt_number }} · K{{ '%.2f' % r.amount }} · {{ (r.issued_at or '')[:10] }} · <a href="{{ url_for('ac_payment_receipt', pid=r.payment_id) }}" target="_blank" rel="noopener">View receipt</a></p>
       {% else %}<p class="small">No receipts yet. A receipt is issued when Accounts verifies a payment.</p>{% endfor %}
     </div>
-    {% if can_use %}<div class="card" id="my-studies"><h3>My studies</h3>
+    {% if can_use %}<div class="card" id="my-studies" style="background:#fff;color:#111"><h3>My studies</h3>
       <p><strong>Group:</strong> {{ group }}</p>
       <p><strong>Registered modules:</strong> {% if registered_list %}{{ registered_list | join(', ') }}{% else %}none yet. <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Register for your modules</a>{% endif %}</p>
       <p><strong>Next classes:</strong></p>
       {% for s in next_classes %}<p class="small">{{ s.module }} · {{ s.day }} {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}</p>
       {% else %}<p class="small">No published classes for your group and modules yet. <a href="{{ url_for('ac_svc_timetable', aid=a.id) }}">Timetable</a></p>{% endfor %}
+      <p><strong>Accommodation:</strong> {% if room_label %}{{ room_label }} ({{ room_status }}){% else %}not allocated yet{% endif %} · <a href="{{ url_for('ac_application_room', aid=a.id) }}">{{ 'Change room' if room_label else 'Choose a room' }}</a></p>
       <p><strong>Balance:</strong> {{ account_status }} · <a href="{{ url_for('ac_application_money', aid=a.id) }}">Payments</a></p>
       <p><strong>Mattress:</strong> {% if mattress %}allocated. <a href="{{ url_for('ac_application_mattress', aid=a.id) }}">Show collection pass</a>{% else %}not allocated yet{% endif %}</p>
     </div>{% endif %}
     {% if a.status == 'offered' %}<div class="card"><h3>Your offer</h3><p class="small">Open Personal Information to accept or decline your offer.</p></div>{% endif %}
   </div>
 </div>""", a=a, c=c, course=course, intake=intake, can_use=can_use, account_status=account_status, receipts=receipts,
-                    group=group, registered_list=registered_list, next_classes=next_classes, mattress=mattress)
+                    group=group, registered_list=registered_list, next_classes=next_classes, mattress=mattress,
+                    room_label=room_label, room_status=room_status)
 
 
 # ---- student services: helpdesk, grades and CA, timetable, registration, docket, evaluation ----
@@ -24736,7 +24745,7 @@ def ac_svc_timetable(aid):
         periods, grid, other = _tt_grid(slots)
         return _ac_page("Timetable", r'''
 <div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }} · Group {{ group }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
-{% if slots %}<div class="card" style="overflow-x:auto">
+{% if slots %}<div class="card" style="overflow-x:auto;background:#fff;color:#111">
 <table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #888">
 <tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Day</th>{% for p, t in periods %}<th style="border:1px solid #888;padding:6px">{{ t[0] }}&ndash;{{ t[1] }}</th>{% endfor %}</tr>
 {% for row in grid %}<tr><td style="font-weight:bold;background:#eef3fa;vertical-align:top;border:1px solid #888;padding:6px">{{ row.day }}</td>
@@ -25263,7 +25272,7 @@ def ac_svc_ca(aid):
                          "status": total_status})
         return _ac_page("View CA", r'''
 <div class="card"><h2>View CA</h2><p class="small">{{ c.name }} · {{ course.title }} · continuous assessment</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
-{% if rows %}<div class="card" style="overflow-x:auto">
+{% if rows %}<div class="card" style="overflow-x:auto;background:#fff;color:#111">
 <table style="width:100%;border-collapse:collapse;font-size:14px">
 <tr style="background:#1d4e89;color:#fff"><th align="left">Course code</th><th align="left">Course name</th><th align="left">Assessment component</th><th>Weight</th><th>Marks obtained</th><th align="left">Status</th></tr>
 {% for r in rows %}
@@ -26023,14 +26032,14 @@ def ac_application_room(aid):
 <div class="card"><h2>Accommodation booking</h2><p class="small">{{ c.name }}</p>
 {% if not status_ok %}<p>Room booking opens once you accept your place.</p>
 {% else %}
-<div class="card" style="border:1px solid #1d4e89"><h3>Current allocation</h3>
+<div class="card" style="border:1px solid #1d4e89;background:#fff;color:#111"><h3>Current allocation</h3>
 <p><strong>Institution:</strong> {{ c.name }}<br>
 <strong>Your allocated space:</strong> {{ current_label or 'Not allocated yet' }}<br>
 <strong>Status:</strong> {{ status_text }}</p></div>
 
-{% if billing_notice %}<div class="card" style="border:1px solid #b36b00;background:#fff8ec"><h3>Billing hold</h3><p>{{ billing_notice }}</p></div>{% endif %}
+{% if billing_notice %}<div class="card" style="border:1px solid #b36b00;background:#fff8ec;color:#111"><h3>Billing hold</h3><p>{{ billing_notice }}</p></div>{% endif %}
 
-<div class="card"><h3>Room change</h3>
+<div class="card" style="background:#fff;color:#111"><h3>Room change</h3>
 {% if choices %}
 <form method="get" style="margin-bottom:10px"><label>Hostel<select name="hostel">{% for h in choices %}<option value="{{ h.hostel.id }}" {{ 'selected' if sel and h.hostel.id == sel.hostel.id }}>{{ h.hostel.name }}</option>{% endfor %}</select></label>
 <button class="btn secondary" type="submit">Show rooms</button></form>
@@ -26050,7 +26059,7 @@ def ac_application_room(aid):
 </table></div>
 {% else %}<p class="small">No hostel has a room you can take right now.</p>{% endif %}
 </div>
-{% if gate %}<div class="card"><p><strong>&#10060; Action unavailable.</strong> Choosing or changing a bed is locked until your accommodation fees are paid in full. Bed buttons are greyed out until then.</p></div>{% endif %}
+{% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>&#10060; Action unavailable.</strong> Choosing or changing a bed is locked until your accommodation fees are paid in full. Bed buttons are greyed out until then.</p></div>{% endif %}
 {% endif %}
 <p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
                     a=a, c=c, status_ok=status_ok, current_label=current_label, status_text=status_text, billing_notice=billing_notice,
