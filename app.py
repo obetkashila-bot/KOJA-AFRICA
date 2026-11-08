@@ -25685,8 +25685,8 @@ def ac_college_finance(slug):
 {% for p in pending %}<div class="card" style="margin:8px 0"><strong>{{ names.get(p.application_id, 'Student') }}</strong>
 <p class="small">{{ p.method }} · reference {{ p.reference }} · {{ p.amount }}</p>
 {% if p.slip_path %}<p class="small"><a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">View bank slip</a></p>{% endif %}
-<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="decision" value="verified" type="submit">Confirm payment</button></form>
-<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" name="decision" value="rejected" type="submit">Reject</button></form></div>
+<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<input type="hidden" name="decision" value="verified"><button class="btn" type="submit">Confirm payment</button></form>
+<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<input type="hidden" name="decision" value="rejected"><button class="btn secondary" type="submit">Reject</button></form></div>
 {% else %}<p class="small">No payments waiting.</p>{% endfor %}
 </div>
 <div class="card"><h3>Student balances</h3>
@@ -25743,12 +25743,14 @@ def ac_college_payment_decide(slug, pid):
     p = first_row("koja_college_payments", {"id": pid, "college_id": c["id"]})
     if not p:
         abort(404)
-    decision = request.form.get("decision")
+    decision = clean(request.form.get("decision"))
+    back = url_for("ac_college_finance", slug=slug)
     if decision not in ("verified", "rejected"):
-        abort(400)
+        flash("Choose Confirm payment or Reject for this payment and try again.", "danger")
+        return redirect(back)
     if p.get("status") != "pending":
         flash("This payment has already been decided.", "info")
-        return redirect(url_for("ac_college_finance", slug=slug))
+        return redirect(back)
     db_update("koja_college_payments", {"id": pid}, {"status": decision, "verified_at": utc_now(), "verified_by": _ac_uid()})
     _college_audit(c, "payment." + decision, "payment %s amount %s" % (pid, p.get("amount")))
     if decision == "verified":
