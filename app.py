@@ -24423,44 +24423,214 @@ def ac_svc_marks(aid):
                     a=a, c=c, course=course, marks=marks, csrf_ok=True)
 
 
+# ---- timetable: programme-based slots, periods, teaching groups, clash checks, auto-placement, publishing ----
+TT_PERIODS = {1: ("07:00", "09:00"), 2: ("09:00", "11:00"), 3: ("11:00", "13:00"), 4: ("13:00", "15:00"),
+              5: ("15:00", "17:00"), 6: ("17:00", "19:00"), 7: ("19:00", "21:00")}
+TT_AUTO_DAYS = SVC_DAYS[:5]          # automatic placement uses Monday to Friday
+TT_GROUP_RE = re.compile(r"^[A-Z]$")
+
+
+def _tt_clashes(slots, new):
+    """Clashes between a new slot and existing slots: same lecturer, same venue, or same programme group, at the same day and time."""
+    msgs = []
+    for s in slots:
+        if s.get("day") != new["day"]:
+            continue
+        if not (s.get("starts", "") < new["ends"] and new["starts"] < s.get("ends", "")):
+            continue
+        if new.get("lecturer") and (s.get("lecturer") or "").strip().lower() == new["lecturer"].strip().lower():
+            msgs.append("lecturer %s already teaches %s then" % (new["lecturer"], s.get("module")))
+        if new.get("venue") and (s.get("venue") or "").strip().lower() == new["venue"].strip().lower():
+            msgs.append("venue %s is already booked for %s then" % (new["venue"], s.get("module")))
+        if s.get("course_id") == new.get("course_id") and s.get("grp") == new.get("grp"):
+            msgs.append("group %s already has %s then" % (new.get("grp"), s.get("module")))
+    return msgs
+
+
+def _tt_read_times(form):
+    period = clean(form.get("period"))
+    if period.isdigit() and int(period) in TT_PERIODS:
+        return TT_PERIODS[int(period)], int(period)
+    return (clean(form.get("starts")), clean(form.get("ends"))), None
+
+
 @app.route("/academic/college/<slug>/timetable", methods=["GET", "POST"])
 @login_required
 def ac_svc_timetable_manage(slug):
     c = _college_by_slug(slug)
     if not _college_is_owner(c):
         abort(403)
+    back = url_for("ac_svc_timetable_manage", slug=slug)
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
     course_ids = {k["id"] for k in courses}
+    names = {k["id"]: k["title"] for k in courses}
     if request.method == "POST":
         cid = clean(request.form.get("course_id"))
         module = clean(request.form.get("module"))[:120]
         day = clean(request.form.get("day"))
-        starts, ends = clean(request.form.get("starts")), clean(request.form.get("ends"))
-        if cid not in course_ids or not module or day not in SVC_DAYS or not SVC_TIME_RE.match(starts) or not SVC_TIME_RE.match(ends):
-            flash("Choose a course, a module, a day and start and end times (HH:MM).", "danger")
-        else:
-            _, err = db_insert("koja_college_timetable", {"id": str(uuid.uuid4()), "college_id": c["id"], "course_id": cid,
-                               "module": module, "day": day, "starts": starts, "ends": ends,
-                               "venue": clean(request.form.get("venue"))[:120] or None,
-                               "lecturer": clean(request.form.get("lecturer"))[:120] or None, "created_at": utc_now()})
-            flash("Timetable slot added." if not err else "Could not add the slot.", "success" if not err else "danger")
-        return redirect(url_for("ac_svc_timetable_manage", slug=slug))
-    slots = _ac_rows_all("koja_college_timetable", {"college_id": c["id"]}, order="created_at.asc")
-    names = {k["id"]: k["title"] for k in courses}
+        grp = clean(request.form.get("grp")).upper()[:1] or "A"
+        (starts, ends), period = _tt_read_times(request.form)
+        if cid not in course_ids or not module or day not in SVC_DAYS or not TT_GROUP_RE.match(grp) \
+                or not SVC_TIME_RE.match(starts) or not SVC_TIME_RE.match(ends) or starts >= ends:
+            flash("Choose a course, module, day, group and a period (or valid start and end times).", "danger")
+            return redirect(back)
+        new = {"course_id": cid, "module": module, "day": day, "grp": grp, "starts": starts, "ends": ends,
+               "lecturer": clean(request.form.get("lecturer"))[:120] or None, "venue": clean(request.form.get("venue"))[:120] or None}
+        problems = _tt_clashes(_ac_rows_all("koja_college_timetable", {"college_id": c["id"]}), new)
+        if problems:
+            flash("Not added: " + "; ".join(problems[:3]) + ".", "danger")
+            return redirect(back)
+        _, err = db_insert("koja_college_timetable", dict(new, id=str(uuid.uuid4()), college_id=c["id"], period=period,
+                           published=False, created_at=utc_now()))
+        if not err:
+            _college_audit(c, "timetable.slot_added", "%s %s %s %s-%s group %s" % (module, day, starts, ends, grp, names.get(cid, "")))
+        flash("Slot added (not yet published)." if not err else "Could not add the slot.", "success" if not err else "danger")
+        return redirect(back)
+    slots = sorted(_ac_rows_all("koja_college_timetable", {"college_id": c["id"]}, order="created_at.asc"),
+                   key=lambda s: (names.get(s.get("course_id"), ""), s.get("grp") or "", SVC_DAYS.index(s["day"]) if s.get("day") in SVC_DAYS else 9, s.get("starts") or ""))
+    unpublished = len([s for s in slots if not s.get("published")])
     return _ac_page("Timetable", r'''
-<div class="card"><h2>Timetable: {{ c.name }}</h2><p class="small"><a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a></p></div>
-<div class="card"><h3>Add a slot</h3>
-<form method="post">{{ csrf }}
-<label>Course<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
+<div class="card"><h2>Timetable: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a> · <a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p>
+<p class="small">Build the timetable in this order: 1) assign student groups, 2) add each module's sessions (or auto-place them), 3) check the list, 4) publish. Students only see published slots, and only for their own group and registered modules.</p>
+<p><strong>{{ unpublished }}</strong> slot(s) not published yet.</p>
+<form method="post" action="{{ url_for('ac_svc_timetable_publish', slug=c.slug) }}" style="display:inline">{{ csrf }}<button class="btn" type="submit">Publish timetable</button></form></div>
+
+<div class="card"><h3>1. Student groups</h3>
+<p class="small">Students in each programme are split into groups (A, B, C ...) in the order they were enrolled.</p>
+<form method="post" action="{{ url_for('ac_svc_timetable_groups', slug=c.slug) }}">{{ csrf }}
+<label>Students per group<input type="number" name="size" min="1" max="500" value="50" required></label>
+<button class="btn" type="submit">Assign groups</button></form></div>
+
+<div class="card"><h3>2a. Auto-place sessions</h3>
+<p class="small">Finds free times on Monday to Friday, using the seven periods, without a lecturer, venue or group clash.</p>
+<form method="post" action="{{ url_for('ac_svc_timetable_auto', slug=c.slug) }}">{{ csrf }}
+<label>Programme<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
 <label>Module<input name="module" required maxlength="120"></label>
+<label>Group<input name="grp" value="A" maxlength="1" required></label>
+<label>Lecturer<input name="lecturer" maxlength="120"></label>
+<label>Venue<input name="venue" maxlength="120"></label>
+<label>Sessions per week (each is one period, 2 hours)<input type="number" name="sessions" min="1" max="10" value="2" required></label>
+<button class="btn" type="submit">Auto-place</button></form></div>
+
+<div class="card"><h3>2b. Add one slot by hand</h3>
+<form method="post">{{ csrf }}
+<label>Programme<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
+<label>Module<input name="module" required maxlength="120"></label>
+<label>Group<input name="grp" value="A" maxlength="1" required></label>
 <label>Day<select name="day" required>{% for d in days %}<option>{{ d }}</option>{% endfor %}</select></label>
-<label>Starts (HH:MM)<input name="starts" required placeholder="08:00" maxlength="5"></label>
-<label>Ends (HH:MM)<input name="ends" required placeholder="10:00" maxlength="5"></label>
+<label>Period<select name="period"><option value="">Use start and end times below</option>{% for p, t in periods %}<option value="{{ p }}">Period {{ p }} ({{ t[0] }}–{{ t[1] }})</option>{% endfor %}</select></label>
+<label>Starts (HH:MM, if no period)<input name="starts" placeholder="08:00" maxlength="5"></label>
+<label>Ends (HH:MM, if no period)<input name="ends" placeholder="10:00" maxlength="5"></label>
 <label>Venue<input name="venue" maxlength="120"></label>
 <label>Lecturer<input name="lecturer" maxlength="120"></label>
 <button class="btn" type="submit">Add slot</button></form></div>
-<div class="card"><h3>Slots</h3>{% for s in slots %}<p class="small"><strong>{{ s.module }}</strong> · {{ names.get(s.course_id, '') }} · {{ s.day }} {{ s.starts }}–{{ s.ends }} · {{ s.venue or '' }}</p>{% else %}<p class="small">No slots yet.</p>{% endfor %}</div>''',
-                    c=c, courses=courses, days=SVC_DAYS, slots=slots, names=names, csrf_ok=True)
+
+<div class="card"><h3>3. All slots</h3>
+{% for s in slots %}<p class="small" style="border-top:1px solid #ddd;padding-top:6px"><strong>{{ s.module }}</strong> · {{ names.get(s.course_id, '') }} · group {{ s.grp }} · {{ s.day }} {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}{% if s.lecturer %} · {{ s.lecturer }}{% endif %} · {% if s.published %}<strong>published</strong>{% else %}not published{% endif %}
+<form method="post" action="{{ url_for('ac_svc_timetable_delete', slug=c.slug, sid=s.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" type="submit">Delete</button></form></p>
+{% else %}<p class="small">No slots yet.</p>{% endfor %}
+</div>''', c=c, courses=courses, names=names, slots=slots, unpublished=unpublished, days=SVC_DAYS,
+                    periods=sorted(TT_PERIODS.items()), csrf_ok=True)
+
+
+@app.route("/academic/college/<slug>/timetable/auto", methods=["POST"])
+@login_required
+def ac_svc_timetable_auto(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    back = url_for("ac_svc_timetable_manage", slug=slug)
+    cid = clean(request.form.get("course_id"))
+    module = clean(request.form.get("module"))[:120]
+    grp = clean(request.form.get("grp")).upper()[:1] or "A"
+    lecturer = clean(request.form.get("lecturer"))[:120] or None
+    venue = clean(request.form.get("venue"))[:120] or None
+    sessions = int(_ac_num(request.form.get("sessions"), 1, 1, 10))
+    if not module or not TT_GROUP_RE.match(grp) or cid not in {k["id"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}:
+        flash("Choose a programme, module and group.", "danger")
+        return redirect(back)
+    existing = _ac_rows_all("koja_college_timetable", {"college_id": c["id"]})
+    placed = []
+    for day in TT_AUTO_DAYS:
+        for p in sorted(TT_PERIODS):
+            if len(placed) >= sessions:
+                break
+            starts, ends = TT_PERIODS[p]
+            cand = {"course_id": cid, "module": module, "day": day, "grp": grp, "starts": starts, "ends": ends,
+                    "lecturer": lecturer, "venue": venue}
+            if _tt_clashes(existing + placed, cand):
+                continue
+            placed.append(dict(cand, id=str(uuid.uuid4()), college_id=c["id"], period=p, published=False, created_at=utc_now()))
+    for i in range(0, len(placed), 100):
+        _, err = db_insert("koja_college_timetable", placed[i:i + 100], returning="minimal")
+        if err:
+            flash("Could not save the sessions. Please try again.", "danger")
+            return redirect(back)
+    _college_audit(c, "timetable.auto_placed", "%s group %s: %d of %d session(s)" % (module, grp, len(placed), sessions))
+    if len(placed) < sessions:
+        flash("Placed %d of %d sessions. There was no more free time for this lecturer, venue and group. Try another venue or lecturer, or add the rest by hand." % (len(placed), sessions), "warning")
+    else:
+        flash("Placed all %d session(s). They are not published yet." % len(placed), "success")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/timetable/groups", methods=["POST"])
+@login_required
+def ac_svc_timetable_groups(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    size = int(_ac_num(request.form.get("size"), 50, 1, 500))
+    changed = 0
+    for course in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300):
+        students = [a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"], "course_id": course["id"], "status": "enrolled"}, order="created_at.asc")]
+        for i, a in enumerate(students):
+            letter = chr(65 + min(i // size, 25))
+            if a.get("study_group") != letter:
+                db_update("koja_college_applications", {"id": a["id"]}, {"study_group": letter})
+                changed += 1
+    _college_audit(c, "timetable.groups_assigned", "group size %d, %d student(s) updated" % (size, changed))
+    flash("Groups assigned. %d student(s) updated." % changed, "success")
+    return redirect(url_for("ac_svc_timetable_manage", slug=slug))
+
+
+@app.route("/academic/college/<slug>/timetable/publish", methods=["POST"])
+@login_required
+def ac_svc_timetable_publish(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    _, err = db_update("koja_college_timetable", {"college_id": c["id"], "published": "false"}, {"published": True})
+    if err:
+        flash("Could not publish the timetable. Please try again.", "danger")
+    else:
+        _college_audit(c, "timetable.published", "")
+        flash("Timetable published. Students can now see their group's timetable.", "success")
+    return redirect(url_for("ac_svc_timetable_manage", slug=slug))
+
+
+@app.route("/academic/college/<slug>/timetable/<sid>/delete", methods=["POST"])
+@login_required
+def ac_svc_timetable_delete(slug, sid):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    s = first_row("koja_college_timetable", {"id": sid, "college_id": c["id"]})
+    if s:
+        db_delete("koja_college_timetable", {"id": sid})
+        _college_audit(c, "timetable.slot_deleted", "%s %s %s" % (s.get("module"), s.get("day"), s.get("starts")))
+    flash("Slot deleted.", "success")
+    return redirect(url_for("ac_svc_timetable_manage", slug=slug))
+
+
+def _tt_student_slots(a):
+    """Published slots for this student's group and registered modules only."""
+    registered = {r["module"] for r in _ac_rows_all("koja_college_registrations", {"application_id": a["id"]})}
+    group = a.get("study_group") or "A"
+    slots = [s for s in _ac_rows_all("koja_college_timetable", {"course_id": a["course_id"]})
+             if s.get("published") and s.get("grp") == group and s.get("module") in registered]
+    return sorted(slots, key=_svc_day_key), group, registered
 
 
 def _svc_day_key(slot):
@@ -24471,12 +24641,12 @@ def _svc_day_key(slot):
 @login_required
 def ac_svc_timetable(aid):
     def build(a, c, course, extra):
-        slots = sorted(_ac_rows("koja_college_timetable", {"course_id": a["course_id"]}, limit=500), key=_svc_day_key)
+        slots, group, registered = _tt_student_slots(a)
         return _ac_page("Timetable", r'''
-<div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }} · Group {{ group }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
 <div class="card">{% for s in slots %}<p><strong>{{ s.module }}</strong><br><span class="small">{{ s.day }} · {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}{% if s.lecturer %} · {{ s.lecturer }}{% endif %}</span></p>
-{% else %}<p class="small">The timetable has not been posted yet.</p>{% endfor %}</div>''',
-                         back=_svc_back(aid), c=c, course=course, slots=slots)
+{% else %}{% if not registered %}<p class="small">Register for your modules first. Your timetable appears once you have registered.</p>{% else %}<p class="small">Your timetable has not been published yet.</p>{% endif %}{% endfor %}</div>''',
+                         back=_svc_back(aid), c=c, course=course, slots=slots, group=group, registered=registered)
     return _svc_student_academic(aid, "Timetable", build)
 
 
@@ -24490,7 +24660,7 @@ def ac_svc_registration(aid):
 <div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p>
 <p>You can register once you have paid at least {{ pct }}% of your fees. Paid {{ '%.2f' % paid }} of {{ '%.2f' % total }}.</p>
 <p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''', c=c, course=course, pct=int(float(_ca_settings(c).get("registration_fee_percent") if _ca_settings(c).get("registration_fee_percent") is not None else 50)), paid=paid, total=total, back=_svc_back(aid))
-        modules = sorted({s["module"] for s in _ac_rows("koja_college_timetable", {"course_id": a["course_id"]}, limit=500)})
+        modules = sorted({s["module"] for s in _ac_rows_all("koja_college_timetable", {"course_id": a["course_id"]}) if s.get("published")})
         if request.method == "POST":
             chosen = [m for m in request.form.getlist("module") if m in modules]
             db_delete("koja_college_registrations", {"application_id": aid})
@@ -24987,7 +25157,7 @@ def ac_svc_docket(aid):
 <p><strong>Your exam docket is not available yet.</strong></p>
 <ul>{% for r in cl.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
 <p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''', c=c, cl=cl, back=_svc_back(aid))
-        slots = _ac_rows("koja_college_timetable", {"course_id": a["course_id"]}, limit=500)
+        slots = [s for s in _ac_rows_all("koja_college_timetable", {"course_id": a["course_id"]}) if s.get("published") and s.get("grp") == (a.get("study_group") or "A")]
         lines = [{"module": m, "slots": sorted([s for s in slots if s["module"] == m], key=_svc_day_key)} for m in cl["modules"]]
         return _ac_page("Exam docket", r'''
 <div class="card"><h2>Exam docket</h2><p class="small">{{ c.name }}</p>
@@ -25101,7 +25271,7 @@ def ac_college_admissions(slug):
     seats_used = {i["id"]: sum(1 for x in everything if x.get("intake_id") == i["id"] and x.get("status") in ("accepted", "enrolled")) for i in intakes}
     return _ac_page("Admissions", r'''
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a></p>
+<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
 <p class="small">
 <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· {{ drafts }} draft(s): students have started but not submitted yet</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
