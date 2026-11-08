@@ -23901,6 +23901,38 @@ def ac_application_view(aid):
 <form method="post" action="{{ url_for('ac_application_submit', aid=a.id) }}">{{ csrf }}<button class="btn" type="submit">Submit application</button></form>
 <p class="small"><a href="{{ url_for('ac_college_apply', slug=c.slug, cid=a.course_id) }}">Edit the form</a></p></div>{% endif %}
 {% endif %}
+{% if is_student %}
+<div class="card"><h3>Bio-data</h3>
+<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+  {% if docs_by_kind.get('photo') %}<img src="{{ url_for('ac_application_doc', aid=a.id, did=docs_by_kind['photo'].id) }}" alt="Profile picture" style="width:120px;height:150px;object-fit:cover;border:1px solid #ccc;border-radius:6px">
+  {% else %}<div style="width:120px;height:150px;border:1px dashed #999;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#555;font-size:12px;text-align:center">No photo yet</div>{% endif %}
+  <form method="post" enctype="multipart/form-data" action="{{ url_for('ac_application_photo', aid=a.id) }}" class="small">{{ csrf }}
+    <p style="margin:0 0 6px">Profile picture (JPG, PNG or WEBP)</p>
+    <input type="file" name="photo" accept=".jpg,.jpeg,.png,.webp" required>
+    <button class="btn secondary" type="submit">Upload photo</button></form>
+</div>
+<table style="width:100%;border-collapse:collapse" class="small">
+<tr><td style="padding:4px 0;width:40%"><strong>Full name</strong></td><td>{{ a.full_name }}</td></tr>
+<tr><td style="padding:4px 0"><strong>Student number</strong></td><td>{{ a.student_number or 'Given when your place is confirmed' }}</td></tr>
+<tr><td style="padding:4px 0"><strong>Sex</strong></td><td>{{ a.gender or '' }}</td></tr>
+<tr><td style="padding:4px 0"><strong>Date of birth</strong></td><td>{{ a.date_of_birth or '' }}</td></tr>
+<tr><td style="padding:4px 0"><strong>NRC or passport</strong></td><td>{{ a.nrc_or_passport or '' }}</td></tr>
+<tr><td style="padding:4px 0"><strong>Programme</strong></td><td>{{ course.title or '' }}</td></tr>
+<tr><td style="padding:4px 0"><strong>Intake</strong></td><td>{{ intake.name if intake else '' }}</td></tr>
+<tr><td style="padding:4px 0"><strong>Status</strong></td><td>{{ a.status | replace('_', ' ') }}</td></tr>
+</table>
+<p class="small">To correct your name, date of birth or NRC, open the Helpdesk and choose "Profile correction".</p>
+</div>
+<div class="card"><h3>Contact details</h3>
+<form method="post" action="{{ url_for('ac_application_contact', aid=a.id) }}">{{ csrf }}
+<label>Phone number<input name="phone" value="{{ a.phone or '' }}" required maxlength="30"></label>
+<label>Email address<input name="email" type="email" value="{{ a.email or '' }}" maxlength="120"></label>
+<label>Address<input name="address" value="{{ a.address or '' }}" maxlength="300"></label>
+<label>Next of kin<input name="next_of_kin" value="{{ a.next_of_kin or '' }}" maxlength="120"></label>
+<label>Next of kin phone<input name="next_of_kin_phone" value="{{ a.next_of_kin_phone or '' }}" maxlength="30"></label>
+<button class="btn" type="submit">Save contact details</button></form>
+</div>
+{% endif %}
 <div class="card"><h3>Application details</h3>
 <p class="small">Name: {{ a.full_name }} · Phone: {{ a.phone or '' }} · Email: {{ a.email or '' }}</p>
 <p class="small">Date of birth: {{ a.date_of_birth or '' }} · Gender: {{ a.gender or '' }} · NRC or passport: {{ a.nrc_or_passport or '' }}</p>
@@ -23924,6 +23956,62 @@ def ac_application_view(aid):
                     a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind, checklist=checklist,
                     doc_labels=COLLEGE_DOC_LABELS, is_owner=is_owner, is_student=is_student,
                     staff_statuses=COLLEGE_STAFF_STATUSES)
+
+
+@app.route("/academic/application/<aid>/contact", methods=["POST"])
+@login_required
+def ac_application_contact(aid):
+    """The student keeps their contact details up to date. Name, date of birth and NRC are changed through the Helpdesk."""
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a or a.get("student_user_id") != _ac_uid():
+        abort(404)
+    phone = clean(request.form.get("phone"))[:30]
+    email = clean(request.form.get("email"))[:120]
+    address = clean(request.form.get("address"))[:300]
+    kin = clean(request.form.get("next_of_kin"))[:120]
+    kin_phone = clean(request.form.get("next_of_kin_phone"))[:30]
+    if email and ("@" not in email or "." not in email.split("@")[-1]):
+        flash("Enter a valid email address.", "danger")
+    elif not phone:
+        flash("Enter a phone number.", "danger")
+    else:
+        _, err = db_update("koja_college_applications", {"id": aid}, {"phone": phone, "email": email or None,
+                           "address": address or None, "next_of_kin": kin or None, "next_of_kin_phone": kin_phone or None})
+        flash("Contact details saved." if not err else "Could not save your contact details. Please try again.",
+              "success" if not err else "danger")
+    return redirect(url_for("ac_application_view", aid=aid))
+
+
+@app.route("/academic/application/<aid>/photo", methods=["POST"])
+@login_required
+def ac_application_photo(aid):
+    """The student's profile picture. It is the passport photo document, and can be changed at any stage."""
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a or a.get("student_user_id") != _ac_uid():
+        abort(404)
+    back = url_for("ac_application_view", aid=aid)
+    fobj = request.files.get("photo")
+    if not fobj or not fobj.filename:
+        flash("Choose a photo to upload.", "danger")
+        return redirect(back)
+    info, uerr = upload_storage(fobj, folder="college-application-docs", public=False,
+                                max_mb=COLLEGE_DOC_MB, allowed={"jpg", "jpeg", "png", "webp"})
+    if uerr:
+        flash(uerr, "danger")
+        return redirect(back)
+    for old in _ac_rows("koja_college_application_documents", {"application_id": aid, "kind": "photo"}, limit=20):
+        db_delete("koja_college_application_documents", {"id": old["id"]})
+        delete_storage(old.get("storage_path"))
+    _, derr = db_insert("koja_college_application_documents", {
+        "id": str(uuid.uuid4()), "application_id": aid, "kind": "photo", "storage_path": info["path"],
+        "mime": info.get("mime_type") or "", "file_name": info.get("file_name") or fobj.filename,
+        "created_at": utc_now()})
+    if derr:
+        delete_storage(info["path"])
+        flash("Could not save your photo. Please try again.", "danger")
+        return redirect(back)
+    flash("Profile picture saved.", "success")
+    return redirect(back)
 
 
 @app.route("/academic/application/<aid>/upload", methods=["POST"])
