@@ -25023,7 +25023,7 @@ def ac_college_admissions(slug):
     seats_used = {i["id"]: sum(1 for x in everything if x.get("intake_id") == i["id"] and x.get("status") in ("accepted", "enrolled")) for i in intakes}
     return _ac_page("Admissions", r'''
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a></p>
+<p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a></p>
 <p class="small">
 <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· {{ drafts }} draft(s): students have started but not submitted yet</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
@@ -25143,6 +25143,28 @@ def _college_beds(c):
     return tree
 
 
+# ---- Nkumbi/Zanaco online-payment readiness (safe-off until bank integration) ----
+def _nkic_zanaco_status():
+    """Report integration readiness without exposing secrets or assuming a bank API."""
+    enabled = str(os.getenv("NKIC_ZANACO_ENABLED", "false")).strip().lower() in ("1", "true", "yes", "on")
+    # Deliberately hard-off until Zanaco supplies its signed API/callback specification
+    # and the matching adapter is implemented in this application. An environment
+    # variable alone must never make an unimplemented gateway appear operational.
+    adapter_ready = False
+    # These are KOJA-side deployment settings, not claims about Zanaco's official API field names.
+    configured = all(clean(os.getenv(k)) for k in (
+        "NKIC_ZANACO_MERCHANT_ID", "NKIC_ZANACO_CHECKOUT_URL", "NKIC_ZANACO_WEBHOOK_SECRET"
+    ))
+    ready = bool(enabled and adapter_ready and configured)
+    if ready:
+        message = "Gateway adapter is implemented and configured. Run a bank-approved test transaction before accepting live fees."
+    elif not enabled:
+        message = "Online Zanaco checkout is switched OFF. Existing bank-deposit recording and Accounts verification remain available."
+    else:
+        message = "The application is prepared for activation, but the bank-specific checkout and signed payment-confirmation adapter must be completed and tested from Zanaco's integration documentation. Merchant settings alone cannot activate payments."
+    return {"enabled": enabled, "adapter_ready": adapter_ready, "configured": configured, "ready": ready, "message": message}
+
+
 @app.route("/academic/college/<slug>/finance")
 @login_required
 def ac_college_finance(slug):
@@ -25156,16 +25178,23 @@ def ac_college_finance(slug):
         rows.append({"a": a, "total": total, "paid": paid, "bal": bal})
     names = {a["id"]: a.get("full_name") for a in students}
     pending = _ac_rows("koja_college_payments", {"college_id": c["id"], "status": "pending"}, order="created_at.asc", limit=500)
+    verified_payments = _ac_rows("koja_college_payments", {"college_id": c["id"], "status": "verified"}, order="verified_at.desc", limit=500)
+    zanaco = _nkic_zanaco_status()
     return _ac_page("Fees and payments", r'''
 <div class="card"><h2>Fees and payments: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a></p>
+<div class="card" style="margin:10px 0"><h3>Zanaco online checkout</h3><p><strong>{{ 'READY (test before live use)' if zanaco.ready else 'NOT YET ACTIVE' }}</strong></p><p class="small">{{ zanaco.message }}</p><p class="small">The gateway is controlled by private Render environment settings. Do not place merchant secrets in the database, source code, or browser.</p></div>
+<p class="small"><a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_accounts_csv', slug=c.slug) }}">Download accounts Excel (CSV)</a></p>
 <h3>Payments waiting to be confirmed</h3>
 {% for p in pending %}<div class="card" style="margin:8px 0"><strong>{{ names.get(p.application_id, 'Student') }}</strong>
-<p class="small">{{ p.method }} · reference {{ p.reference }} · {{ p.amount }}</p>
+<p class="small">{{ p.method }} · reference {{ p.reference }} · K{{ '%.2f' % (p.amount|float) }} · {{ p.created_at }}</p>
 {% if p.slip_path %}<p class="small"><a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">View bank slip</a></p>{% endif %}
 <form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="decision" value="verified" type="submit">Confirm payment</button></form>
 <form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" name="decision" value="rejected" type="submit">Reject</button></form></div>
 {% else %}<p class="small">No payments waiting.</p>{% endfor %}
+</div>
+<div class="card"><h3>Verified payments and receipts</h3>
+{% for p in verified_payments %}<p class="small">{{ names.get(p.application_id, 'Student') }} · K{{ '%.2f' % (p.amount|float) }} · {{ p.reference or 'No reference' }} · {{ p.verified_at or p.created_at }} · <a href="{{ url_for('ac_payment_receipt', pid=p.id) }}" target="_blank" rel="noopener">Print receipt</a></p>
+{% else %}<p class="small">No verified payments yet.</p>{% endfor %}
 </div>
 <div class="card"><h3>Student balances</h3>
 {% for r in rows %}<p><a href="{{ url_for('ac_application_money', aid=r.a.id) }}">{{ r.a.full_name }}</a>{% if r.a.student_number %} · {{ r.a.student_number }}{% endif %} · charged {{ '%.2f' % r.total }} · paid {{ '%.2f' % r.paid }} · <strong>balance {{ '%.2f' % r.bal }}</strong></p>
@@ -25176,7 +25205,7 @@ def ac_college_finance(slug):
 <label>Student<select name="application_id">{% for a in students %}<option value="{{ a.id }}">{{ a.full_name }}{% if a.student_number %} ({{ a.student_number }}){% endif %}</option>{% endfor %}</select></label>
 <label>Description<input name="description" required maxlength="150" placeholder="e.g. Tuition fees"></label>
 <label>Amount<input name="amount" type="number" min="0.01" step="0.01" required></label>
-<button class="btn" type="submit">Add charge</button></form></div>''', c=c, rows=rows, students=students, names=names, pending=pending, csrf_ok=True)
+<button class="btn" type="submit">Add charge</button></form></div>''', c=c, rows=rows, students=students, names=names, pending=pending, verified_payments=verified_payments, zanaco=zanaco, csrf_ok=True)
 
 
 @app.route("/academic/college/<slug>/charge", methods=["POST"])
@@ -25237,6 +25266,7 @@ def ac_application_money(aid):
 <p>Fees and payments open once your application is accepted.</p>
 <p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''', a=a)
     charges, payments, total, paid, bal = _fin_totals(aid)
+    zanaco = _nkic_zanaco_status()
     return _ac_page("Fees and payments", r'''
 <div class="card"><h2>Fees and payments</h2><p class="small">{{ c.name }} · {{ a.full_name }}{% if a.student_number %} · {{ a.student_number }}{% endif %}</p>
 <p>Charged: <strong>{{ '%.2f' % total }}</strong> · Paid (confirmed): <strong>{{ '%.2f' % paid }}</strong> · Balance: <strong>{{ '%.2f' % bal }}</strong></p>
@@ -25244,17 +25274,20 @@ def ac_application_money(aid):
 <div class="card"><h3>Charges</h3>
 {% for x in charges %}<p class="small">{{ x.description }}: {{ '%.2f' % x.amount }}</p>{% else %}<p class="small">No charges yet.</p>{% endfor %}</div>
 <div class="card"><h3>Payments</h3>
-{% for p in payments %}<p class="small">{{ p.created_at[:10] }} · {{ p.amount }} · reference {{ p.reference }} · <strong>{{ p.status }}</strong>{% if p.slip_path %} · <a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">slip</a>{% endif %}</p>
+{% for p in payments %}<p class="small">{{ p.created_at[:10] }} · K{{ '%.2f' % (p.amount|float) }} · reference {{ p.reference }} · <strong>{{ p.status }}</strong>{% if p.status == 'verified' %} · <a href="{{ url_for('ac_payment_receipt', pid=p.id) }}" target="_blank" rel="noopener">Print receipt</a>{% endif %}{% if p.slip_path %} · <a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">slip</a>{% endif %}</p>
 {% else %}<p class="small">No payments yet.</p>{% endfor %}</div>
 {% if is_student %}
-<div class="card"><h3>Record a payment</h3>
-<p class="small">Pay at Zanaco, then enter the reference from your deposit. The college confirms it against its bank statement before it counts.</p>
+<div class="card"><h3>Pay fees</h3>
+<div class="card" style="margin:8px 0"><strong>Zanaco online payment: {{ 'Available after bank-approved activation' if not zanaco.ready else 'Gateway configured — follow the college payment instructions' }}</strong><p class="small">{{ zanaco.message }}</p><button class="btn" type="button" disabled aria-disabled="true">{{ 'Online checkout not yet active' if not zanaco.ready else 'Online checkout awaiting final bank test' }}</button></div>
+<h4>Record a bank deposit while online checkout is being prepared</h4>
+<p class="small">Pay at Zanaco using the college's official account details, then enter the bank reference from your deposit. Accounts must reconcile it against the bank statement before it counts.</p>
 <form method="post" enctype="multipart/form-data" action="{{ url_for('ac_application_payment', aid=a.id) }}">{{ csrf }}
+<label>Apply payment to charge (required for mattress collection)<select name="charge_id"><option value="">General/unallocated payment</option>{% for x in charges %}<option value="{{ x.id }}">{{ x.description }} — K{{ '%.2f' % x.amount }}</option>{% endfor %}</select></label>
 <label>Amount<input name="amount" type="number" min="0.01" step="0.01" required></label>
 <label>Zanaco reference<input name="reference" required maxlength="60"></label>
 <label>Deposit slip (optional)<input type="file" name="slip" accept=".pdf,.png,.jpg,.jpeg,.webp"></label>
 <button class="btn" type="submit">Record payment</button></form></div>
-{% endif %}''', a=a, c=c, charges=charges, payments=payments, total=total, paid=paid, bal=bal, is_student=is_student, csrf_ok=True)
+{% endif %}''', a=a, c=c, charges=charges, payments=payments, total=total, paid=paid, bal=bal, is_student=is_student, zanaco=zanaco, csrf_ok=True)
 
 
 @app.route("/academic/application/<aid>/payment", methods=["POST"])
@@ -25269,8 +25302,14 @@ def ac_application_payment(aid):
     if amount <= 0 or not reference:
         flash("Enter the amount and the Zanaco reference.", "danger")
         return redirect(back)
+    charge_id = clean(request.form.get("charge_id"))[:80]
+    if charge_id:
+        charge = first_row("koja_college_charges", {"id": charge_id, "application_id": aid, "college_id": a["college_id"]})
+        if not charge:
+            flash("The selected charge is invalid.", "danger")
+            return redirect(back)
     row = {"id": str(uuid.uuid4()), "college_id": a["college_id"], "application_id": aid, "amount": round(amount, 2),
-           "method": "zanaco", "reference": reference, "status": "pending", "created_at": utc_now()}
+           "charge_id": charge_id or None, "method": "zanaco", "reference": reference, "status": "pending", "created_at": utc_now()}
     slip = request.files.get("slip")
     info = None
     if slip and slip.filename:
@@ -25301,6 +25340,65 @@ def ac_payment_slip(pid):
     if not _college_is_owner(c) and a.get("student_user_id") != _ac_uid():
         abort(404)
     return _stream_private_file(p["slip_path"], p.get("slip_mime"), p.get("slip_name"))
+
+
+@app.route("/academic/payment/<pid>/receipt")
+@login_required
+def ac_payment_receipt(pid):
+    """Printable official-style college receipt, available only after Accounts verifies payment."""
+    p = first_row("koja_college_payments", {"id": pid})
+    if not p or p.get("status") != "verified":
+        abort(404)
+    a = first_row("koja_college_applications", {"id": p.get("application_id")}) or {}
+    c = first_row("koja_colleges", {"id": p.get("college_id") or a.get("college_id")}) or {}
+    if not c or (not _college_is_owner(c) and a.get("student_user_id") != _ac_uid()):
+        abort(404)
+    charge = first_row("koja_college_charges", {"id": p.get("charge_id")}) if p.get("charge_id") else None
+    receipt_no = "NKIC-" + re.sub(r"[^A-Za-z0-9]", "", str(p.get("id") or ""))[:12].upper()
+    return _ac_page("Payment receipt", r'''
+<style>@media print{header,nav,.no-print,button{display:none!important}body{background:#fff!important}.card{box-shadow:none!important;border:1px solid #bbb!important;max-width:760px;margin:20px auto!important}}.receipt-paper{max-width:760px;margin:20px auto;padding:30px;background:#fff;color:#172033;border:1px solid #d8dee9;border-radius:12px}.receipt-paper h2,.receipt-paper h3{color:#172033}.receipt-line{display:flex;justify-content:space-between;gap:20px;padding:10px 0;border-bottom:1px solid #e5e7eb}.receipt-total{font-size:24px;font-weight:800}</style>
+<div class="receipt-paper"><div style="text-align:center"><h2>{{ c.name }}</h2><p>OFFICIAL PAYMENT RECEIPT</p><p><strong>{{ receipt_no }}</strong></p></div>
+<div class="receipt-line"><span>Receipt date</span><strong>{{ p.verified_at or p.created_at }}</strong></div>
+<div class="receipt-line"><span>Student name</span><strong>{{ a.full_name or 'Student' }}</strong></div>
+<div class="receipt-line"><span>Student number</span><strong>{{ a.student_number or '—' }}</strong></div>
+<div class="receipt-line"><span>Payment for</span><strong>{{ charge.description if charge else 'College payment' }}</strong></div>
+<div class="receipt-line"><span>Payment method</span><strong>{{ p.method or 'Zanaco' }}</strong></div>
+<div class="receipt-line"><span>Bank / transaction reference</span><strong>{{ p.reference or '—' }}</strong></div>
+<div class="receipt-line"><span>Amount received</span><strong class="receipt-total">K{{ '%.2f' % (p.amount|float) }}</strong></div>
+<div class="receipt-line"><span>Payment status</span><strong>VERIFIED / PAID</strong></div>
+<p style="margin-top:35px;text-align:center">This receipt confirms that the college Accounts Office verified the payment recorded above.</p><p style="margin-top:35px">Accounts Officer: __________________________</p><p>Official stamp: _____________________________</p></div>
+<div class="no-print" style="text-align:center"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
+''', c=c, a=a, p=p, charge=charge, receipt_no=receipt_no)
+
+
+@app.route("/academic/college/<slug>/accounts.csv")
+@login_required
+def ac_college_accounts_csv(slug):
+    """Excel-compatible college accounts register; includes status for reconciliation."""
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(404)
+    payments = _ac_rows("koja_college_payments", {"college_id": c["id"]}, order="created_at.asc", limit=10000)
+    applications = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=10000)}
+    charges = {x["id"]: x for x in _ac_rows("koja_college_charges", {"college_id": c["id"]}, limit=10000)}
+    out = io.StringIO()
+    out.write("\ufeff")
+    writer = csv.writer(out)
+    writer.writerow(["Receipt ID", "Payment date", "Verified date", "Student number", "Student name", "Charge", "Amount (ZMW)", "Method", "Bank reference", "Status", "Verified by"])
+    verified_total = 0.0
+    for payment in payments:
+        if payment.get("status") == "verified":
+            try: verified_total += float(payment.get("amount") or 0)
+            except (TypeError, ValueError): pass
+        student = applications.get(payment.get("application_id"), {})
+        charge = charges.get(payment.get("charge_id"), {})
+        receipt_no = "NKIC-" + re.sub(r"[^A-Za-z0-9]", "", str(payment.get("id") or ""))[:12].upper()
+        values = [receipt_no, payment.get("created_at"), payment.get("verified_at"), student.get("student_number"), student.get("full_name"), charge.get("description") or "General payment", payment.get("amount"), payment.get("method"), payment.get("reference"), payment.get("status"), payment.get("verified_by")]
+        writer.writerow([_college_csv_cell(v) for v in values])
+    writer.writerow([])
+    writer.writerow(["TOTAL VERIFIED PAYMENTS (ZMW)", round(verified_total, 2)])
+    filename = (secure_filename(c.get("slug") or "college") or "college") + "-accounts-register.csv"
+    return Response(out.getvalue(), mimetype="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="%s"' % filename, "Cache-Control": "private, no-store"})
 
 
 @app.route("/academic/college/<slug>/accommodation")
@@ -32826,6 +32924,253 @@ def ld_scheduled_tick():
         results.append({"id": doc["id"], "drafted": summary["drafted"], "failed": summary["failed"], "remaining": summary["remaining"]})
     return jsonify(ok=True, documents=results)
 
+
+
+# ---- college mattress issue workflow (additive) -----------------------------------
+def _mattress_paid_total(application_id, charge_id):
+    rows = _ac_rows("koja_college_payments", {"application_id": application_id, "charge_id": charge_id, "status": "verified"}, limit=1000)
+    return round(sum(float(x.get("amount") or 0) for x in rows), 2)
+
+def _mattress_charge(application_id, college_id):
+    charges = _ac_rows("koja_college_charges", {"application_id": application_id, "college_id": college_id}, order="created_at.asc", limit=500)
+    return next((x for x in charges if "mattress" in (x.get("description") or "").lower()), None)
+
+def _mattress_inventory(college_id):
+    return first_row("koja_mattress_inventory", {"college_id": college_id}) or {}
+
+def _mattress_qr_token(allocation):
+    token = (allocation or {}).get("qr_token") or ""
+    if not token:
+        token = secrets.token_urlsafe(32)
+        db_update("koja_mattress_allocations", {"id": allocation["id"]}, {"qr_token": token})
+    return token
+
+@app.route("/academic/college/<slug>/mattresses")
+@login_required
+def ac_college_mattresses(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c): abort(404)
+    inventory = _mattress_inventory(c["id"])
+    allocations = _ac_rows("koja_mattress_allocations", {"college_id": c["id"]}, order="created_at.desc", limit=1000)
+    apps = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)}
+    rows=[]
+    for al in allocations:
+        a=apps.get(al.get("application_id")) or {}; ch=_mattress_charge(a.get("id"),c["id"]) if a else None
+        paid=_mattress_paid_total(a.get("id"),ch.get("id")) if ch else 0
+        rows.append({"allocation":al,"student":a,"charge":ch,"paid":paid,"eligible":bool(ch and paid>=float(ch.get("amount") or 0))})
+    students=_college_students(c,("accepted","enrolled"))
+    return _ac_page("Mattress stores", r'''<div class="card"><h2>Mattress stores — {{ c.name }}</h2>
+<p class="small">Student number is the lookup key. Only verified payments linked to the specific mattress charge unlock collection.</p>
+<p><strong>Available stock:</strong> {{ inventory.get('quantity',0) }} · <strong>Issued:</strong> {{ inventory.get('issued_quantity',0) }}</p>
+<form method="post" action="{{ url_for('ac_college_mattress_stock',slug=c.slug) }}">{{ csrf }}<label>Available mattress stock<input name="quantity" type="number" min="0" max="100000" value="{{ inventory.get('quantity',0) }}" required></label><button class="btn">Save stock</button></form></div>
+<div class="card"><h3>Allocate mattress and create QR</h3><p class="small">Add a charge with “mattress” in its description in Fees and Payments first.</p>
+<form method="post" action="{{ url_for('ac_college_mattress_allocate',slug=c.slug) }}">{{ csrf }}<label>Student<select name="application_id" required><option value="">Select student</option>{% for a in students %}<option value="{{ a.id }}">{{ a.student_number or 'NO STUDENT NUMBER' }} — {{ a.full_name }}</option>{% endfor %}</select></label><button class="btn">Allocate / generate QR</button></form></div>
+<div class="card"><h3>Stores scanning desk</h3><a class="btn" href="{{ url_for('ac_college_mattress_scan',slug=c.slug) }}">Open QR scanning desk</a></div>
+<div class="card"><h3>Allocations</h3>{% for x in rows %}<p><strong>{{ x.student.get('student_number') or 'No student number' }} — {{ x.student.get('full_name') or 'Student unavailable' }}</strong><br>Payment K{{ '%.2f' % x.paid }} / K{{ '%.2f' % (x.charge.amount if x.charge else 0) }} · {{ x.allocation.status }}{% if x.eligible and x.allocation.status != 'collected' %} · <a href="{{ url_for('ac_college_mattress_student_qr',slug=c.slug,allocation_id=x.allocation.id) }}">Student QR</a>{% endif %}{% if x.allocation.status=='collected' %} · Collected {{ x.allocation.collected_at }}{% endif %}</p>{% else %}<p>No allocations yet.</p>{% endfor %}</div>''', c=c, inventory=inventory, students=students, rows=rows)
+
+@app.route("/academic/college/<slug>/mattresses/stock", methods=["POST"])
+@login_required
+def ac_college_mattress_stock(slug):
+    c=_college_by_slug(slug)
+    if not _college_is_owner(c): abort(404)
+    qty=int(_ac_num(request.form.get("quantity"),0,0,100000)); cur=_mattress_inventory(c["id"])
+    if cur: _,err=db_update("koja_mattress_inventory",{"id":cur["id"]},{"quantity":qty,"updated_at":utc_now(),"updated_by":_ac_uid()})
+    else: _,err=db_insert("koja_mattress_inventory",{"id":str(uuid.uuid4()),"college_id":c["id"],"quantity":qty,"issued_quantity":0,"updated_at":utc_now(),"updated_by":_ac_uid()})
+    flash("Mattress stock saved." if not err else "Could not save stock; run the SQL migration first.","success" if not err else "danger")
+    return redirect(url_for("ac_college_mattresses",slug=slug))
+
+@app.route("/academic/college/<slug>/mattresses/allocate", methods=["POST"])
+@login_required
+def ac_college_mattress_allocate(slug):
+    c=_college_by_slug(slug)
+    if not _college_is_owner(c): abort(404)
+    a=first_row("koja_college_applications",{"id":request.form.get("application_id"),"college_id":c["id"]})
+    if not _fin_student_ok(a) or not a.get("student_number"):
+        flash("Select an accepted/enrolled student with a student number.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
+    ch=_mattress_charge(a["id"],c["id"])
+    if not ch:
+        flash("Add a college charge with ‘mattress’ in its description first.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
+    existing=first_row("koja_mattress_allocations",{"application_id":a["id"],"college_id":c["id"]})
+    if existing and existing.get("status")!="cancelled":
+        flash("This student already has a mattress allocation.","warning"); return redirect(url_for("ac_college_mattresses",slug=slug))
+    _,err=db_insert("koja_mattress_allocations",{"id":str(uuid.uuid4()),"college_id":c["id"],"application_id":a["id"],"student_number":a["student_number"],"charge_id":ch["id"],"status":"allocated","qr_token":secrets.token_urlsafe(32),"created_at":utc_now()})
+    flash("Allocation created. Collection stays locked until the mattress charge is fully paid and verified." if not err else "Allocation failed; run the SQL migration.","success" if not err else "danger")
+    return redirect(url_for("ac_college_mattresses",slug=slug))
+
+@app.route("/academic/application/<aid>/mattress")
+@login_required
+def ac_application_mattress(aid):
+    a=first_row("koja_college_applications",{"id":aid})
+    if not a or a.get("student_user_id")!=_ac_uid(): abort(404)
+    c=first_row("koja_colleges",{"id":a.get("college_id")}) or {}
+    al=first_row("koja_mattress_allocations",{"application_id":aid,"college_id":c.get("id")})
+    if not al: return _ac_page("Mattress collection", "<div class='card'><h2>No mattress allocation</h2><p>Contact the Stores Office.</p></div>")
+    return redirect(url_for("ac_college_mattress_student_qr",slug=c.get("slug"),allocation_id=al["id"]))
+
+@app.route("/academic/college/<slug>/mattresses/qr/<allocation_id>")
+@login_required
+def ac_college_mattress_student_qr(slug,allocation_id):
+    c=_college_by_slug(slug); al=first_row("koja_mattress_allocations",{"id":allocation_id,"college_id":(c or {}).get("id")})
+    if not c or not al: abort(404)
+    a=first_row("koja_college_applications",{"id":al["application_id"],"college_id":c["id"]})
+    if not a or (a.get("student_user_id")!=_ac_uid() and not _college_is_owner(c)): abort(404)
+    ch=_mattress_charge(a["id"],c["id"]); paid=_mattress_paid_total(a["id"],ch["id"]) if ch else 0
+    amount=float(ch.get("amount") or 0) if ch else 0; eligible=bool(ch and amount>0 and paid>=amount)
+    scan_url=url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "",_external=True)
+    return _ac_page("Mattress collection QR",r'''<div class="card"><h2>Mattress collection pass</h2><p><strong>{{ a.full_name }}</strong></p><p>Student number: <strong>{{ a.student_number }}</strong></p><p>Payment K{{ '%.2f' % paid }} / K{{ '%.2f' % amount }}</p>
+{% if eligible %}<p><strong>Payment verified — ready for Stores collection.</strong></p><img alt="Mattress collection QR" style="width:260px;max-width:100%" src="{{ url_for('ac_college_mattress_qr_image',slug=c.slug,allocation_id=al.id) }}"><p class="small">QR image requires the Python package qrcode[pil]. Secure link fallback: <input readonly value="{{ scan_url }}" style="width:100%"></p>{% else %}<p><strong>Collection locked.</strong> Accounts must verify the mattress charge payment.</p>{% endif %}</div>''',a=a,c=c,al=al,paid=paid,amount=amount,eligible=eligible,scan_url=scan_url)
+
+@app.route("/academic/college/<slug>/mattresses/qr/<allocation_id>/image")
+@login_required
+def ac_college_mattress_qr_image(slug,allocation_id):
+    c=_college_by_slug(slug); al=first_row("koja_mattress_allocations",{"id":allocation_id,"college_id":(c or {}).get("id")})
+    if not c or not al: abort(404)
+    a=first_row("koja_college_applications",{"id":al["application_id"]})
+    if not a or (a.get("student_user_id")!=_ac_uid() and not _college_is_owner(c)): abort(404)
+    ch=_mattress_charge(a["id"],c["id"])
+    if not ch or _mattress_paid_total(a["id"],ch["id"])<float(ch.get("amount") or 0): abort(403)
+    scan_url=url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "",_external=True)
+    try:
+        import qrcode
+        img=qrcode.make(scan_url); output=io.BytesIO(); img.save(output,format="PNG"); output.seek(0)
+        return send_file(output,mimetype="image/png",max_age=0)
+    except ImportError: return Response("Install qrcode[pil] to enable QR image rendering.",status=503,mimetype="text/plain")
+
+@app.route("/academic/college/<slug>/mattresses/scan")
+@login_required
+def ac_college_mattress_scan(slug):
+    c=_college_by_slug(slug)
+    if not _college_is_owner(c): abort(404)
+    return _ac_page("Stores scanning desk",r'''<div class="card">
+<h2>Stores Office — QR collection scanner</h2>
+<p>Use the camera to scan the student's mattress QR. The student's record and payment status will load automatically. You can also search using the student number.</p>
+<div style="max-width:560px;margin:12px auto">
+<video id="mattressQrVideo" playsinline muted style="display:none;width:100%;max-height:360px;object-fit:cover;border-radius:12px;background:#111"></video>
+<div id="mattressQrStatus" class="small" role="status" aria-live="polite">Camera scanner is ready. Camera access requires HTTPS and permission.</div>
+<button type="button" class="btn" id="mattressQrStart">Start camera scanner</button>
+<button type="button" class="btn secondary" id="mattressQrStop" style="display:none">Stop camera</button>
+</div>
+<form method="get" action="{{ url_for('ac_college_mattress_scan_lookup',slug=c.slug) }}">
+<label>Or enter student number<input name="q" required autocomplete="off" placeholder="Enter student number"></label>
+<button class="btn">Find student</button>
+</form>
+</div>
+<script>
+(function(){
+  var video=document.getElementById('mattressQrVideo');
+  var status=document.getElementById('mattressQrStatus');
+  var start=document.getElementById('mattressQrStart');
+  var stop=document.getElementById('mattressQrStop');
+  var stream=null,active=false,detector=null,frame=0;
+  var lookupBase={{ url_for('ac_college_mattress_scan_lookup',slug=c.slug)|tojson }};
+  var expectedPrefix='/academic/college/'+{{ c.slug|tojson }}+'/mattresses/scan/';
+  function message(value){status.textContent=value;}
+  function stopCamera(){
+    active=false;
+    if(frame)cancelAnimationFrame(frame);
+    frame=0;
+    if(stream){stream.getTracks().forEach(function(track){track.stop();});stream=null;}
+    video.pause();video.srcObject=null;video.style.display='none';
+    start.style.display='';stop.style.display='none';
+  }
+  function handleValue(value){
+    value=String(value||'').trim();
+    if(!value)return;
+    try{
+      var scanned=new URL(value,window.location.origin);
+      if(scanned.origin===window.location.origin && scanned.pathname.indexOf(expectedPrefix)===0){
+        stopCamera();message('QR verified. Opening student collection record…');window.location.assign(scanned.href);return;
+      }
+    }catch(e){}
+    if(/^[A-Za-z0-9._/-]{2,200}$/.test(value)){
+      stopCamera();message('Searching student number…');
+      window.location.assign(lookupBase+'?q='+encodeURIComponent(value));return;
+    }
+    message('Unrecognised QR. Scan a KOJA mattress QR or enter the student number manually.');
+  }
+  async function scanFrame(){
+    if(!active||!detector)return;
+    try{
+      if(video.readyState>=2){
+        var codes=await detector.detect(video);
+        if(codes&&codes.length&&codes[0].rawValue){handleValue(codes[0].rawValue);return;}
+      }
+    }catch(e){}
+    if(active)frame=requestAnimationFrame(scanFrame);
+  }
+  start.addEventListener('click',async function(){
+    if(!('BarcodeDetector' in window)){message('This browser does not support built-in QR scanning. Use your phone camera to scan the QR, or enter the student number below.');return;}
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){message('Camera access is unavailable. Use HTTPS or enter the student number below.');return;}
+    try{
+      detector=new BarcodeDetector({formats:['qr_code']});
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+      video.srcObject=stream;video.style.display='block';await video.play();
+      active=true;start.style.display='none';stop.style.display='';
+      message('Camera active. Hold the student QR code inside the camera view.');
+      scanFrame();
+    }catch(e){stopCamera();message('Could not open the camera. Allow camera permission, or use student-number search.');}
+  });
+  stop.addEventListener('click',function(){stopCamera();message('Camera stopped.');});
+  window.addEventListener('pagehide',stopCamera);
+})();
+</script>''',c=c)
+
+
+@app.route("/academic/college/<slug>/mattresses/scan/find")
+@login_required
+def ac_college_mattress_scan_lookup(slug):
+    c=_college_by_slug(slug)
+    if not _college_is_owner(c): abort(404)
+    q=clean(request.args.get("q"))[:200]
+    al=first_row("koja_mattress_allocations",{"student_number":q,"college_id":c["id"]})
+    if not al:
+        candidates=_ac_rows("koja_mattress_allocations",{"college_id":c["id"]},limit=5000)
+        al=next((x for x in candidates if secrets.compare_digest(str(x.get("qr_token") or ""),q)),None)
+    if not al:
+        flash("No allocation matched that student number or QR token.","warning"); return redirect(url_for("ac_college_mattress_scan",slug=slug))
+    return redirect(url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "invalid"))
+
+@app.route("/academic/college/<slug>/mattresses/scan/<token>")
+@login_required
+def ac_college_mattress_scan_token(slug,token):
+    c=_college_by_slug(slug)
+    if not _college_is_owner(c): abort(404)
+    candidates=_ac_rows("koja_mattress_allocations",{"college_id":c["id"]},limit=5000)
+    al=next((x for x in candidates if secrets.compare_digest(str(x.get("qr_token") or ""),str(token))),None)
+    if not al: abort(404)
+    a=first_row("koja_college_applications",{"id":al["application_id"],"college_id":c["id"]})
+    if not a: abort(404)
+    ch=_mattress_charge(a["id"],c["id"]); paid=_mattress_paid_total(a["id"],ch["id"]) if ch else 0
+    amount=float(ch.get("amount") or 0) if ch else 0; eligible=bool(ch and amount>0 and paid>=amount)
+    stock=int((_mattress_inventory(c["id"]) or {}).get("quantity") or 0)
+    return _ac_page("Verify mattress collection",r'''<div class="card"><h2>Student verification</h2><p><strong>{{ a.full_name }}</strong></p><p>Student number: <strong>{{ a.student_number }}</strong></p><p>Payment verified K{{ '%.2f' % paid }} / K{{ '%.2f' % amount }}</p><p>Allocation: <strong>{{ al.status }}</strong></p>
+{% if eligible and al.status=='allocated' and stock>0 %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=al.id) }}">{{ csrf }}<button class="btn">Confirm physical handover and issue mattress</button></form>{% elif al.status=='collected' %}<strong>Already collected — duplicate issue blocked.</strong>{% elif not eligible %}<strong>Blocked: mattress charge not fully paid and verified.</strong>{% else %}<strong>Blocked: no mattress stock available.</strong>{% endif %}</div>''',c=c,a=a,al=al,paid=paid,amount=amount,eligible=eligible,stock=stock)
+
+@app.route("/academic/college/<slug>/mattresses/issue/<allocation_id>",methods=["POST"])
+@login_required
+def ac_college_mattress_issue(slug,allocation_id):
+    c=_college_by_slug(slug)
+    if not _college_is_owner(c): abort(404)
+    al=first_row("koja_mattress_allocations",{"id":allocation_id,"college_id":(c or {}).get("id")})
+    if not c or not al: abort(404)
+    if al.get("status")=="collected":
+        flash("Already collected. Duplicate issue blocked.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
+    a=first_row("koja_college_applications",{"id":al["application_id"],"college_id":c["id"]})
+    ch=_mattress_charge(a["id"],c["id"]) if a else None
+    paid=_mattress_paid_total(a["id"],ch["id"]) if ch else 0
+    amount=float(ch.get("amount") or 0) if ch else 0
+    inv=_mattress_inventory(c["id"]); stock=int((inv or {}).get("quantity") or 0)
+    if not a or not _fin_student_ok(a) or not a.get("student_number") or not ch or amount<=0 or paid<amount:
+        flash("Issue blocked: student eligibility or verified mattress payment requirement not met.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
+    if stock<1 or not inv:
+        flash("Issue blocked: no mattress stock available.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
+    result, err = db_rpc("koja_issue_mattress", {"p_allocation_id": allocation_id, "p_issued_by": _ac_uid()})
+    if err:
+        logger.error("Atomic mattress issue failed for %s: %s", allocation_id, err)
+        flash("Mattress issue was not completed. Check stock, payment verification and migration status.", "danger")
+    else:
+        flash("Mattress issued and recorded successfully.", "success")
+    return redirect(url_for("ac_college_mattresses",slug=slug))
 
 
 if __name__=="__main__":
