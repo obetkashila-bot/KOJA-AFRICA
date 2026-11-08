@@ -21247,7 +21247,7 @@ def bh_hub(business_id):
 <div class="card"><h3>Staff</h3><a class="btn" href="{{ url_for('business_employees', business_id=b.id) }}">Employees</a></div>
 <div class="card"><h3>Invoices</h3><a class="btn" href="{{ url_for('business_invoices', business_id=b.id) }}">Invoices</a></div>
 <div class="card"><h3>CRM</h3><a class="btn" href="{{ url_for('business_customers', business_id=b.id) }}">Customers</a></div>
-<div class="card"><h3>Payments</h3><a class="btn" href="{{ url_for('business_payments', business_id=b.id) }}">Payments</a> <a class="btn secondary" href="{{ url_for('business_accounting_v2', business_id=b.id) }}">Accounting</a></div></div></div>
+<div class="card" id="payments"><h3>Payments</h3><a class="btn" href="{{ url_for('business_payments', business_id=b.id) }}">Payments</a> <a class="btn secondary" href="{{ url_for('business_accounting_v2', business_id=b.id) }}">Accounting</a></div></div></div>
 
 <div class="card"><h2>Industries &amp; customers &mdash; be found</h2><div class="bh-grid">
 <div class="card"><h3>Industries</h3><p class="muted">Ten sectors, with company listings.</p><a class="btn" href="{{ url_for('bh_industries') }}">Browse industries</a></div>
@@ -24229,6 +24229,12 @@ def ac_student_portal(aid):
     _, _, p_total, p_paid, p_bal = _fin_totals(aid)
     account_status = ("PAID" if p_total > 0 and p_bal <= 0 else ("Balance K%.2f" % p_bal if p_total > 0 else "No fees charged yet"))
     receipts = _ac_rows("koja_college_receipts", {"application_id": aid}, order="issued_at.desc", limit=50)
+    slots, group, registered = _tt_student_slots(a)
+    registered_list = sorted(registered)
+    next_classes = slots[:3]
+    mattress = first_row("koja_mattress_allocations", {"application_id": aid, "college_id": a["college_id"]})
+    if mattress and mattress.get("status") == "cancelled":
+        mattress = None
     return _ac_page("Student portal", r"""
 <style>
   .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
@@ -24245,13 +24251,13 @@ def ac_student_portal(aid):
     <a href="{{ url_for('ac_student_portal', aid=a.id) }}">Home</a>
     {% if can_use %}<a href="{{ url_for('ac_application_room', aid=a.id) }}">Apply for Accommodation</a>
     {% else %}<span class="off">Apply for Accommodation<small>Opens once you accept your place</small></span>{% endif %}
-    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk Inbox</a>
-    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk Support</a>
+    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}#inbox">Helpdesk Inbox</a>
+    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}#support">Helpdesk Support</a>
     <a href="{{ url_for('ac_application_view', aid=a.id) }}">Personal Information</a>
     <a href="{{ url_for('ac_svc_ca', aid=a.id) }}">View CA</a>
     <a href="{{ url_for('ac_svc_grades', aid=a.id) }}">Grades</a>
-    <a href="{{ url_for('ac_application_money', aid=a.id) }}">Payments</a>
-    <a href="{{ url_for('ac_application_money', aid=a.id) }}">Payment Options</a>
+    <a href="{{ url_for('ac_application_money', aid=a.id) }}#payments">Payments</a>
+    <a href="{{ url_for('ac_application_money', aid=a.id) }}#payment-options">Payment Options</a>
     <a href="{{ url_for('ac_svc_timetable', aid=a.id) }}">Timetable</a>
     <a href="{{ url_for('ac_svc_evaluation', aid=a.id) }}">Course Evaluation</a>
     <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Course registration</a>
@@ -24274,9 +24280,19 @@ def ac_student_portal(aid):
       {% for r in receipts %}<p class="small">{{ r.receipt_number }} · K{{ '%.2f' % r.amount }} · {{ (r.issued_at or '')[:10] }} · <a href="{{ url_for('ac_payment_receipt', pid=r.payment_id) }}" target="_blank" rel="noopener">View receipt</a></p>
       {% else %}<p class="small">No receipts yet. A receipt is issued when Accounts verifies a payment.</p>{% endfor %}
     </div>
+    {% if can_use %}<div class="card" id="my-studies"><h3>My studies</h3>
+      <p><strong>Group:</strong> {{ group }}</p>
+      <p><strong>Registered modules:</strong> {% if registered_list %}{{ registered_list | join(', ') }}{% else %}none yet. <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Register for your modules</a>{% endif %}</p>
+      <p><strong>Next classes:</strong></p>
+      {% for s in next_classes %}<p class="small">{{ s.module }} · {{ s.day }} {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}</p>
+      {% else %}<p class="small">No published classes for your group and modules yet. <a href="{{ url_for('ac_svc_timetable', aid=a.id) }}">Timetable</a></p>{% endfor %}
+      <p><strong>Balance:</strong> {{ account_status }} · <a href="{{ url_for('ac_application_money', aid=a.id) }}">Payments</a></p>
+      <p><strong>Mattress:</strong> {% if mattress %}allocated. <a href="{{ url_for('ac_application_mattress', aid=a.id) }}">Show collection pass</a>{% else %}not allocated yet{% endif %}</p>
+    </div>{% endif %}
     {% if a.status == 'offered' %}<div class="card"><h3>Your offer</h3><p class="small">Open Personal Information to accept or decline your offer.</p></div>{% endif %}
   </div>
-</div>""", a=a, c=c, course=course, intake=intake, can_use=can_use, account_status=account_status, receipts=receipts)
+</div>""", a=a, c=c, course=course, intake=intake, can_use=can_use, account_status=account_status, receipts=receipts,
+                    group=group, registered_list=registered_list, next_classes=next_classes, mattress=mattress)
 
 
 # ---- student services: helpdesk, grades and CA, timetable, registration, docket, evaluation ----
@@ -24333,7 +24349,7 @@ def ac_svc_helpdesk(aid):
     thread = _ac_rows("koja_college_messages", {"application_id": aid}, order="created_at.asc", limit=500)
     return _ac_page("Helpdesk", r'''
 <div class="card"><h2>Helpdesk</h2><p class="small">{{ c.name }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
-<div class="card"><h3>Help and self-service</h3>
+<div class="card" id="support"><h3>Help and self-service</h3>
 <p class="small">Try these first. Most problems can be fixed here without waiting for the college.</p>
 <ul>
   <li><a href="{{ url_for('ac_change_password') }}">Change your password</a></li>
@@ -24346,7 +24362,7 @@ def ac_svc_helpdesk(aid):
 </ul>
 <p class="small"><strong>Exam slip locked?</strong> Check two things: your fees must be at the required percentage, and your CA marks for every registered module must be published. The Print Exam Docket page shows which one is missing.</p>
 </div>
-<div class="card"><h3>Messages</h3>
+<div class="card" id="inbox"><h3>Messages</h3>
 {% for m in thread %}<div style="margin:8px 0;padding:8px;border-radius:6px;background:{{ '#f1f5f9' if m.sender == 'student' else '#ecfdf5' }}"><strong>{{ 'Student' if m.sender == 'student' else 'College' }}</strong> <span class="small">{{ m.created_at[:16].replace('T', ' ') }}</span><p style="margin:4px 0;white-space:pre-wrap">{{ m.body }}</p></div>
 {% else %}<p class="small">No messages yet.</p>{% endfor %}
 </div>
@@ -25625,11 +25641,11 @@ def ac_application_money(aid):
 <p class="small">Only payments the college has confirmed reduce your balance.</p></div>
 <div class="card"><h3>Charges</h3>
 {% for x in charges %}<p class="small">{{ x.description }}: {{ '%.2f' % x.amount }}</p>{% else %}<p class="small">No charges yet.</p>{% endfor %}</div>
-<div class="card"><h3>Payments</h3>
+<div class="card" id="payments"><h3>Payments</h3>
 {% for p in payments %}<p class="small">{{ p.created_at[:10] }} · {{ p.amount }} · reference {{ p.reference }} · <strong>{{ p.status }}</strong>{% if p.slip_path %} · <a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">slip</a>{% endif %}</p>
 {% else %}<p class="small">No payments yet.</p>{% endfor %}</div>
 {% if is_student %}
-<div class="card"><h3>Record a payment</h3>
+<div class="card" id="payment-options"><h3>Record a payment</h3>
 <p class="small">Pay at Zanaco, then enter the reference from your deposit. The college confirms it against its bank statement before it counts.</p>
 <form method="post" enctype="multipart/form-data" action="{{ url_for('ac_application_payment', aid=a.id) }}">{{ csrf }}
 <label>Apply payment to charge (required for mattress collection)<select name="charge_id"><option value="">General/unallocated payment</option>{% for x in charges %}<option value="{{ x.id }}">{{ x.description }} — K{{ '%.2f' % x.amount }}</option>{% endfor %}</select></label>
