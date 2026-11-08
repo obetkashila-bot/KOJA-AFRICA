@@ -24725,14 +24725,18 @@ def ac_svc_registration(aid):
 <p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''', c=c, course=course, pct=int(float(_ca_settings(c).get("registration_fee_percent") if _ca_settings(c).get("registration_fee_percent") is not None else 50)), paid=paid, total=total, back=_svc_back(aid))
         modules = _course_module_names(a["college_id"], a["course_id"])
         if request.method == "POST":
-            chosen = [m for m in request.form.getlist("module") if m in modules]
-            db_delete("koja_college_registrations", {"application_id": aid})
-            rows = [{"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": aid, "module": m, "created_at": utc_now()} for m in chosen]
+            chosen = list(dict.fromkeys(m for m in request.form.getlist("module") if m in modules))
+            current = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
+            to_add = [m for m in chosen if m not in current]
+            to_remove = [m for m in current if m not in chosen]
+            rows = [{"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": aid, "module": m, "created_at": utc_now()} for m in to_add]
             if rows:
                 _, err = db_insert("koja_college_registrations", rows, returning="minimal")
                 if err:
-                    flash("Could not save your registration. Please try again.", "danger")
+                    flash("Could not save your registration. Your earlier registration is unchanged. Please try again.", "danger")
                     return redirect(url_for("ac_svc_registration", aid=aid))
+            for m in to_remove:
+                db_delete("koja_college_registrations", {"application_id": aid, "module": m})
             flash("Registration saved.", "success")
             return redirect(url_for("ac_svc_registration", aid=aid))
         taken = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
