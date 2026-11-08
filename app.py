@@ -23734,17 +23734,25 @@ def _college_save_problem(v):
     return None
 
 
-def _college_submit_problem(c, aid, v, docs):
+def _college_missing_items(v, docs):
+    """Everything still needed before a student can submit. An empty list means ready to submit."""
     missing = [label for label, key in (("full name", "full_name"), ("phone number", "phone"),
                                         ("NRC or passport number", "nrc_or_passport"),
                                         ("date of birth", "date_of_birth"), ("gender", "gender"),
                                         ("Grade 12 exam number", "grade12_exam_number"),
                                         ("subject grades", "subject_grades")) if not v.get(key)]
+    kinds = {d.get("kind") for d in docs}
+    if "id" not in kinds:
+        missing.append("NRC or passport upload")
+    if "certificate" not in kinds:
+        missing.append("certificate or results statement upload")
+    return missing
+
+
+def _college_submit_problem(c, aid, v, docs):
+    missing = _college_missing_items(v, docs)
     if missing:
         return "Please add: " + ", ".join(missing) + "."
-    kinds = {d.get("kind") for d in docs}
-    if "id" not in kinds or "certificate" not in kinds:
-        return "Upload your NRC or passport and your certificate or results statement."
     nrc = _college_norm_id(v["nrc_or_passport"])
     for o in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000):
         if o.get("id") != aid and o.get("status") not in ("draft", "rejected", "declined") \
@@ -23856,6 +23864,7 @@ def ac_application_view(aid):
     intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
     docs = _ac_rows("koja_college_application_documents", {"application_id": aid}, order="created_at.asc", limit=20)
     docs_by_kind = {d.get("kind"): d for d in docs}
+    checklist = _college_missing_items({k: a.get(k) for k in COLLEGE_APP_FIELDS}, docs) if a.get("status") == "draft" else []
     return _ac_page("Application", r'''
 <div class="card"><h2>{{ course.title }}</h2><p class="small">{{ c.name }}{% if intake %} · {{ intake.name }}{% endif %}</p>
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
@@ -23874,6 +23883,7 @@ def ac_application_view(aid):
 {% endfor %}
 </div>
 {% if a.status == 'draft' %}<div class="card"><h3>Submit your application</h3>
+{% if checklist %}<p><strong>Still needed before you can submit:</strong></p><ul>{% for item in checklist %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p class="small">Everything is in place. You can submit now.</p>{% endif %}
 <p class="small">After you submit, you cannot change the form or documents. Check everything first.</p>
 <form method="post" action="{{ url_for('ac_application_submit', aid=a.id) }}">{{ csrf }}<button class="btn" type="submit">Submit application</button></form>
 <p class="small"><a href="{{ url_for('ac_college_apply', slug=c.slug, cid=a.course_id) }}">Edit the form</a></p></div>{% endif %}
@@ -23898,7 +23908,7 @@ def ac_application_view(aid):
 <button class="btn" type="submit">Save decision</button></form>
 <p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p></div>
 {% endif %}''',
-                    a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind,
+                    a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind, checklist=checklist,
                     doc_labels=COLLEGE_DOC_LABELS, is_owner=is_owner, is_student=is_student,
                     staff_statuses=COLLEGE_STAFF_STATUSES)
 
@@ -24105,7 +24115,9 @@ def ac_college_admissions(slug):
     c = _college_by_slug(slug)
     if not _college_is_owner(c):
         abort(404)
-    everything = [x for x in _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=2000) if x.get("status") != "draft"]
+    all_rows = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=2000)
+    drafts = len([x for x in all_rows if x.get("status") == "draft"])
+    everything = [x for x in all_rows if x.get("status") != "draft"]
     status = clean(request.args.get("status"))
     shown = [x for x in everything if x.get("status") == status] if status in COLLEGE_ALL_STATUSES else everything
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
@@ -24118,7 +24130,7 @@ def ac_college_admissions(slug):
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
 <p class="small"><a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a></p>
 <p class="small">
-<a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>
+<a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· {{ drafts }} draft(s): students have started but not submitted yet</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
 </p></div>
 <div class="card"><h3>Applications{% if status %}: {{ status | replace('_', ' ') }}{% endif %}</h3>
@@ -24135,7 +24147,7 @@ def ac_college_admissions(slug):
 <button class="btn" type="submit">Add intake</button></form></div>''',
                     c=c, everything=everything, shown=shown, status=status, statuses=COLLEGE_ALL_STATUSES,
                     counts=counts, course_names=course_names, intake_names=intake_names, intakes=intakes,
-                    seats_used=seats_used, csrf_ok=True)
+                    seats_used=seats_used, drafts=drafts, csrf_ok=True)
 
 
 @app.route("/academic/college/<slug>/intake", methods=["POST"])
