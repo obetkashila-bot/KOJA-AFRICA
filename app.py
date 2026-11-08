@@ -24704,6 +24704,26 @@ def _tt_student_slots(a):
     return sorted(slots, key=_svc_day_key), group, registered
 
 
+def _tt_grid(slots):
+    """Timetable as a grid: one row per day, one column per period. Sessions with other times are returned as a list."""
+    periods = sorted(TT_PERIODS.items())
+    start_to_period = {t0: p for p, (t0, _) in periods}
+    days = list(SVC_DAYS[:5]) + [d for d in SVC_DAYS[5:] if any(s.get("day") == d for s in slots)]
+    grid, other = [], []
+    for d in days:
+        cells = {p: [] for p, _ in periods}
+        for s in sorted([x for x in slots if x.get("day") == d], key=_svc_day_key):
+            p = s.get("period")
+            if p is None:
+                p = start_to_period.get(s.get("starts"))
+            if p in cells:
+                cells[p].append(s)
+            else:
+                other.append(s)
+        grid.append({"day": d, "cells": [cells[p] for p, _ in periods]})
+    return periods, grid, sorted(other, key=_svc_day_key)
+
+
 def _svc_day_key(slot):
     return (SVC_DAYS.index(slot.get("day")) if slot.get("day") in SVC_DAYS else 9, slot.get("starts") or "")
 
@@ -24713,11 +24733,19 @@ def _svc_day_key(slot):
 def ac_svc_timetable(aid):
     def build(a, c, course, extra):
         slots, group, registered = _tt_student_slots(a)
+        periods, grid, other = _tt_grid(slots)
         return _ac_page("Timetable", r'''
 <div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }} · Group {{ group }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
-<div class="card">{% for s in slots %}<p><strong>{{ s.module }}</strong><br><span class="small">{{ s.day }} · {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}{% if s.lecturer %} · {{ s.lecturer }}{% endif %}</span></p>
-{% else %}{% if not registered %}<p class="small">Register for your modules first. Your timetable appears once you have registered.</p>{% else %}<p class="small">Your timetable has not been published yet.</p>{% endif %}{% endfor %}</div>''',
-                         back=_svc_back(aid), c=c, course=course, slots=slots, group=group, registered=registered)
+{% if slots %}<div class="card" style="overflow-x:auto">
+<table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #888">
+<tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Day</th>{% for p, t in periods %}<th style="border:1px solid #888;padding:6px">{{ t[0] }}&ndash;{{ t[1] }}</th>{% endfor %}</tr>
+{% for row in grid %}<tr><td style="font-weight:bold;background:#eef3fa;vertical-align:top;border:1px solid #888;padding:6px">{{ row.day }}</td>
+{% for cell in row.cells %}<td style="vertical-align:top;min-width:120px;padding:6px;border:1px solid #888">{% for s in cell %}<div style="margin-bottom:6px"><strong>{{ s.module }}</strong><br><span class="small">{{ s.venue or '' }}{% if s.venue and s.lecturer %} &middot; {% endif %}{{ s.lecturer or '' }}</span></div>{% endfor %}</td>{% endfor %}</tr>
+{% endfor %}</table>
+{% if other %}<h3 style="margin-top:14px">Other times</h3>{% for s in other %}<p class="small"><strong>{{ s.module }}</strong> &middot; {{ s.day }} {{ s.starts }}&ndash;{{ s.ends }}{% if s.venue %} &middot; {{ s.venue }}{% endif %}{% if s.lecturer %} &middot; {{ s.lecturer }}{% endif %}</p>{% endfor %}{% endif %}
+</div>
+{% else %}<div class="card">{% if not registered %}<p class="small">Register for your modules first. Your timetable appears once you have registered.</p>{% else %}<p class="small">Your timetable has not been published yet.</p>{% endif %}</div>{% endif %}''',
+                         back=_svc_back(aid), c=c, course=course, slots=slots, group=group, registered=registered, periods=periods, grid=grid, other=other)
     return _svc_student_academic(aid, "Timetable", build)
 
 
@@ -25205,22 +25233,49 @@ def ac_svc_ca(aid):
     def build(a, c, course, extra):
         regs = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
         comp_mods = {x["module"] for x in _ac_rows("koja_college_ca_components", {"course_id": a["course_id"]}, limit=500)}
+        def num(v):
+            f = float(v or 0)
+            return int(f) if f.is_integer() else round(f, 2)
         rows = []
         for m in sorted(regs | comp_mods):
             comps = _ca_components(a["course_id"], m)
             published = _ca_is_locked(a["course_id"], m)
-            total, complete = _ca_result(comps, _ca_score_map(comps), aid) if comps else (0.0, False)
-            rows.append({"module": m, "published": published, "total": total if (published and complete) else None,
-                         "parts": [{"name": x["name"], "max": x["max_score"], "raw": _ca_score_map([x]).get((x["id"], aid))} for x in comps] if published else []})
+            scores = _ca_score_map(comps) if comps else {}
+            total, complete = _ca_result(comps, scores, aid) if comps else (0.0, False)
+            parts = []
+            for x in comps:
+                raw = scores.get((x["id"], aid))
+                if not published:
+                    status = "Not published yet"
+                else:
+                    status = "Published" if raw is not None else "Pending"
+                parts.append({"name": x["name"], "weight": num(x.get("weight")), "max": num(x["max_score"]),
+                              "raw": num(raw) if (published and raw is not None) else None, "status": status})
+            if not published:
+                total_status = "Not published yet"
+            elif complete:
+                total_status = "Eligible for Exam"
+            else:
+                total_status = "Incomplete"
+            rows.append({"module": m, "parts": parts,
+                         "weight": num(sum(float(x.get("weight") or 0) for x in comps)),
+                         "total": num(total) if (published and complete) else None,
+                         "status": total_status})
         return _ac_page("View CA", r'''
-<div class="card"><h2>View CA</h2><p class="small">{{ c.name }} · continuous assessment</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
-{% for r in rows %}<div class="card"><h3>{{ r.module }}</h3>
-{% if not r.published %}<p class="small">Not published yet. Your CA appears here once your lecturer publishes it.</p>
-{% elif r.total is none %}<p class="small">Your CA is incomplete. Please check with the college.</p>
-{% else %}<p>CA: <strong>{{ r.total }} / {{ out_of }}</strong></p>
-<table style="width:100%;border-collapse:collapse">{% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ p.name }}</td><td align="center">{{ p.raw if p.raw is not none else '-' }} / {{ p.max }}</td></tr>{% endfor %}</table>{% endif %}
-</div>{% else %}<div class="card"><p class="small">You have no registered modules yet.</p></div>{% endfor %}''',
-                         back=_svc_back(aid), c=c, rows=rows, out_of=_ca_out_of(c))
+<div class="card"><h2>View CA</h2><p class="small">{{ c.name }} · {{ course.title }} · continuous assessment</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+{% if rows %}<div class="card" style="overflow-x:auto">
+<table style="width:100%;border-collapse:collapse;font-size:14px">
+<tr style="background:#1d4e89;color:#fff"><th align="left">Course code</th><th align="left">Course name</th><th align="left">Assessment component</th><th>Weight</th><th>Marks obtained</th><th align="left">Status</th></tr>
+{% for r in rows %}
+{% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>{{ p.name }}</td><td align="center">{{ p.weight }}%</td><td align="center">{% if p.raw is not none %}{{ p.raw }} / {{ p.max }}{% else %}&mdash; / {{ p.max }}{% endif %}</td><td>{{ p.status }}</td></tr>
+{% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td colspan="4" class="small">No assessment components set up yet.</td></tr>
+{% endfor %}
+<tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{{ r.weight }}%</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{{ r.status }}</td></tr>
+{% endfor %}
+</table>
+<p class="small" style="margin-top:8px">Exam eligibility needs all of your CA published and complete. Exam entry also depends on your fees.</p>
+</div>{% else %}<div class="card"><p class="small">You have no registered modules yet.</p></div>{% endif %}''',
+                         back=_svc_back(aid), c=c, course=course, rows=rows, out_of=num(_ca_out_of(c)), course_code=course.get("course_code"))
     return _svc_student_academic(aid, "View CA", build)
 
 
@@ -25920,34 +25975,86 @@ def ac_application_room(aid):
     if not a or a.get("student_user_id") != _ac_uid():
         abort(404)
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    status_ok = a.get("status") in ("accepted", "enrolled")
     current = first_row("koja_accommodation_allocations", {"application_id": aid, "status": "active"})
+    current_bed_id = current["bedspace_id"] if current else None
     current_label = None
     if current:
-        info = _bed_in_college(c, current["bedspace_id"])
+        info = _bed_in_college(c, current_bed_id)
         if info:
             current_label = "%s · Room %s · Bed %s" % (info["hostel"]["name"], info["room"]["room_code"], info["bed"]["number"])
-    free = []
-    if a.get("status") in ("accepted", "enrolled"):
-        for h in _college_beds(c):
-            for r in h["rooms"]:
-                for b in r["beds"]:
-                    if not b["alloc"] and not _bed_rule_problem(a, {"hostel": h["hostel"], "room": r["room"]}):
-                        free.append({"id": b["id"], "label": "%s · Room %s · Bed %s" % (h["hostel"]["name"], r["room"]["room_code"], b["number"])})
-    gate = _accommodation_gate(c, a) if a.get("status") in ("accepted", "enrolled") else None
-    if gate:
-        free = []
-    return _ac_page("Room", r'''
-<div class="card"><h2>Room</h2><p class="small">{{ c.name }}</p>
-{% if a.status not in ('accepted', 'enrolled') %}<p>Room booking opens once you accept your place.</p>
+    gate = _accommodation_gate(c, a) if status_ok else None
+    acc_charges = [x for x in _ac_rows_all("koja_college_charges", {"application_id": aid})
+                   if any(k in (x.get("description") or "").lower() for k in ("accommodation", "hostel", "bed"))]
+    billing_notice = None
+    if status_ok and not acc_charges:
+        billing_notice = "Accommodation fees have not been set for you yet. Accounts must add the accommodation charge first."
+    elif gate:
+        billing_notice = gate
+    if current:
+        status_text = "Provisional reservation" if gate else "Confirmed"
+    else:
+        status_text = "No reservation yet"
+    hostels = _college_beds(c) if status_ok else []
+    cur_hostel_id = None
+    for h in hostels:
+        for r in h["rooms"]:
+            if any(b["id"] == current_bed_id for b in r["beds"]):
+                cur_hostel_id = h["hostel"]["id"]
+    choices = [h for h in hostels if any(not _bed_rule_problem(a, {"hostel": h["hostel"], "room": r["room"]}) for r in h["rooms"])]
+    sel_id = clean(request.args.get("hostel"))
+    sel = (next((h for h in choices if h["hostel"]["id"] == sel_id), None)
+           or next((h for h in choices if h["hostel"]["id"] == cur_hostel_id), None)
+           or (choices[0] if choices else None))
+    rows = []
+    if sel:
+        for r in sel["rooms"]:
+            beds = r["beds"]
+            free_beds = [b for b in beds if not b["alloc"]]
+            held = next((b for b in beds if b["id"] == current_bed_id), None)
+            problem = _bed_rule_problem(a, {"hostel": sel["hostel"], "room": r["room"]})
+            rows.append({"code": r["room"]["room_code"], "total": len(beds),
+                         "avail": None if problem else len(free_beds),
+                         "held": ("Bed %s - CURRENTLY HELD" % held["number"]) if held else None,
+                         "restricted": problem or None,
+                         "full": bool(not problem and not held and not free_beds),
+                         "free": [] if problem else [{"id": b["id"], "number": b["number"]} for b in free_beds]})
+    return _ac_page("Accommodation", r'''
+<div class="card"><h2>Accommodation booking</h2><p class="small">{{ c.name }}</p>
+{% if not status_ok %}<p>Room booking opens once you accept your place.</p>
 {% else %}
-<p>Your room: <strong>{{ current_label or 'not allocated yet' }}</strong></p>
-<h3>{{ 'Change your room' if current_label else 'Choose a room' }}</h3>
-<p class="small">Hostels A to G are for women and H to M for men. Rooms 6, 7 and 16 are for union members. You only see beds you can take.</p>
-{% for f in free %}<form method="post" action="{{ url_for('ac_application_reserve', aid=a.id) }}" style="margin:6px 0">{{ csrf }}<input type="hidden" name="bedspace_id" value="{{ f.id }}"><button class="btn secondary" type="submit">{{ f.label }}</button></form>
-{% else %}<p class="small">{{ gate or 'No free bedspaces right now.' }}</p>{% endfor %}
+<div class="card" style="border:1px solid #1d4e89"><h3>Current allocation</h3>
+<p><strong>Institution:</strong> {{ c.name }}<br>
+<strong>Your allocated space:</strong> {{ current_label or 'Not allocated yet' }}<br>
+<strong>Status:</strong> {{ status_text }}</p></div>
+
+{% if billing_notice %}<div class="card" style="border:1px solid #b36b00;background:#fff8ec"><h3>Billing hold</h3><p>{{ billing_notice }}</p></div>{% endif %}
+
+<div class="card"><h3>Room change</h3>
+{% if choices %}
+<form method="get" style="margin-bottom:10px"><label>Hostel<select name="hostel">{% for h in choices %}<option value="{{ h.hostel.id }}" {{ 'selected' if sel and h.hostel.id == sel.hostel.id }}>{{ h.hostel.name }}</option>{% endfor %}</select></label>
+<button class="btn secondary" type="submit">Show rooms</button></form>
+<p class="small">Only hostels and rooms you are allowed to take are shown.</p>
+<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #888">
+<tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Room no.</th><th style="border:1px solid #888;padding:6px">Total beds</th><th style="border:1px solid #888;padding:6px">Available</th><th align="left" style="border:1px solid #888;padding:6px">Special designation / choose</th></tr>
+{% for row in rows %}<tr>
+<td style="border:1px solid #888;padding:6px;font-weight:bold">Room {{ row.code }}</td>
+<td style="border:1px solid #888;padding:6px" align="center">{{ row.total }}</td>
+<td style="border:1px solid #888;padding:6px" align="center">{{ '—' if row.avail is none else row.avail }}</td>
+<td style="border:1px solid #888;padding:6px">
+{% if row.held %}<strong>[ {{ row.held }} ]</strong>{% endif %}
+{% if row.restricted %}<span>&#128683; Restricted: {{ row.restricted }}</span>
+{% elif row.full and not row.held %}<span>[ FULL - No spaces available ]</span>
+{% else %}{% for f in row.free %}<form method="post" action="{{ url_for('ac_application_reserve', aid=a.id) }}" style="display:inline-block;margin:2px">{{ csrf }}<input type="hidden" name="bedspace_id" value="{{ f.id }}"><button class="btn secondary" type="submit" {{ 'disabled' if gate }}>Bed {{ f.number }}</button></form>{% endfor %}{% endif %}
+</td></tr>{% endfor %}
+</table></div>
+{% else %}<p class="small">No hostel has a room you can take right now.</p>{% endif %}
+</div>
+{% if gate %}<div class="card"><p><strong>&#10060; Action unavailable.</strong> Choosing or changing a bed is locked until your accommodation fees are paid in full. Bed buttons are greyed out until then.</p></div>{% endif %}
 {% endif %}
 <p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
-                    a=a, c=c, current_label=current_label, free=free, gate=gate, csrf_ok=True)
+                    a=a, c=c, status_ok=status_ok, current_label=current_label, status_text=status_text, billing_notice=billing_notice,
+                    gate=gate, choices=choices, sel=sel, rows=rows, csrf_ok=True)
 
 
 @app.route("/academic/application/<aid>/reserve", methods=["POST"])
