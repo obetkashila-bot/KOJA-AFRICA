@@ -24746,10 +24746,20 @@ def ac_svc_timetable(aid):
         return _ac_page("Timetable", r'''
 <div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }} · Group {{ group }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
 {% if slots %}<div class="card" style="overflow-x:auto;background:#fff;color:#111">
-<table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #888">
+<style>
+  @media (max-width:640px){
+    .tt-grid tr{display:block;border:1px solid #888 !important;border-radius:6px;margin-bottom:10px;overflow:hidden}
+    .tt-grid tr:first-child{display:none}
+    .tt-grid td{display:block;border:none !important;border-top:1px solid #ddd !important;min-width:0 !important}
+    .tt-grid td:first-child{background:#1d4e89 !important;color:#fff;font-size:15px}
+    .tt-grid td.tt-empty{display:none}
+    .tt-grid td[data-label]::before{content:attr(data-label);display:block;font-weight:bold;font-size:11px;color:#555;margin-bottom:2px}
+  }
+</style>
+<table class="tt-grid" style="width:100%;border-collapse:collapse;font-size:13px">
 <tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Day</th>{% for p, t in periods %}<th style="border:1px solid #888;padding:6px">{{ t[0] }}&ndash;{{ t[1] }}</th>{% endfor %}</tr>
 {% for row in grid %}<tr><td style="font-weight:bold;background:#eef3fa;vertical-align:top;border:1px solid #888;padding:6px">{{ row.day }}</td>
-{% for cell in row.cells %}<td style="vertical-align:top;min-width:120px;padding:6px;border:1px solid #888">{% for s in cell %}<div style="margin-bottom:6px"><strong>{{ s.module }}</strong><br><span class="small">{{ s.venue or '' }}{% if s.venue and s.lecturer %} &middot; {% endif %}{{ s.lecturer or '' }}</span></div>{% endfor %}</td>{% endfor %}</tr>
+{% for cell in row.cells %}<td class="{{ 'tt-empty' if not cell }}" data-label="{{ periods[loop.index0][1][0] }}&ndash;{{ periods[loop.index0][1][1] }}" style="vertical-align:top;min-width:120px;padding:6px;border:1px solid #888">{% for s in cell %}<div style="margin-bottom:6px"><strong>{{ s.module }}</strong><br><span class="small">{{ s.venue or '' }}{% if s.venue and s.lecturer %} &middot; {% endif %}{{ s.lecturer or '' }}</span></div>{% endfor %}</td>{% endfor %}</tr>
 {% endfor %}</table>
 {% if other %}<h3 style="margin-top:14px">Other times</h3>{% for s in other %}<p class="small"><strong>{{ s.module }}</strong> &middot; {{ s.day }} {{ s.starts }}&ndash;{{ s.ends }}{% if s.venue %} &middot; {{ s.venue }}{% endif %}{% if s.lecturer %} &middot; {{ s.lecturer }}{% endif %}</p>{% endfor %}{% endif %}
 </div>
@@ -26032,19 +26042,19 @@ def ac_application_room(aid):
 <div class="card"><h2>Accommodation booking</h2><p class="small">{{ c.name }}</p>
 {% if not status_ok %}<p>Room booking opens once you accept your place.</p>
 {% else %}
-<div class="card" style="border:1px solid #1d4e89;background:#fff;color:#111"><h3>Current allocation</h3>
+<div class="card" style="background:#fff;color:#111"><h3>Current allocation</h3>
 <p><strong>Institution:</strong> {{ c.name }}<br>
 <strong>Your allocated space:</strong> {{ current_label or 'Not allocated yet' }}<br>
 <strong>Status:</strong> {{ status_text }}</p></div>
 
-{% if billing_notice %}<div class="card" style="border:1px solid #b36b00;background:#fff8ec;color:#111"><h3>Billing hold</h3><p>{{ billing_notice }}</p></div>{% endif %}
+{% if billing_notice %}<div class="card" style="background:#fff8ec;color:#111"><h3>Billing hold</h3><p>{{ billing_notice }}</p></div>{% endif %}
 
 <div class="card" style="background:#fff;color:#111"><h3>Room change</h3>
 {% if choices %}
 <form method="get" style="margin-bottom:10px"><label>Hostel<select name="hostel">{% for h in choices %}<option value="{{ h.hostel.id }}" {{ 'selected' if sel and h.hostel.id == sel.hostel.id }}>{{ h.hostel.name }}</option>{% endfor %}</select></label>
 <button class="btn secondary" type="submit">Show rooms</button></form>
 <p class="small">Only hostels and rooms you are allowed to take are shown.</p>
-<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #888">
+<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
 <tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Room no.</th><th style="border:1px solid #888;padding:6px">Total beds</th><th style="border:1px solid #888;padding:6px">Available</th><th align="left" style="border:1px solid #888;padding:6px">Special designation / choose</th></tr>
 {% for row in rows %}<tr>
 <td style="border:1px solid #888;padding:6px;font-weight:bold">Room {{ row.code }}</td>
@@ -33401,14 +33411,83 @@ def ac_college_mattresses(slug):
         paid=_mattress_paid_total(a.get("id"),ch.get("id")) if ch else 0
         rows.append({"allocation":al,"student":a,"charge":ch,"paid":paid,"eligible":bool(ch and paid>=float(ch.get("amount") or 0))})
     students=_college_students(c,("accepted","enrolled"))
+    beds_tree = _college_beds(c)
+    hostel_names = {h["hostel"]["id"]: h["hostel"]["name"] for h in beds_tree}
+    bed_label = {}
+    bed_hostel = {}
+    for h in beds_tree:
+        for r in h["rooms"]:
+            for b in r["beds"]:
+                bed_label[b["id"]] = "%s · Room %s · Bed %s" % (h["hostel"]["name"], r["room"]["room_code"], b["number"])
+                bed_hostel[b["id"]] = h["hostel"]["id"]
+    room_by_app, hostel_by_app = {}, {}
+    for x in _ac_rows_all("koja_accommodation_allocations", {"college_id": c["id"], "status": "active"}):
+        room_by_app[x["application_id"]] = bed_label.get(x["bedspace_id"])
+        hostel_by_app[x["application_id"]] = bed_hostel.get(x["bedspace_id"])
+    cleared = {x["application_id"] for x in _ac_rows_all("koja_hostel_clearances", {"college_id": c["id"]})}
+    summary = {hid: {"name": name, "housed": 0, "allocated": 0, "issued": 0} for hid, name in hostel_names.items()}
+    for hid in hostel_by_app.values():
+        if hid in summary:
+            summary[hid]["housed"] += 1
+    for al in allocations:
+        if al.get("status") == "cancelled":
+            continue
+        hid = hostel_by_app.get(al.get("application_id"))
+        if hid in summary:
+            summary[hid]["allocated"] += 1
+            if al.get("status") in ("collected", "returned"):
+                summary[hid]["issued"] += 1
+    hostel_summary = list(summary.values())
+    can_clear = _college_can(c, "rooms")
+    for x in rows:
+        sid = (x.get("student") or {}).get("id")
+        x["room"] = room_by_app.get(sid)
+        x["cleared"] = sid in cleared
     return _ac_page("Mattress stores", r'''<div class="card"><h2>Mattress stores — {{ c.name }}</h2>
 <p class="small">Student number is the lookup key. Only verified payments linked to the specific mattress charge unlock collection.</p>
 <p><strong>Available stock:</strong> {{ inventory.get('quantity',0) }} · <strong>Issued:</strong> {{ inventory.get('issued_quantity',0) }}</p>
 <form method="post" action="{{ url_for('ac_college_mattress_stock',slug=c.slug) }}">{{ csrf }}<label>Available mattress stock<input name="quantity" type="number" min="0" max="100000" value="{{ inventory.get('quantity',0) }}" required></label><button class="btn">Save stock</button></form></div>
+<div class="card"><h3>By hostel</h3>
+<p class="small">The stock above is one college-wide count. This table shows how many students in each hostel have a mattress allocation and how many have collected one.</p>
+<table style="width:100%;border-collapse:collapse;font-size:13px;background:#fff;color:#111">
+<tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Hostel</th><th style="border:1px solid #888;padding:6px">Students housed</th><th style="border:1px solid #888;padding:6px">Mattress allocated</th><th style="border:1px solid #888;padding:6px">Issued</th></tr>
+{% for h in hostel_summary %}<tr><td style="border:1px solid #888;padding:6px;font-weight:bold">{{ h.name }}</td><td align="center" style="border:1px solid #888;padding:6px">{{ h.housed }}</td><td align="center" style="border:1px solid #888;padding:6px">{{ h.allocated }}</td><td align="center" style="border:1px solid #888;padding:6px">{{ h.issued }}</td></tr>{% else %}<tr><td colspan="4" style="border:1px solid #888;padding:6px">No hostels set up yet.</td></tr>{% endfor %}
+</table></div>
 <div class="card"><h3>Allocate mattress and create QR</h3><p class="small">Add a charge with “mattress” in its description in Fees and Payments first.</p>
 <form method="post" action="{{ url_for('ac_college_mattress_allocate',slug=c.slug) }}">{{ csrf }}<label>Student<select name="application_id" required><option value="">Select student</option>{% for a in students %}<option value="{{ a.id }}">{{ a.student_number or 'NO STUDENT NUMBER' }} — {{ a.full_name }}</option>{% endfor %}</select></label><button class="btn">Allocate / generate QR</button></form></div>
 <div class="card"><h3>Stores scanning desk</h3><a class="btn" href="{{ url_for('ac_college_mattress_scan',slug=c.slug) }}">Open QR scanning desk</a></div>
-<div class="card"><h3>Allocations</h3>{% for x in rows %}<p><strong>{{ x.student.get('student_number') or 'No student number' }} — {{ x.student.get('full_name') or 'Student unavailable' }}</strong><br>Payment K{{ '%.2f' % x.paid }} / K{{ '%.2f' % (x.charge.amount if x.charge else 0) }} · {{ x.allocation.status }}{% if x.eligible and x.allocation.status != 'collected' %} · <a href="{{ url_for('ac_college_mattress_student_qr',slug=c.slug,allocation_id=x.allocation.id) }}">Student QR</a>{% endif %}{% if x.allocation.status=='collected' %} · Collected {{ x.allocation.collected_at }}{% endif %}</p>{% else %}<p>No allocations yet.</p>{% endfor %}</div>''', c=c, inventory=inventory, students=students, rows=rows)
+<div class="card"><h3>Allocations</h3>{% for x in rows %}<p><strong>{{ x.student.get('student_number') or 'No student number' }} — {{ x.student.get('full_name') or 'Student unavailable' }}</strong><br>Payment K{{ '%.2f' % x.paid }} / K{{ '%.2f' % (x.charge.amount if x.charge else 0) }} · {{ x.allocation.status }}{% if x.eligible and x.allocation.status != 'collected' %} · <a href="{{ url_for('ac_college_mattress_student_qr',slug=c.slug,allocation_id=x.allocation.id) }}">Student QR</a>{% endif %}{% if x.allocation.status=='collected' %} · Collected {{ x.allocation.collected_at }}{% endif %}<br><span class="small">Room: {{ x.room or 'No room yet' }} · Hostel clearance: {{ 'Approved' if x.cleared else 'Not approved' }}</span></p>{% if can_clear and x.student.id %}<form method="post" action="{{ url_for('ac_college_mattress_clearance',slug=c.slug,application_id=x.student.id) }}" style="margin:4px 0 12px">{{ csrf }}<input type="hidden" name="action" value="{{ 'unclear' if x.cleared else 'clear' }}"><button class="btn secondary" type="submit">{{ 'Remove hostel clearance' if x.cleared else 'Approve hostel clearance' }}</button></form>{% endif %}{% else %}<p>No allocations yet.</p>{% endfor %}</div>''', c=c, inventory=inventory, students=students, rows=rows, hostel_summary=hostel_summary, can_clear=can_clear)
+
+def _hostel_cleared(application_id, college_id):
+    return first_row("koja_hostel_clearances", {"application_id": application_id, "college_id": college_id}) is not None
+
+
+@app.route("/academic/college/<slug>/mattresses/clearance/<application_id>", methods=["POST"])
+@login_required
+def ac_college_mattress_clearance(slug, application_id):
+    c = _college_by_slug(slug)
+    if not c or not _college_can(c, "rooms"):
+        abort(404)
+    a = first_row("koja_college_applications", {"id": application_id, "college_id": c["id"]})
+    if not a:
+        abort(404)
+    back = url_for("ac_college_mattresses", slug=slug)
+    action = clean(request.form.get("action"))
+    if action == "clear":
+        if not _hostel_cleared(a["id"], c["id"]):
+            _, err = db_insert("koja_hostel_clearances", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": a["id"],
+                               "cleared_by": _ac_uid() or None, "cleared_at": utc_now()}, returning="minimal")
+            if err:
+                flash("Could not record the hostel clearance. Run koja_college_clearance.sql first.", "danger")
+                return redirect(back)
+        _college_audit(c, "hostel.cleared", "application %s" % a["id"])
+        flash("Hostel clearance approved.", "success")
+    elif action == "unclear":
+        db_delete("koja_hostel_clearances", {"application_id": a["id"], "college_id": c["id"]})
+        _college_audit(c, "hostel.clearance_removed", "application %s" % a["id"])
+        flash("Hostel clearance removed.", "info")
+    return redirect(back)
+
 
 @app.route("/academic/college/<slug>/mattresses/stock", methods=["POST"])
 @login_required
@@ -33534,6 +33613,8 @@ def ac_college_mattress_issue(slug,allocation_id):
     inv=_mattress_inventory(c["id"]); stock=int((inv or {}).get("quantity") or 0)
     if not a or not _fin_student_ok(a) or not a.get("student_number") or not ch or amount<=0 or paid<amount:
         flash("Issue blocked: student eligibility or verified mattress payment requirement not met.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
+    if not _hostel_cleared(a["id"], c["id"]):
+        flash("Issue blocked: the hostel clearance has not been approved for this student.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
     if stock<1 or not inv:
         flash("Issue blocked: no mattress stock available.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
     result, err = db_rpc("koja_issue_mattress", {"p_allocation_id": allocation_id, "p_issued_by": _ac_uid()})
