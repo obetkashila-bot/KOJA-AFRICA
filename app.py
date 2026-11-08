@@ -24073,9 +24073,9 @@ def ac_student_portal(aid):
 <style>
   .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
   .portal-menu{display:flex;flex-direction:column;gap:6px}
-  .portal-menu a,.portal-menu span{display:block;padding:9px 12px;border:1px solid #ddd;border-radius:6px;text-decoration:none;color:inherit;background:#fff}
-  .portal-menu a:hover{background:#f5f5f5}
-  .portal-menu .off{color:#888;background:#fafafa;cursor:default}
+  .portal-menu a,.portal-menu span{display:block;padding:9px 12px;border:1px solid #ccc;border-radius:6px;text-decoration:none;color:#111 !important;background:#fff !important}
+  .portal-menu a:hover{background:#eef3ff !important}
+  .portal-menu .off{color:#666 !important;background:#f4f4f4 !important;cursor:default}
   .portal-menu .off small{display:block;font-size:11px}
   @media (max-width:760px){ .portal{grid-template-columns:1fr} }
 </style>
