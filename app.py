@@ -24493,9 +24493,9 @@ def ac_svc_timetable_manage(slug):
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
     course_ids = {k["id"] for k in courses}
     names = {k["id"]: k["title"] for k in courses}
+    module_options = {k["id"]: _course_module_names(c["id"], k["id"]) for k in courses}
     if request.method == "POST":
-        cid = clean(request.form.get("course_id"))
-        module = clean(request.form.get("module"))[:120]
+        cid, module = _tt_form_course_module()
         day = clean(request.form.get("day"))
         grp = clean(request.form.get("grp")).upper()[:1] or "A"
         (starts, ends), period = _tt_read_times(request.form)
@@ -24546,8 +24546,8 @@ def ac_svc_timetable_manage(slug):
 <div class="card"><h3>2a. Auto-place sessions</h3>
 <p class="small">Finds free times on Monday to Friday, using the seven periods, without a lecturer, venue or group clash.</p>
 <form method="post" action="{{ url_for('ac_svc_timetable_auto', slug=c.slug) }}">{{ csrf }}
-<label>Programme<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
-<label>Module<input name="module" required maxlength="120"></label>
+<label>Programme and module<select name="pick" required><option value="">Choose a module</option>{% for k in courses %}{% if module_options.get(k.id) %}<optgroup label="{{ k.title }}">{% for m in module_options.get(k.id) %}<option value="{{ k.id }}|{{ m }}">{{ m }}</option>{% endfor %}</optgroup>{% endif %}{% endfor %}</select></label>
+<p class="small">The modules come from the programme list. To add a module, use Add module above.</p>
 <label>Group<input name="grp" value="A" maxlength="1" required></label>
 <label>Lecturer<input name="lecturer" maxlength="120"></label>
 <label>Venue<input name="venue" maxlength="120"></label>
@@ -24556,8 +24556,8 @@ def ac_svc_timetable_manage(slug):
 
 <div class="card"><h3>2b. Add one slot by hand</h3>
 <form method="post">{{ csrf }}
-<label>Programme<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
-<label>Module<input name="module" required maxlength="120"></label>
+<label>Programme and module<select name="pick" required><option value="">Choose a module</option>{% for k in courses %}{% if module_options.get(k.id) %}<optgroup label="{{ k.title }}">{% for m in module_options.get(k.id) %}<option value="{{ k.id }}|{{ m }}">{{ m }}</option>{% endfor %}</optgroup>{% endif %}{% endfor %}</select></label>
+<p class="small">The modules come from the programme list. To add a module, use Add module above.</p>
 <label>Group<input name="grp" value="A" maxlength="1" required></label>
 <label>Day<select name="day" required>{% for d in days %}<option>{{ d }}</option>{% endfor %}</select></label>
 <label>Period<select name="period"><option value="">Use start and end times below</option>{% for p, t in periods %}<option value="{{ p }}">Period {{ p }} ({{ t[0] }}–{{ t[1] }})</option>{% endfor %}</select></label>
@@ -24571,7 +24571,7 @@ def ac_svc_timetable_manage(slug):
 {% for s in slots %}<p class="small" style="border-top:1px solid #ddd;padding-top:6px"><strong>{{ s.module }}</strong> · {{ names.get(s.course_id, '') }} · group {{ s.grp }} · {{ s.day }} {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}{% if s.lecturer %} · {{ s.lecturer }}{% endif %} · {% if s.published %}<strong>published</strong>{% else %}not published{% endif %}
 <form method="post" action="{{ url_for('ac_svc_timetable_delete', slug=c.slug, sid=s.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" type="submit">Delete</button></form></p>
 {% else %}<p class="small">No slots yet.</p>{% endfor %}
-</div>''', c=c, courses=courses, names=names, slots=slots, unpublished=unpublished, missing=missing, days=SVC_DAYS,
+</div>''', c=c, courses=courses, names=names, module_options=module_options, slots=slots, unpublished=unpublished, missing=missing, days=SVC_DAYS,
                     periods=sorted(TT_PERIODS.items()), csrf_ok=True)
 
 
@@ -24604,8 +24604,7 @@ def ac_svc_timetable_auto(slug):
     if not _college_is_owner(c):
         abort(403)
     back = url_for("ac_svc_timetable_manage", slug=slug)
-    cid = clean(request.form.get("course_id"))
-    module = clean(request.form.get("module"))[:120]
+    cid, module = _tt_form_course_module()
     grp = clean(request.form.get("grp")).upper()[:1] or "A"
     lecturer = clean(request.form.get("lecturer"))[:120] or None
     venue = clean(request.form.get("venue"))[:120] or None
@@ -24685,6 +24684,15 @@ def ac_svc_timetable_delete(slug, sid):
         _college_audit(c, "timetable.slot_deleted", "%s %s %s" % (s.get("module"), s.get("day"), s.get("starts")))
     flash("Slot deleted.", "success")
     return redirect(url_for("ac_svc_timetable_manage", slug=slug))
+
+
+def _tt_form_course_module():
+    """Reads the programme and module from a timetable form: either one combined pick ("course_id|module") or the two fields."""
+    pick = clean(request.form.get("pick"))
+    if "|" in pick:
+        cid, mod = pick.split("|", 1)
+        return clean(cid), clean(mod)[:120]
+    return clean(request.form.get("course_id")), clean(request.form.get("module"))[:120]
 
 
 def _tt_student_slots(a):
