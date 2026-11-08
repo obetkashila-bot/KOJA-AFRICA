@@ -24157,6 +24157,9 @@ def ac_student_portal(aid):
     course = first_row("koja_college_courses", {"id": a["course_id"]}) or {}
     intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
     can_use = a.get("status") in ("accepted", "enrolled")
+    _, _, p_total, p_paid, p_bal = _fin_totals(aid)
+    account_status = ("PAID" if p_total > 0 and p_bal <= 0 else ("Balance K%.2f" % p_bal if p_total > 0 else "No fees charged yet"))
+    receipts = _ac_rows("koja_college_receipts", {"application_id": aid}, order="issued_at.desc", limit=50)
     return _ac_page("Student portal", r"""
 <style>
   .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
@@ -24184,6 +24187,7 @@ def ac_student_portal(aid):
     <a href="{{ url_for('ac_svc_evaluation', aid=a.id) }}">Course Evaluation</a>
     <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Course registration</a>
     <a href="{{ url_for('ac_svc_docket', aid=a.id) }}">Print Exam Docket</a>
+    <a href="{{ url_for('ac_application_mattress', aid=a.id) }}">Mattress collection</a>
     <a href="{{ url_for('ac_change_password') }}">Change Password</a>
     <a href="{{ url_for('logout') }}">Logout</a>
   </nav>
@@ -24194,11 +24198,16 @@ def ac_student_portal(aid):
       {% if intake %}<p><strong>Intake:</strong> {{ intake.name }}</p>{% endif %}
       <p><strong>Status:</strong> {{ a.status | replace('_', ' ') }}</p>
       {% if a.student_number %}<p><strong>Student number:</strong> {{ a.student_number }}</p>{% endif %}
+      <p><strong>Account:</strong> {{ account_status }}</p>
       {% if a.status in ('offered', 'accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_letter', aid=a.id) }}">Acceptance letter</a></p>{% endif %}
+    </div>
+    <div class="card"><h3>Receipts</h3>
+      {% for r in receipts %}<p class="small">{{ r.receipt_number }} · K{{ '%.2f' % r.amount }} · {{ (r.issued_at or '')[:10] }} · <a href="{{ url_for('ac_payment_receipt', pid=r.payment_id) }}" target="_blank" rel="noopener">View receipt</a></p>
+      {% else %}<p class="small">No receipts yet. A receipt is issued when Accounts verifies a payment.</p>{% endfor %}
     </div>
     {% if a.status == 'offered' %}<div class="card"><h3>Your offer</h3><p class="small">Open Personal Information to accept or decline your offer.</p></div>{% endif %}
   </div>
-</div>""", a=a, c=c, course=course, intake=intake, can_use=can_use)
+</div>""", a=a, c=c, course=course, intake=intake, can_use=can_use, account_status=account_status, receipts=receipts)
 
 
 # ---- student services: helpdesk, grades and CA, timetable, registration, docket, evaluation ----
@@ -25094,8 +25103,48 @@ def _fin_totals(aid):
     charges = _ac_rows("koja_college_charges", {"application_id": aid}, order="created_at.asc", limit=500)
     payments = _ac_rows("koja_college_payments", {"application_id": aid}, order="created_at.desc", limit=500)
     total = round(sum(float(x.get("amount") or 0) for x in charges), 2)
-    paid = round(sum(float(x.get("amount") or 0) for x in payments if x.get("status") == "verified"), 2)
+    refunded = round(sum(float(x.get("amount") or 0) for x in _ac_rows("koja_college_refunds", {"application_id": aid}, limit=500)), 2)
+    # "paid" is the net amount: verified payments minus any refunds paid back to the student.
+    paid = round(sum(float(x.get("amount") or 0) for x in payments if x.get("status") == "verified") - refunded, 2)
     return charges, payments, total, paid, round(total - paid, 2)
+
+
+def _college_can(c, dept):
+    """Owner and KOJA admins can do everything. Department staff can do their own department only."""
+    if _college_is_owner(c):
+        return True
+    if not c or not _ac_uid():
+        return False
+    return bool(_ac_rows("koja_college_staff", {"college_id": c["id"], "user_id": _ac_uid(), "department": dept}, limit=1))
+
+
+def _college_any_staff(c):
+    return any(_college_can(c, d) for d in ("accounts", "rooms", "stores"))
+
+
+def _college_audit(c, action, detail=""):
+    """Writes one line to the college audit log. Never blocks the action itself."""
+    try:
+        db_insert("koja_college_audit", {"id": str(uuid.uuid4()), "college_id": c["id"], "actor_user_id": _ac_uid() or None,
+                  "action": action[:80], "detail": (detail or "")[:500], "created_at": utc_now()})
+    except Exception:
+        logger.exception("audit write failed")
+
+
+ACCOMMODATION_CHARGE_WORDS = ("accommodation", "hostel", "bed")
+
+
+def _accommodation_gate(c, a):
+    """Why this student cannot take a bed yet, or None. Every accommodation fee must be fully paid and verified."""
+    charges = [x for x in _ac_rows("koja_college_charges", {"application_id": a["id"], "college_id": c["id"]}, limit=500)
+               if any(w in (x.get("description") or "").lower() for w in ACCOMMODATION_CHARGE_WORDS)]
+    if not charges:
+        return "Accommodation fees have not been set for you yet. Accounts must add the accommodation charge first."
+    for ch in charges:
+        paid = _mattress_paid_total(a["id"], ch["id"])
+        if paid + 0.001 < float(ch.get("amount") or 0):
+            return "Pay your accommodation fee first (%s, K%.2f) and wait for Accounts to verify it." % (ch.get("description"), float(ch.get("amount") or 0))
+    return None
 
 
 def _college_students(c, statuses=("accepted", "enrolled")):
@@ -25147,7 +25196,7 @@ def _college_beds(c):
 @login_required
 def ac_college_finance(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'accounts'):
         abort(404)
     students = _college_students(c)
     rows = []
@@ -25158,7 +25207,7 @@ def ac_college_finance(slug):
     pending = _ac_rows("koja_college_payments", {"college_id": c["id"], "status": "pending"}, order="created_at.asc", limit=500)
     return _ac_page("Fees and payments", r'''
 <div class="card"><h2>Fees and payments: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a></p>
+<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a></p>
 <h3>Payments waiting to be confirmed</h3>
 {% for p in pending %}<div class="card" style="margin:8px 0"><strong>{{ names.get(p.application_id, 'Student') }}</strong>
 <p class="small">{{ p.method }} · reference {{ p.reference }} · {{ p.amount }}</p>
@@ -25168,7 +25217,7 @@ def ac_college_finance(slug):
 {% else %}<p class="small">No payments waiting.</p>{% endfor %}
 </div>
 <div class="card"><h3>Student balances</h3>
-{% for r in rows %}<p><a href="{{ url_for('ac_application_money', aid=r.a.id) }}">{{ r.a.full_name }}</a>{% if r.a.student_number %} · {{ r.a.student_number }}{% endif %} · charged {{ '%.2f' % r.total }} · paid {{ '%.2f' % r.paid }} · <strong>balance {{ '%.2f' % r.bal }}</strong></p>
+{% for r in rows %}<p>{% if r.total > 0 and r.bal <= 0 %}<strong>[PAID]</strong> {% endif %}<a href="{{ url_for('ac_application_money', aid=r.a.id) }}">{{ r.a.full_name }}</a>{% if r.a.student_number %} · {{ r.a.student_number }}{% endif %} · charged {{ '%.2f' % r.total }} · paid {{ '%.2f' % r.paid }} · <strong>balance {{ '%.2f' % r.bal }}</strong></p>
 {% else %}<p class="small">No accepted or enrolled students yet.</p>{% endfor %}
 </div>
 <div class="card"><h3>Add a charge</h3>
@@ -25176,14 +25225,21 @@ def ac_college_finance(slug):
 <label>Student<select name="application_id">{% for a in students %}<option value="{{ a.id }}">{{ a.full_name }}{% if a.student_number %} ({{ a.student_number }}){% endif %}</option>{% endfor %}</select></label>
 <label>Description<input name="description" required maxlength="150" placeholder="e.g. Tuition fees"></label>
 <label>Amount<input name="amount" type="number" min="0.01" step="0.01" required></label>
-<button class="btn" type="submit">Add charge</button></form></div>''', c=c, rows=rows, students=students, names=names, pending=pending, csrf_ok=True)
+<button class="btn" type="submit">Add charge</button></form></div>
+<div class="card"><h3>Record a refund</h3>
+<p class="small">Use this only when money is paid back to a student. It reduces their net paid amount and is kept on record.</p>
+<form method="post" action="{{ url_for('ac_college_refund', slug=c.slug) }}">{{ csrf }}
+<label>Student<select name="application_id">{% for a in students %}<option value="{{ a.id }}">{{ a.full_name }}{% if a.student_number %} ({{ a.student_number }}){% endif %}</option>{% endfor %}</select></label>
+<label>Amount<input name="amount" type="number" min="0.01" step="0.01" required></label>
+<label>Reason<input name="reason" required maxlength="200" placeholder="e.g. Overpayment returned"></label>
+<button class="btn" type="submit">Record refund</button></form></div>''', c=c, rows=rows, students=students, names=names, pending=pending, csrf_ok=True)
 
 
 @app.route("/academic/college/<slug>/charge", methods=["POST"])
 @login_required
 def ac_college_charge_add(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'accounts'):
         abort(403)
     back = url_for("ac_college_finance", slug=slug)
     a = first_row("koja_college_applications", {"id": request.form.get("application_id"), "college_id": c["id"]})
@@ -25197,6 +25253,8 @@ def ac_college_charge_add(slug):
         return redirect(back)
     _, err = db_insert("koja_college_charges", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": a["id"],
                        "description": desc, "amount": round(amount, 2), "currency": "ZMW", "created_at": utc_now()})
+    if not err:
+        _college_audit(c, "charge.added", "%s K%.2f to %s" % (desc, amount, a.get("student_number") or a["id"]))
     flash("Charge added." if not err else "Could not add the charge.", "success" if not err else "danger")
     return redirect(back)
 
@@ -25205,7 +25263,7 @@ def ac_college_charge_add(slug):
 @login_required
 def ac_college_payment_decide(slug, pid):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'accounts'):
         abort(403)
     p = first_row("koja_college_payments", {"id": pid, "college_id": c["id"]})
     if not p:
@@ -25217,7 +25275,10 @@ def ac_college_payment_decide(slug, pid):
         flash("This payment has already been decided.", "info")
         return redirect(url_for("ac_college_finance", slug=slug))
     db_update("koja_college_payments", {"id": pid}, {"status": decision, "verified_at": utc_now(), "verified_by": _ac_uid()})
-    flash("Payment confirmed. The balance is updated." if decision == "verified" else "Payment rejected.", "success")
+    _college_audit(c, "payment." + decision, "payment %s amount %s" % (pid, p.get("amount")))
+    if decision == "verified":
+        _issue_receipt(c, dict(p, status="verified"))
+    flash("Payment confirmed. The balance is updated and a receipt was issued." if decision == "verified" else "Payment rejected.", "success")
     return redirect(url_for("ac_college_finance", slug=slug))
 
 
@@ -25314,7 +25375,7 @@ def ac_payment_slip(pid):
 @login_required
 def ac_college_accommodation(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'rooms'):
         abort(404)
     tree = _college_beds(c)
     students = [a for a in _college_students(c, ("enrolled",))]
@@ -25355,7 +25416,7 @@ def ac_college_accommodation(slug):
 @login_required
 def ac_college_hostel_add(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'rooms'):
         abort(403)
     name = clean(request.form.get("name"))[:100]
     if not name:
@@ -25370,7 +25431,7 @@ def ac_college_hostel_add(slug):
 @login_required
 def ac_college_room_add(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'rooms'):
         abort(403)
     hostel = first_row("koja_accommodation_hostels", {"id": request.form.get("hostel_id"), "college_id": c["id"]})
     code = clean(request.form.get("room_code"))[:20]
@@ -25404,7 +25465,7 @@ STANDARD_HOSTEL_GENDER = {letter: ("female" if letter <= "G" else "male") for le
 @login_required
 def ac_college_standard_block(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'rooms'):
         abort(403)
     back = url_for("ac_college_accommodation", slug=slug)
     have = {h["name"]: h["id"] for h in _ac_rows("koja_accommodation_hostels", {"college_id": c["id"]}, limit=500)}
@@ -25464,7 +25525,7 @@ def _release_beds(aid):
 @login_required
 def ac_college_allocate(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'rooms'):
         abort(403)
     back = url_for("ac_college_accommodation", slug=slug)
     a = first_row("koja_college_applications", {"id": request.form.get("application_id"), "college_id": c["id"]})
@@ -25475,10 +25536,11 @@ def ac_college_allocate(slug):
     if not info:
         flash("Choose a bedspace in this college.", "danger")
         return redirect(back)
-    problem = _bed_rule_problem(a, info)
+    problem = _bed_rule_problem(a, info) or _accommodation_gate(c, a)
     if problem:
         flash(problem, "danger")
         return redirect(back)
+    _college_audit(c, "bed.allocated", "application %s bed %s" % (a["id"], request.form.get("bedspace_id")))
     _, err = db_insert("koja_accommodation_allocations", {"id": str(uuid.uuid4()), "college_id": c["id"],
                        "bedspace_id": request.form.get("bedspace_id"), "application_id": a["id"],
                        "status": "active", "created_at": utc_now()})
@@ -25490,13 +25552,14 @@ def ac_college_allocate(slug):
 @login_required
 def ac_college_release(slug, alloc_id):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c):
+    if not _college_can(c, 'rooms'):
         abort(403)
     al = first_row("koja_accommodation_allocations", {"id": alloc_id, "college_id": c["id"]})
     if not al:
         abort(404)
     if al.get("status") == "active":
         db_update("koja_accommodation_allocations", {"id": alloc_id}, {"status": "released", "released_at": utc_now()})
+    _college_audit(c, "bed.released", "allocation %s" % alloc_id)
     flash("Bedspace released.", "success")
     return redirect(url_for("ac_college_accommodation", slug=slug))
 
@@ -25521,6 +25584,9 @@ def ac_application_room(aid):
                 for b in r["beds"]:
                     if not b["alloc"] and not _bed_rule_problem(a, {"hostel": h["hostel"], "room": r["room"]}):
                         free.append({"id": b["id"], "label": "%s · Room %s · Bed %s" % (h["hostel"]["name"], r["room"]["room_code"], b["number"])})
+    gate = _accommodation_gate(c, a) if a.get("status") in ("accepted", "enrolled") else None
+    if gate:
+        free = []
     return _ac_page("Room", r'''
 <div class="card"><h2>Room</h2><p class="small">{{ c.name }}</p>
 {% if a.status not in ('accepted', 'enrolled') %}<p>Room booking opens once you accept your place.</p>
@@ -25529,10 +25595,10 @@ def ac_application_room(aid):
 <h3>{{ 'Change your room' if current_label else 'Choose a room' }}</h3>
 <p class="small">Hostels A to G are for women and H to M for men. Rooms 6, 7 and 16 are for union members. You only see beds you can take.</p>
 {% for f in free %}<form method="post" action="{{ url_for('ac_application_reserve', aid=a.id) }}" style="margin:6px 0">{{ csrf }}<input type="hidden" name="bedspace_id" value="{{ f.id }}"><button class="btn secondary" type="submit">{{ f.label }}</button></form>
-{% else %}<p class="small">No free bedspaces right now.</p>{% endfor %}
+{% else %}<p class="small">{{ gate or 'No free bedspaces right now.' }}</p>{% endfor %}
 {% endif %}
 <p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
-                    a=a, c=c, current_label=current_label, free=free, csrf_ok=True)
+                    a=a, c=c, current_label=current_label, free=free, gate=gate, csrf_ok=True)
 
 
 @app.route("/academic/application/<aid>/reserve", methods=["POST"])
@@ -25548,7 +25614,7 @@ def ac_application_reserve(aid):
     if not info:
         flash("That bedspace is not in this college.", "danger")
         return redirect(back)
-    problem = _bed_rule_problem(a, info)
+    problem = _bed_rule_problem(a, info) or _accommodation_gate(c, a)
     if problem:
         flash(problem, "danger")
         return redirect(back)
@@ -25565,6 +25631,7 @@ def ac_application_reserve(aid):
             db_update("koja_accommodation_allocations", {"id": old["id"]}, {"status": "active", "released_at": None})
         flash("That bedspace has just been taken. Please choose another.", "danger")
         return redirect(back)
+    _college_audit(c, "bed.reserved_by_student", "application %s bed %s" % (aid, bid))
     flash("Room reserved.", "success")
     return redirect(back)
 
@@ -32858,7 +32925,7 @@ def _mattress_qr_token(allocation):
 @login_required
 def ac_college_mattresses(slug):
     c = _college_by_slug(slug)
-    if not _college_is_owner(c): abort(404)
+    if not _college_can(c, 'stores'): abort(404)
     inventory = _mattress_inventory(c["id"])
     allocations = _ac_rows("koja_mattress_allocations", {"college_id": c["id"]}, order="created_at.desc", limit=1000)
     apps = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)}
@@ -32881,10 +32948,13 @@ def ac_college_mattresses(slug):
 @login_required
 def ac_college_mattress_stock(slug):
     c=_college_by_slug(slug)
-    if not _college_is_owner(c): abort(404)
+    if not _college_can(c, 'stores'): abort(404)
     qty=int(_ac_num(request.form.get("quantity"),0,0,100000)); cur=_mattress_inventory(c["id"])
     if cur: _,err=db_update("koja_mattress_inventory",{"id":cur["id"]},{"quantity":qty,"updated_at":utc_now(),"updated_by":_ac_uid()})
     else: _,err=db_insert("koja_mattress_inventory",{"id":str(uuid.uuid4()),"college_id":c["id"],"quantity":qty,"issued_quantity":0,"updated_at":utc_now(),"updated_by":_ac_uid()})
+    if not err:
+        _college_audit(c, "stores.stock_set", "quantity %d" % qty)
+        db_insert("koja_stores_transactions", {"id": str(uuid.uuid4()), "college_id": c["id"], "kind": "stock_set", "quantity": qty, "actor_user_id": _ac_uid() or None, "created_at": utc_now()})
     flash("Mattress stock saved." if not err else "Could not save stock; run the SQL migration first.","success" if not err else "danger")
     return redirect(url_for("ac_college_mattresses",slug=slug))
 
@@ -32892,7 +32962,7 @@ def ac_college_mattress_stock(slug):
 @login_required
 def ac_college_mattress_allocate(slug):
     c=_college_by_slug(slug)
-    if not _college_is_owner(c): abort(404)
+    if not _college_can(c, 'stores'): abort(404)
     a=first_row("koja_college_applications",{"id":request.form.get("application_id"),"college_id":c["id"]})
     if not _fin_student_ok(a) or not a.get("student_number"):
         flash("Select an accepted/enrolled student with a student number.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
@@ -32903,6 +32973,7 @@ def ac_college_mattress_allocate(slug):
     if existing and existing.get("status")!="cancelled":
         flash("This student already has a mattress allocation.","warning"); return redirect(url_for("ac_college_mattresses",slug=slug))
     _,err=db_insert("koja_mattress_allocations",{"id":str(uuid.uuid4()),"college_id":c["id"],"application_id":a["id"],"student_number":a["student_number"],"charge_id":ch["id"],"status":"allocated","qr_token":secrets.token_urlsafe(32),"created_at":utc_now()})
+    _college_audit(c, "mattress.allocated", "application %s" % a["id"])
     flash("Allocation created. Collection stays locked until the mattress charge is fully paid and verified." if not err else "Allocation failed; run the SQL migration.","success" if not err else "danger")
     return redirect(url_for("ac_college_mattresses",slug=slug))
 
@@ -32949,14 +33020,14 @@ def ac_college_mattress_qr_image(slug,allocation_id):
 @login_required
 def ac_college_mattress_scan(slug):
     c=_college_by_slug(slug)
-    if not _college_is_owner(c): abort(404)
+    if not _college_can(c, 'stores'): abort(404)
     return _ac_page("Stores scanning desk",r'''<div class="card"><h2>Stores Office — scan mattress QR</h2><p>Scan the QR with the device camera and open its link, or search by student number.</p><form method="get" action="{{ url_for('ac_college_mattress_scan_lookup',slug=c.slug) }}"><label>Student number<input name="q" required autofocus></label><button class="btn">Find student</button></form></div>''',c=c)
 
 @app.route("/academic/college/<slug>/mattresses/scan/find")
 @login_required
 def ac_college_mattress_scan_lookup(slug):
     c=_college_by_slug(slug)
-    if not _college_is_owner(c): abort(404)
+    if not _college_can(c, 'stores'): abort(404)
     q=clean(request.args.get("q"))[:200]
     al=first_row("koja_mattress_allocations",{"student_number":q,"college_id":c["id"]})
     if not al:
@@ -32970,7 +33041,7 @@ def ac_college_mattress_scan_lookup(slug):
 @login_required
 def ac_college_mattress_scan_token(slug,token):
     c=_college_by_slug(slug)
-    if not _college_is_owner(c): abort(404)
+    if not _college_can(c, 'stores'): abort(404)
     candidates=_ac_rows("koja_mattress_allocations",{"college_id":c["id"]},limit=5000)
     al=next((x for x in candidates if secrets.compare_digest(str(x.get("qr_token") or ""),str(token))),None)
     if not al: abort(404)
@@ -32986,7 +33057,7 @@ def ac_college_mattress_scan_token(slug,token):
 @login_required
 def ac_college_mattress_issue(slug,allocation_id):
     c=_college_by_slug(slug)
-    if not _college_is_owner(c): abort(404)
+    if not _college_can(c, 'stores'): abort(404)
     al=first_row("koja_mattress_allocations",{"id":allocation_id,"college_id":(c or {}).get("id")})
     if not c or not al: abort(404)
     if al.get("status")=="collected":
@@ -33005,8 +33076,315 @@ def ac_college_mattress_issue(slug,allocation_id):
         logger.error("Atomic mattress issue failed for %s: %s", allocation_id, err)
         flash("Mattress issue was not completed. Check stock, payment verification and migration status.", "danger")
     else:
+        _college_audit(c, "mattress.issued", "allocation %s student %s" % (allocation_id, al.get("student_number")))
         flash("Mattress issued and recorded successfully.", "success")
     return redirect(url_for("ac_college_mattresses",slug=slug))
+
+
+# ---- college operations: receipts, refunds, staff and departments, dashboard, audit, returns, exports ----
+COLLEGE_STAFF_DEPARTMENTS = ("accounts", "rooms", "stores")
+
+
+def _issue_receipt(c, p):
+    """Issues the official receipt for a verified payment, once. Returns the receipt number or None."""
+    existing = first_row("koja_college_receipts", {"payment_id": p["id"]})
+    if existing:
+        return existing.get("receipt_number")
+    year = datetime.now(timezone.utc).strftime("%Y")
+    for _ in range(3):
+        seq = len(_ac_rows("koja_college_receipts", {"college_id": c["id"]}, limit=5000)) + 1
+        number = "RCT-%s-%05d" % (year, seq)
+        _, err = db_insert("koja_college_receipts", {"id": str(uuid.uuid4()), "college_id": c["id"],
+                           "application_id": p["application_id"], "payment_id": p["id"], "receipt_number": number,
+                           "amount": round(float(p.get("amount") or 0), 2), "issued_by": _ac_uid() or None,
+                           "issued_at": utc_now()})
+        if not err:
+            return number
+    logger.error("Could not issue a receipt for payment %s", p.get("id"))
+    return None
+
+
+@app.route("/academic/payment/<pid>/receipt")
+@login_required
+def ac_payment_receipt(pid):
+    p = first_row("koja_college_payments", {"id": pid})
+    if not p:
+        abort(404)
+    a = first_row("koja_college_applications", {"id": p["application_id"]}) or {}
+    c = first_row("koja_colleges", {"id": p["college_id"]}) or {}
+    is_student = a.get("student_user_id") == _ac_uid()
+    if not is_student and not _college_can(c, "accounts"):
+        abort(404)
+    r = first_row("koja_college_receipts", {"payment_id": pid})
+    course = first_row("koja_college_courses", {"id": a["course_id"]}) if a.get("course_id") else None
+    ch = first_row("koja_college_charges", {"id": p["charge_id"]}) if p.get("charge_id") else None
+    return _ac_page("Receipt", r'''
+<div class="card" style="max-width:640px;margin:0 auto">
+{% if r %}
+  <div style="display:flex;gap:12px;align-items:center">{% if c.name and 'nkumbi' in c.name|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="" style="width:64px;height:64px;object-fit:contain">{% endif %}
+  <div><h2 style="margin:0">{{ c.name }}</h2><p class="small" style="margin:0">Official receipt</p></div></div>
+  <table style="width:100%;border-collapse:collapse;margin-top:12px">
+    <tr><td style="padding:6px 0"><strong>Receipt number</strong></td><td>{{ r.receipt_number }}</td></tr>
+    <tr><td style="padding:6px 0"><strong>Student</strong></td><td>{{ a.full_name }}</td></tr>
+    <tr><td style="padding:6px 0"><strong>Student number</strong></td><td>{{ a.student_number or '' }}</td></tr>
+    <tr><td style="padding:6px 0"><strong>Programme</strong></td><td>{{ course.title if course else '' }}</td></tr>
+    <tr><td style="padding:6px 0"><strong>Paid for</strong></td><td>{{ ch.description if ch else 'General fees' }}</td></tr>
+    <tr><td style="padding:6px 0"><strong>Method</strong></td><td>{{ p.method }} · ref {{ p.reference }}</td></tr>
+    <tr><td style="padding:6px 0"><strong>Amount</strong></td><td><strong>K{{ '%.2f' % r.amount }}</strong></td></tr>
+    <tr><td style="padding:6px 0"><strong>Date</strong></td><td>{{ (r.issued_at or '')[:10] }}</td></tr>
+  </table>
+  <p class="small">Verified by the college Accounts office.</p>
+  <p><button class="btn secondary" onclick="window.print()">Print receipt</button></p>
+{% else %}
+  <h2>Receipt not issued yet</h2><p>This payment has not been verified by Accounts yet, so no receipt exists.</p>
+{% endif %}
+</div>''', r=r, p=p, a=a, c=c, course=course, ch=ch)
+
+
+@app.route("/academic/college/<slug>/refund", methods=["POST"])
+@login_required
+def ac_college_refund(slug):
+    c = _college_by_slug(slug)
+    if not _college_can(c, "accounts"):
+        abort(403)
+    back = url_for("ac_college_finance", slug=slug)
+    a = first_row("koja_college_applications", {"id": request.form.get("application_id"), "college_id": c["id"]})
+    if not a:
+        flash("Choose a student in this college.", "danger")
+        return redirect(back)
+    amount = round(_ac_num(request.form.get("amount"), 0, 0, 1e9), 2)
+    reason = clean(request.form.get("reason"))[:200]
+    _, _, total, paid, _ = _fin_totals(a["id"])
+    if amount <= 0 or not reason:
+        flash("Enter the amount and the reason for the refund.", "danger")
+        return redirect(back)
+    if amount > paid:
+        flash("The refund (K%.2f) is more than the student has paid (K%.2f)." % (amount, paid), "danger")
+        return redirect(back)
+    ref = "RF-%s-%s" % (datetime.now(timezone.utc).strftime("%Y%m%d"), uuid.uuid4().hex[:6].upper())
+    _, err = db_insert("koja_college_refunds", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": a["id"],
+                       "amount": amount, "reason": reason, "reference": ref, "recorded_by": _ac_uid() or None,
+                       "created_at": utc_now()})
+    if err:
+        flash("Could not record the refund. Please try again.", "danger")
+        return redirect(back)
+    _college_audit(c, "refund.recorded", "%s K%.2f to %s: %s" % (ref, amount, a.get("student_number") or a["id"], reason))
+    flash("Refund %s recorded. The balance is updated." % ref, "success")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/dashboard")
+@login_required
+def ac_college_dashboard(slug):
+    c = _college_by_slug(slug)
+    if not _college_any_staff(c):
+        abort(404)
+    students = _college_students(c)
+    owed = 0.0
+    paid_up = 0
+    for a in students:
+        _, _, total, _, bal = _fin_totals(a["id"])
+        if total > 0 and bal <= 0:
+            paid_up += 1
+        elif bal > 0:
+            owed += bal
+    payments = _ac_rows("koja_college_payments", {"college_id": c["id"]}, limit=5000)
+    confirmed = round(sum(float(x.get("amount") or 0) for x in payments if x.get("status") == "verified"), 2)
+    pending = len([x for x in payments if x.get("status") == "pending"])
+    refunds = round(sum(float(x.get("amount") or 0) for x in _ac_rows("koja_college_refunds", {"college_id": c["id"]}, limit=5000)), 2)
+    tree = _college_beds(c)
+    total_beds = sum(len(r["beds"]) for h in tree for r in h["rooms"])
+    occupied = sum(1 for h in tree for r in h["rooms"] for b in r["beds"] if b["alloc"])
+    inv = _mattress_inventory(c["id"])
+    issued = len(_ac_rows("koja_mattress_issues", {"college_id": c["id"]}, limit=5000))
+    staff = _ac_rows("koja_college_staff", {"college_id": c["id"]}, order="created_at.asc", limit=200)
+    return _ac_page("Dashboard", r'''
+<div class="card"><h2>Management dashboard: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a></p></div>
+<div class="card"><h3>Overview</h3>
+<table style="width:100%;border-collapse:collapse">
+<tr><td style="padding:6px 0">Students (accepted or enrolled)</td><td align="right"><strong>{{ students|length }}</strong></td></tr>
+<tr><td style="padding:6px 0">Students fully paid</td><td align="right"><strong>{{ paid_up }}</strong></td></tr>
+<tr><td style="padding:6px 0">Payments confirmed (K)</td><td align="right"><strong>{{ '%.2f' % confirmed }}</strong></td></tr>
+<tr><td style="padding:6px 0">Payments waiting for verification</td><td align="right"><strong>{{ pending }}</strong></td></tr>
+<tr><td style="padding:6px 0">Refunds paid back (K)</td><td align="right"><strong>{{ '%.2f' % refunds }}</strong></td></tr>
+<tr><td style="padding:6px 0">Balances still owed (K)</td><td align="right"><strong>{{ '%.2f' % owed }}</strong></td></tr>
+<tr><td style="padding:6px 0">Bed spaces occupied</td><td align="right"><strong>{{ occupied }} of {{ total_beds }}</strong></td></tr>
+<tr><td style="padding:6px 0">Free bed spaces</td><td align="right"><strong>{{ total_beds - occupied }}</strong></td></tr>
+<tr><td style="padding:6px 0">Mattresses in stock</td><td align="right"><strong>{{ inv.get('quantity', 0) }}</strong></td></tr>
+<tr><td style="padding:6px 0">Mattresses issued (all time)</td><td align="right"><strong>{{ issued }}</strong></td></tr>
+</table></div>
+<div class="card"><h3>Reports (open in Excel)</h3>
+<p><a class="btn secondary" href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Student balances (CSV)</a>
+<a class="btn secondary" href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a>
+<a class="btn secondary" href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a></p>
+{% if is_owner %}<p><a class="btn secondary" href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>{% endif %}
+<p><a class="btn secondary" href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a></p>
+</div>
+{% if is_owner %}
+<div class="card"><h3>Department staff</h3>
+<p class="small">Give a staff member access to one department. Their account must already exist on KOJA (they sign up with the email you enter).</p>
+<table style="width:100%;border-collapse:collapse">
+{% for s in staff %}<tr style="border-top:1px solid #ddd"><td style="padding:6px 0">{{ s.email or s.user_id }}</td><td>{{ s.department }}</td>
+<td align="right"><form method="post" action="{{ url_for('ac_college_staff_remove', slug=c.slug, sid=s.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" type="submit">Remove</button></form></td></tr>
+{% else %}<tr><td class="small">No department staff yet.</td></tr>{% endfor %}
+</table>
+<form method="post" action="{{ url_for('ac_college_staff_add', slug=c.slug) }}" style="margin-top:12px">{{ csrf }}
+<label>Staff email<input name="email" type="email" required></label>
+<label>Department<select name="department"><option value="accounts">Accounts</option><option value="rooms">Rooms</option><option value="stores">Stores</option></select></label>
+<button class="btn" type="submit">Add staff</button></form></div>
+{% endif %}''', c=c, students=students, paid_up=paid_up, confirmed=confirmed, pending=pending, refunds=refunds,
+                    owed=owed, occupied=occupied, total_beds=total_beds, inv=inv or {}, issued=issued, staff=staff,
+                    is_owner=_college_is_owner(c), csrf_ok=True)
+
+
+@app.route("/academic/college/<slug>/staff", methods=["POST"])
+@login_required
+def ac_college_staff_add(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    dept = request.form.get("department")
+    user = find_user_by_email(request.form.get("email"))
+    if dept not in COLLEGE_STAFF_DEPARTMENTS:
+        flash("Choose a department.", "danger")
+    elif not user or not user.get("id"):
+        flash("No KOJA account uses that email yet. Ask the person to sign up first.", "danger")
+    else:
+        email = clean(request.form.get("email")).lower()
+        _, err = db_insert("koja_college_staff", {"id": str(uuid.uuid4()), "college_id": c["id"], "user_id": str(user["id"]),
+                           "email": email, "department": dept, "created_at": utc_now()})
+        if err:
+            flash("That person already has access to this department.", "info")
+        else:
+            _college_audit(c, "staff.added", "%s to %s" % (email, dept))
+            flash("Staff access added.", "success")
+    return redirect(url_for("ac_college_dashboard", slug=slug))
+
+
+@app.route("/academic/college/<slug>/staff/<sid>/remove", methods=["POST"])
+@login_required
+def ac_college_staff_remove(slug, sid):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    s = first_row("koja_college_staff", {"id": sid, "college_id": c["id"]})
+    if s:
+        db_delete("koja_college_staff", {"id": sid})
+        _college_audit(c, "staff.removed", "%s from %s" % (s.get("email"), s.get("department")))
+    flash("Staff access removed.", "success")
+    return redirect(url_for("ac_college_dashboard", slug=slug))
+
+
+@app.route("/academic/college/<slug>/audit")
+@login_required
+def ac_college_audit_log(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(404)
+    rows = _ac_rows("koja_college_audit", {"college_id": c["id"]}, order="created_at.desc", limit=300)
+    return _ac_page("Audit log", r'''
+<div class="card"><h2>Audit log: {{ c.name }}</h2><p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Back to dashboard</a></p>
+<table style="width:100%;border-collapse:collapse"><tr><th align="left">When</th><th align="left">Who</th><th align="left">Action</th><th align="left">Detail</th></tr>
+{% for r in rows %}<tr style="border-top:1px solid #ddd"><td class="small">{{ (r.created_at or '')[:16].replace('T', ' ') }}</td><td class="small">{{ r.actor_user_id or 'system' }}</td><td>{{ r.action }}</td><td class="small">{{ r.detail or '' }}</td></tr>
+{% else %}<tr><td colspan="4" class="small">Nothing recorded yet.</td></tr>{% endfor %}</table></div>''', c=c, rows=rows)
+
+
+@app.route("/academic/college/<slug>/mattresses/returns")
+@login_required
+def ac_college_mattress_returns(slug):
+    c = _college_by_slug(slug)
+    if not _college_can(c, "stores"):
+        abort(404)
+    allocs = _ac_rows("koja_mattress_allocations", {"college_id": c["id"], "status": "collected"}, order="collected_at.desc", limit=1000)
+    apps = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)}
+    rows = [{"al": al, "a": apps.get(al.get("application_id")) or {}} for al in allocs]
+    return _ac_page("Mattress returns", r'''
+<div class="card"><h2>Mattress returns: {{ c.name }}</h2>
+<p class="small">A returned mattress goes back into stock. The issue history is kept.</p>
+<p><a class="btn secondary" href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Back to mattress stores</a></p>
+<table style="width:100%;border-collapse:collapse"><tr><th align="left">Student number</th><th align="left">Name</th><th align="left">Collected</th><th></th></tr>
+{% for r in rows %}<tr style="border-top:1px solid #ddd"><td>{{ r.a.student_number or r.al.student_number }}</td><td>{{ r.a.full_name or '' }}</td><td class="small">{{ (r.al.collected_at or '')[:16].replace('T', ' ') }}</td>
+<td align="right"><form method="post" action="{{ url_for('ac_college_mattress_return', slug=c.slug, allocation_id=r.al.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" type="submit" onclick="return confirm('Confirm the mattress has been handed back?')">Return</button></form></td></tr>
+{% else %}<tr><td colspan="4" class="small">No collected mattresses to return.</td></tr>{% endfor %}</table></div>''', c=c, rows=rows, csrf_ok=True)
+
+
+@app.route("/academic/college/<slug>/mattresses/return/<allocation_id>", methods=["POST"])
+@login_required
+def ac_college_mattress_return(slug, allocation_id):
+    c = _college_by_slug(slug)
+    if not _college_can(c, "stores"):
+        abort(403)
+    al = first_row("koja_mattress_allocations", {"id": allocation_id, "college_id": (c or {}).get("id")})
+    if not al:
+        abort(404)
+    result, err = db_rpc("koja_return_mattress", {"p_allocation_id": allocation_id, "p_by": _ac_uid()})
+    if err:
+        logger.error("Mattress return failed for %s: %s", allocation_id, err)
+        flash("The return was not completed. Only a collected mattress can be returned.", "danger")
+    else:
+        _college_audit(c, "mattress.returned", "allocation %s student %s" % (allocation_id, al.get("student_number")))
+        flash("Mattress returned to stock.", "success")
+    return redirect(url_for("ac_college_mattress_returns", slug=slug))
+
+
+@app.route("/academic/college/<slug>/finance.csv")
+@login_required
+def ac_college_finance_csv(slug):
+    c = _college_by_slug(slug)
+    if not _college_can(c, "accounts"):
+        abort(404)
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Student number", "Name", "Programme", "Status", "Charged (K)", "Net paid (K)", "Balance (K)", "Account"])
+    courses = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
+    for a in _college_students(c):
+        _, _, total, paid, bal = _fin_totals(a["id"])
+        account = "PAID" if total > 0 and bal <= 0 else ("OWING" if bal > 0 else "NO CHARGES")
+        w.writerow([_college_csv_cell(v) for v in [a.get("student_number"), a.get("full_name"), courses.get(a.get("course_id"), ""),
+                    (a.get("status") or "").replace("_", " "), "%.2f" % total, "%.2f" % paid, "%.2f" % bal, account]])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="%s-balances.csv"' % (secure_filename(c.get("slug") or "college") or "college"),
+                             "Cache-Control": "private, no-store"})
+
+
+@app.route("/academic/college/<slug>/occupancy.csv")
+@login_required
+def ac_college_occupancy_csv(slug):
+    c = _college_by_slug(slug)
+    if not _college_can(c, "rooms"):
+        abort(404)
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Hostel", "Room", "Bed", "Occupied", "Student number", "Student name"])
+    apps = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)}
+    for h in _college_beds(c):
+        for r in h["rooms"]:
+            for b in r["beds"]:
+                holder = apps.get((b["alloc"] or {}).get("application_id")) or {}
+                w.writerow([_college_csv_cell(v) for v in [h["hostel"]["name"], r["room"]["room_code"], b["number"],
+                            "yes" if b["alloc"] else "no", holder.get("student_number") or "", b["occupant"] or ""]])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="%s-occupancy.csv"' % (secure_filename(c.get("slug") or "college") or "college"),
+                             "Cache-Control": "private, no-store"})
+
+
+@app.route("/academic/college/<slug>/stores.csv")
+@login_required
+def ac_college_stores_csv(slug):
+    c = _college_by_slug(slug)
+    if not _college_can(c, "stores"):
+        abort(404)
+    rows = _ac_rows("koja_stores_transactions", {"college_id": c["id"]}, order="created_at.desc", limit=5000)
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["When", "Type", "Quantity", "Student number", "By"])
+    for r in rows:
+        w.writerow([_college_csv_cell(v) for v in [(r.get("created_at") or "")[:16].replace("T", " "), r.get("kind"),
+                    r.get("quantity"), r.get("student_number"), r.get("actor_user_id")]])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="%s-stores.csv"' % (secure_filename(c.get("slug") or "college") or "college"),
+                             "Cache-Control": "private, no-store"})
 
 
 if __name__=="__main__":
