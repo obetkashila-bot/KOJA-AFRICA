@@ -23550,15 +23550,16 @@ def ac_college_new():
 def ac_college_view(slug):
     c = _college_by_slug(slug)
     uid = _ac_uid()
-    is_owner = bool(c and uid and c.get("owner_user_id") == uid) or bool(c and (current_user() or {}).get("is_admin"))
+    is_real_owner = bool(c and uid and c.get("owner_user_id") == uid)
     is_admin = bool((current_user() or {}).get("is_admin"))
+    is_owner = is_real_owner or (bool(c) and is_admin)
     if not c or (c.get("status") != "verified" and not is_owner and not is_admin):
         abort(404)
     seed_err = _college_seed_programmes(c) if is_owner or uid else None
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
     enrolments = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=500) if is_owner else []
     mine_ids = set()
-    if uid and not is_owner:
+    if uid and not is_real_owner:
         mine_ids = {e.get("course_id") for e in _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": uid}, limit=500)}
     return _ac_page(c.get("name") or "College", r'''
 <div class="card">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:120px;display:block;margin:0 auto 10px"> {% endif %}<h2>{{ c.name }}</h2>
@@ -23566,12 +23567,12 @@ def ac_college_view(slug):
 {% if c.about %}<p>{{ c.about }}</p>{% endif %}
 {% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}
 </div>
-<div class="card"><h3>Courses</h3>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
+<div class="card"><h3>Courses</h3>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
 {% for k in courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
 {% if k.description %}<p class="small">{{ k.description }}</p>{% endif %}
 {% if is_owner %}<form method="post" action="{{ url_for('ac_course_set_code', cid=k.id) }}" class="small">{{ csrf }}<label>Course code (2 digits) <input name="course_code" value="{{ k.course_code or '' }}" maxlength="2" style="width:70px"></label> <button class="btn secondary" type="submit">Save code</button></form>{% endif %}
-{% if not is_owner and not user %}<p><a class="btn" href="{{ url_for('login', next=request.path) }}">Sign in to apply</a></p>{% endif %}{% if user and not is_owner %}
+{% if not is_real_owner and not user %}<p><a class="btn" href="{{ url_for('login', next=request.path) }}">Sign in to apply</a></p>{% endif %}{% if user and not is_real_owner %}
   {% if k.id in mine_ids %}<p class="small">You have an application. <a href="{{ url_for('ac_my_applications') }}">See your applications</a></p>
   {% else %}<a class="btn" href="{{ url_for('ac_college_apply', slug=c.slug, cid=k.id) }}">Apply for this course</a>{% endif %}
 {% endif %}
@@ -23590,7 +23591,7 @@ def ac_college_view(slug):
 <p class="small">{{ enrolments|length }} application(s) so far.</p>
 <p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a></p></div>
 {% endif %}''',
-                    c=c, courses=courses, is_owner=is_owner, enrolments=enrolments, mine_ids=mine_ids, user=current_user(), seed_err=seed_err)
+                    c=c, courses=courses, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, user=current_user(), seed_err=seed_err)
 
 
 def _course_code_2(v):
