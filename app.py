@@ -298,7 +298,7 @@ def first_nonempty(*values):
 # SUPABASE REST
 # ============================================================
 
-def db_select(table, filters=None, select="*", order=None, limit=None):
+def db_select(table, filters=None, select="*", order=None, limit=None, offset=None):
     if not supabase_configured():
         logger.error("Supabase is not configured.")
         return []
@@ -317,6 +317,8 @@ def db_select(table, filters=None, select="*", order=None, limit=None):
         params["order"] = order
     if limit:
         params["limit"] = str(limit)
+    if offset:
+        params["offset"] = str(offset)
 
     try:
         r = _HTTP.get(
@@ -10940,7 +10942,7 @@ def admin_colleges():
     rows = _ac_rows("koja_colleges", order="created_at.desc", limit=500)
     counts = {}
     for c in rows:
-        apps = _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)
+        apps = _ac_rows_all("koja_college_applications", {"college_id": c["id"]})
         counts[c["id"]] = len([a for a in apps if a.get("status") != "draft"])
     return _ac_page("Colleges (admin)", r'''
 <div class="card"><h2>Colleges</h2><p class="small">Verify a college to show it to students. Suspend it to hide it again.</p>
@@ -22357,6 +22359,36 @@ def _ac_rows(table, filters=None, order=None, limit=200):
         return []
 
 
+AC_PAGE_SIZE = 1000
+
+
+def _ac_rows_all(table, filters=None, order=None, max_rows=200000):
+    """Reads every matching row, one page at a time. Supabase returns at most 1000 rows per request,
+    so a large college needs paging or its lists would be silently cut short."""
+    out, offset = [], 0
+    order = order or "id.asc"
+    while offset < max_rows:
+        try:
+            page = db_select(table, filters=filters or {}, order=order, limit=AC_PAGE_SIZE, offset=offset) or []
+        except Exception as exc:
+            logger.warning("KOJA ACADEMIC table %s unavailable: %s", table, exc)
+            break
+        out.extend(page)
+        if len(page) < AC_PAGE_SIZE:
+            break
+        offset += AC_PAGE_SIZE
+    return out
+
+
+def _ac_rows_in(table, column, ids, order=None):
+    """Reads rows whose column is in a list of ids, in chunks so the request stays short."""
+    ids = [str(i) for i in ids if i]
+    out = []
+    for start in range(0, len(ids), 100):
+        out.extend(_ac_rows_all(table, {column: "in.(%s)" % ",".join(ids[start:start + 100])}, order=order))
+    return out
+
+
 def _ac_teacher_for_user(uid=None):
     return first_row("koja_academic_teachers", {"user_id": uid or _ac_uid()})
 
@@ -23765,7 +23797,7 @@ def _college_submit_problem(c, aid, v, docs):
     if missing:
         return "Please add: " + ", ".join(missing) + "."
     nrc = _college_norm_id(v["nrc_or_passport"])
-    for o in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000):
+    for o in _ac_rows_all("koja_college_applications", {"college_id": c["id"]}):
         if o.get("id") != aid and o.get("status") not in ("draft", "rejected", "declined") \
                 and nrc and _college_norm_id(o.get("nrc_or_passport")) == nrc:
             return "This NRC or passport already has an application to this college."
@@ -24122,6 +24154,41 @@ def ac_application_respond(aid):
     return redirect(url_for("ac_application_view", aid=aid))
 
 
+def _sync_mattress_allocations(c, only_app_id=None):
+    """Creates a mattress allocation, with its QR token, for each enrolled student who has a mattress charge
+    and no live allocation. Runs when a student is enrolled, when a mattress charge is added, and on the stores page."""
+    if only_app_id:
+        found = first_row("koja_college_applications", {"id": only_app_id, "college_id": c["id"]})
+        apps = [found] if found else []
+    else:
+        apps = _ac_rows_all("koja_college_applications", {"college_id": c["id"], "status": "enrolled"})
+    apps = [a for a in apps if a.get("status") == "enrolled" and a.get("student_number")]
+    if not apps:
+        return 0
+    charges = [x for x in _ac_rows_all("koja_college_charges", {"college_id": c["id"]}) if "mattress" in (x.get("description") or "").lower()]
+    if not charges:
+        return 0
+    charge_by_app = {}
+    for ch in sorted(charges, key=lambda x: str(x.get("created_at") or "")):
+        charge_by_app.setdefault(ch["application_id"], ch)
+    live = {x["application_id"] for x in _ac_rows_all("koja_mattress_allocations", {"college_id": c["id"]}) if x.get("status") != "cancelled"}
+    new = []
+    for a in apps:
+        ch = charge_by_app.get(a["id"])
+        if not ch or a["id"] in live:
+            continue
+        new.append({"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": a["id"], "student_number": a["student_number"],
+                    "charge_id": ch["id"], "status": "allocated", "qr_token": secrets.token_urlsafe(32), "created_at": utc_now()})
+    for i in range(0, len(new), 100):
+        _, err = db_insert("koja_mattress_allocations", new[i:i + 100], returning="minimal")
+        if err:
+            logger.error("Mattress auto-allocation failed for college %s: %s", c.get("id"), err)
+            break
+    if new:
+        _college_audit(c, "mattress.auto_allocated", "%d student(s) with a QR pass created" % len(new))
+    return len(new)
+
+
 @app.route("/academic/application/<aid>/decide", methods=["POST"])
 @login_required
 def ac_application_decide(aid):
@@ -24140,6 +24207,8 @@ def ac_application_decide(aid):
         intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
         updates["student_number"] = _college_student_number(c, course, intake)
     db_update("koja_college_applications", {"id": aid}, updates)
+    if status == "enrolled":
+        _sync_mattress_allocations(c, only_app_id=aid)
     if status == "rejected":
         _release_beds(aid)
     flash("Decision saved.", "success")
@@ -24376,7 +24445,7 @@ def ac_svc_timetable_manage(slug):
                                "lecturer": clean(request.form.get("lecturer"))[:120] or None, "created_at": utc_now()})
             flash("Timetable slot added." if not err else "Could not add the slot.", "success" if not err else "danger")
         return redirect(url_for("ac_svc_timetable_manage", slug=slug))
-    slots = _ac_rows("koja_college_timetable", {"college_id": c["id"]}, order="created_at.asc", limit=2000)
+    slots = _ac_rows_all("koja_college_timetable", {"college_id": c["id"]}, order="created_at.asc")
     names = {k["id"]: k["title"] for k in courses}
     return _ac_page("Timetable", r'''
 <div class="card"><h2>Timetable: {{ c.name }}</h2><p class="small"><a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a></p></div>
@@ -24557,15 +24626,15 @@ def _ca_components(course_id, module):
 
 
 def _ca_module_students(c, course_id, module):
-    reg_ids = {r["application_id"] for r in _ac_rows("koja_college_registrations", {"college_id": c["id"], "module": module}, limit=5000)}
-    apps = _ac_rows("koja_college_applications", {"college_id": c["id"], "course_id": course_id}, order="created_at.asc", limit=5000)
+    reg_ids = {r["application_id"] for r in _ac_rows_all("koja_college_registrations", {"college_id": c["id"], "module": module})}
+    apps = _ac_rows_all("koja_college_applications", {"college_id": c["id"], "course_id": course_id}, order="created_at.asc")
     return [a for a in apps if a.get("id") in reg_ids and a.get("status") in ("accepted", "enrolled")]
 
 
 def _ca_score_map(components):
     scores = {}
     for comp in components:
-        for s in _ac_rows("koja_college_ca_scores", {"component_id": comp["id"]}, limit=5000):
+        for s in _ac_rows_all("koja_college_ca_scores", {"component_id": comp["id"]}):
             scores[(comp["id"], s["application_id"])] = float(s["raw"])
     return scores
 
@@ -25019,7 +25088,7 @@ def ac_college_admissions(slug):
     c = _college_by_slug(slug)
     if not _college_is_owner(c):
         abort(404)
-    all_rows = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=2000)
+    all_rows = _ac_rows_all("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc")
     drafts = len([x for x in all_rows if x.get("status") == "draft"])
     everything = [x for x in all_rows if x.get("status") != "draft"]
     status = clean(request.args.get("status"))
@@ -25079,7 +25148,7 @@ def ac_college_admissions_csv(slug):
     c = _college_by_slug(slug)
     if not _college_is_owner(c):
         abort(404)
-    rows = [x for x in _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.asc", limit=5000) if x.get("status") != "draft"]
+    rows = [x for x in _ac_rows_all("koja_college_applications", {"college_id": c["id"]}, order="created_at.asc") if x.get("status") != "draft"]
     courses = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
     intakes = {i["id"]: i["name"] for i in _ac_rows("koja_college_intakes", {"college_id": c["id"]}, limit=100)}
     out = io.StringIO()
@@ -25107,6 +25176,27 @@ def _fin_totals(aid):
     # "paid" is the net amount: verified payments minus any refunds paid back to the student.
     paid = round(sum(float(x.get("amount") or 0) for x in payments if x.get("status") == "verified") - refunded, 2)
     return charges, payments, total, paid, round(total - paid, 2)
+
+
+def _college_fin_map(c):
+    """Every student's charged, net paid and balance, from three bulk reads (not two queries per student)."""
+    tot, pay, ref = {}, {}, {}
+    for x in _ac_rows_all("koja_college_charges", {"college_id": c["id"]}):
+        tot[x["application_id"]] = tot.get(x["application_id"], 0) + float(x.get("amount") or 0)
+    for x in _ac_rows_all("koja_college_payments", {"college_id": c["id"]}):
+        if x.get("status") == "verified":
+            pay[x["application_id"]] = pay.get(x["application_id"], 0) + float(x.get("amount") or 0)
+    for x in _ac_rows_all("koja_college_refunds", {"college_id": c["id"]}):
+        ref[x["application_id"]] = ref.get(x["application_id"], 0) + float(x.get("amount") or 0)
+    out = {}
+    for aid in set(tot) | set(pay) | set(ref):
+        t = round(tot.get(aid, 0), 2)
+        p = round(pay.get(aid, 0) - ref.get(aid, 0), 2)
+        out[aid] = {"total": t, "paid": p, "bal": round(t - p, 2)}
+    return out
+
+
+_ZERO_FIN = {"total": 0, "paid": 0, "bal": 0}
 
 
 def _college_can(c, dept):
@@ -25148,7 +25238,7 @@ def _accommodation_gate(c, a):
 
 
 def _college_students(c, statuses=("accepted", "enrolled")):
-    return [a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.asc", limit=2000)
+    return [a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]}, order="created_at.asc")
             if a.get("status") in statuses]
 
 
@@ -25175,20 +25265,28 @@ def _bed_rule_problem(a, info):
 
 
 def _college_beds(c):
-    """Every bedspace in the college with its label and any active occupant."""
+    """Every bedspace in the college with its label and any active occupant. Loaded in bulk, not one query per bed."""
     names = {a["id"]: a.get("full_name") for a in _college_students(c, ("accepted", "enrolled", "draft", "submitted", "under_review", "offered", "declined", "rejected"))}
-    active = {x["bedspace_id"]: x for x in _ac_rows("koja_accommodation_allocations", {"college_id": c["id"], "status": "active"}, limit=5000)}
+    active = {x["bedspace_id"]: x for x in _ac_rows_all("koja_accommodation_allocations", {"college_id": c["id"], "status": "active"})}
+    hostels = _ac_rows("koja_accommodation_hostels", {"college_id": c["id"]}, order="name.asc", limit=200)
+    rooms = _ac_rows_in("koja_accommodation_rooms", "hostel_id", [h["id"] for h in hostels])
+    beds = _ac_rows_in("koja_accommodation_bedspaces", "room_id", [r["id"] for r in rooms])
+    rooms_by_hostel, beds_by_room = {}, {}
+    for r in rooms:
+        rooms_by_hostel.setdefault(r["hostel_id"], []).append(r)
+    for b in beds:
+        beds_by_room.setdefault(b["room_id"], []).append(b)
     tree = []
-    for h in _ac_rows("koja_accommodation_hostels", {"college_id": c["id"]}, order="name.asc", limit=200):
-        rooms = []
-        for r in _ac_rows("koja_accommodation_rooms", {"hostel_id": h["id"]}, order="room_code.asc", limit=500):
-            beds = []
-            for b in _ac_rows("koja_accommodation_bedspaces", {"room_id": r["id"]}, order="number.asc", limit=500):
+    for h in hostels:
+        rlist = []
+        for r in sorted(rooms_by_hostel.get(h["id"], []), key=lambda x: str(x.get("room_code") or "")):
+            blist = []
+            for b in sorted(beds_by_room.get(r["id"], []), key=lambda x: int(x.get("number") or 0)):
                 al = active.get(b["id"])
-                beds.append({"id": b["id"], "number": b["number"], "alloc": al,
-                             "occupant": names.get(al["application_id"], "Student") if al else None})
-            rooms.append({"room": r, "beds": beds})
-        tree.append({"hostel": h, "rooms": rooms})
+                blist.append({"id": b["id"], "number": b["number"], "alloc": al,
+                              "occupant": names.get(al["application_id"], "Student") if al else None})
+            rlist.append({"room": r, "beds": blist})
+        tree.append({"hostel": h, "rooms": rlist})
     return tree
 
 
@@ -25199,10 +25297,11 @@ def ac_college_finance(slug):
     if not _college_can(c, 'accounts'):
         abort(404)
     students = _college_students(c)
+    fm = _college_fin_map(c)
     rows = []
     for a in students:
-        _, _, total, paid, bal = _fin_totals(a["id"])
-        rows.append({"a": a, "total": total, "paid": paid, "bal": bal})
+        f = fm.get(a["id"], _ZERO_FIN)
+        rows.append({"a": a, "total": f["total"], "paid": f["paid"], "bal": f["bal"]})
     names = {a["id"]: a.get("full_name") for a in students}
     pending = _ac_rows("koja_college_payments", {"college_id": c["id"], "status": "pending"}, order="created_at.asc", limit=500)
     return _ac_page("Fees and payments", r'''
@@ -25255,6 +25354,8 @@ def ac_college_charge_add(slug):
                        "description": desc, "amount": round(amount, 2), "currency": "ZMW", "created_at": utc_now()})
     if not err:
         _college_audit(c, "charge.added", "%s K%.2f to %s" % (desc, amount, a.get("student_number") or a["id"]))
+        if "mattress" in desc.lower():
+            _sync_mattress_allocations(c, only_app_id=a["id"])
     flash("Charge added." if not err else "Could not add the charge.", "success" if not err else "danger")
     return redirect(back)
 
@@ -25379,7 +25480,7 @@ def ac_college_accommodation(slug):
         abort(404)
     tree = _college_beds(c)
     students = [a for a in _college_students(c, ("enrolled",))]
-    seated = {x["application_id"] for x in _ac_rows("koja_accommodation_allocations", {"college_id": c["id"], "status": "active"}, limit=5000)}
+    seated = {x["application_id"] for x in _ac_rows_all("koja_accommodation_allocations", {"college_id": c["id"], "status": "active"})}
     free_students = [a for a in students if a["id"] not in seated]
     free_beds = [(h["hostel"]["name"], r["room"]["room_code"], b) for h in tree for r in h["rooms"] for b in r["beds"] if not b["alloc"]]
     return _ac_page("Hostels and rooms", r'''
@@ -32926,9 +33027,10 @@ def _mattress_qr_token(allocation):
 def ac_college_mattresses(slug):
     c = _college_by_slug(slug)
     if not _college_can(c, 'stores'): abort(404)
+    _sync_mattress_allocations(c)
     inventory = _mattress_inventory(c["id"])
     allocations = _ac_rows("koja_mattress_allocations", {"college_id": c["id"]}, order="created_at.desc", limit=1000)
-    apps = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)}
+    apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
     rows=[]
     for al in allocations:
         a=apps.get(al.get("application_id")) or {}; ch=_mattress_charge(a.get("id"),c["id"]) if a else None
@@ -33031,8 +33133,7 @@ def ac_college_mattress_scan_lookup(slug):
     q=clean(request.args.get("q"))[:200]
     al=first_row("koja_mattress_allocations",{"student_number":q,"college_id":c["id"]})
     if not al:
-        candidates=_ac_rows("koja_mattress_allocations",{"college_id":c["id"]},limit=5000)
-        al=next((x for x in candidates if secrets.compare_digest(str(x.get("qr_token") or ""),q)),None)
+        al=first_row("koja_mattress_allocations",{"qr_token":q,"college_id":c["id"]}) if q else None
     if not al:
         flash("No allocation matched that student number or QR token.","warning"); return redirect(url_for("ac_college_mattress_scan",slug=slug))
     return redirect(url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "invalid"))
@@ -33042,8 +33143,7 @@ def ac_college_mattress_scan_lookup(slug):
 def ac_college_mattress_scan_token(slug,token):
     c=_college_by_slug(slug)
     if not _college_can(c, 'stores'): abort(404)
-    candidates=_ac_rows("koja_mattress_allocations",{"college_id":c["id"]},limit=5000)
-    al=next((x for x in candidates if secrets.compare_digest(str(x.get("qr_token") or ""),str(token))),None)
+    al=first_row("koja_mattress_allocations",{"qr_token":str(token),"college_id":c["id"]})
     if not al: abort(404)
     a=first_row("koja_college_applications",{"id":al["application_id"],"college_id":c["id"]})
     if not a: abort(404)
@@ -33051,6 +33151,7 @@ def ac_college_mattress_scan_token(slug,token):
     amount=float(ch.get("amount") or 0) if ch else 0; eligible=bool(ch and amount>0 and paid>=amount)
     stock=int((_mattress_inventory(c["id"]) or {}).get("quantity") or 0)
     return _ac_page("Verify mattress collection",r'''<div class="card"><h2>Student verification</h2><p><strong>{{ a.full_name }}</strong></p><p>Student number: <strong>{{ a.student_number }}</strong></p><p>Payment verified K{{ '%.2f' % paid }} / K{{ '%.2f' % amount }}</p><p>Allocation: <strong>{{ al.status }}</strong></p>
+{% if al.status=='allocated' %}<form method="post" action="{{ url_for('ac_college_mattress_cancel',slug=c.slug,allocation_id=al.id) }}" style="margin-bottom:10px">{{ csrf }}<button class="btn secondary" type="submit">Cancel this allocation</button></form>{% endif %}
 {% if eligible and al.status=='allocated' and stock>0 %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=al.id) }}">{{ csrf }}<button class="btn">Confirm physical handover and issue mattress</button></form>{% elif al.status=='collected' %}<strong>Already collected — duplicate issue blocked.</strong>{% elif not eligible %}<strong>Blocked: mattress charge not fully paid and verified.</strong>{% else %}<strong>Blocked: no mattress stock available.</strong>{% endif %}</div>''',c=c,a=a,al=al,paid=paid,amount=amount,eligible=eligible,stock=stock)
 
 @app.route("/academic/college/<slug>/mattresses/issue/<allocation_id>",methods=["POST"])
@@ -33092,7 +33193,7 @@ def _issue_receipt(c, p):
         return existing.get("receipt_number")
     year = datetime.now(timezone.utc).strftime("%Y")
     for _ in range(3):
-        seq = len(_ac_rows("koja_college_receipts", {"college_id": c["id"]}, limit=5000)) + 1
+        seq = len(_ac_rows_all("koja_college_receipts", {"college_id": c["id"]})) + 1
         number = "RCT-%s-%05d" % (year, seq)
         _, err = db_insert("koja_college_receipts", {"id": str(uuid.uuid4()), "college_id": c["id"],
                            "application_id": p["application_id"], "payment_id": p["id"], "receipt_number": number,
@@ -33180,23 +33281,25 @@ def ac_college_dashboard(slug):
     if not _college_any_staff(c):
         abort(404)
     students = _college_students(c)
+    fm = _college_fin_map(c)
     owed = 0.0
     paid_up = 0
     for a in students:
-        _, _, total, _, bal = _fin_totals(a["id"])
+        f = fm.get(a["id"], _ZERO_FIN)
+        total, bal = f["total"], f["bal"]
         if total > 0 and bal <= 0:
             paid_up += 1
         elif bal > 0:
             owed += bal
-    payments = _ac_rows("koja_college_payments", {"college_id": c["id"]}, limit=5000)
+    payments = _ac_rows_all("koja_college_payments", {"college_id": c["id"]})
     confirmed = round(sum(float(x.get("amount") or 0) for x in payments if x.get("status") == "verified"), 2)
     pending = len([x for x in payments if x.get("status") == "pending"])
-    refunds = round(sum(float(x.get("amount") or 0) for x in _ac_rows("koja_college_refunds", {"college_id": c["id"]}, limit=5000)), 2)
+    refunds = round(sum(float(x.get("amount") or 0) for x in _ac_rows_all("koja_college_refunds", {"college_id": c["id"]})), 2)
     tree = _college_beds(c)
     total_beds = sum(len(r["beds"]) for h in tree for r in h["rooms"])
     occupied = sum(1 for h in tree for r in h["rooms"] for b in r["beds"] if b["alloc"])
     inv = _mattress_inventory(c["id"])
-    issued = len(_ac_rows("koja_mattress_issues", {"college_id": c["id"]}, limit=5000))
+    issued = len(_ac_rows_all("koja_mattress_issues", {"college_id": c["id"]}))
     staff = _ac_rows("koja_college_staff", {"college_id": c["id"]}, order="created_at.asc", limit=200)
     return _ac_page("Dashboard", r'''
 <div class="card"><h2>Management dashboard: {{ c.name }}</h2>
@@ -33297,7 +33400,7 @@ def ac_college_mattress_returns(slug):
     if not _college_can(c, "stores"):
         abort(404)
     allocs = _ac_rows("koja_mattress_allocations", {"college_id": c["id"], "status": "collected"}, order="collected_at.desc", limit=1000)
-    apps = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)}
+    apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
     rows = [{"al": al, "a": apps.get(al.get("application_id")) or {}} for al in allocs]
     return _ac_page("Mattress returns", r'''
 <div class="card"><h2>Mattress returns: {{ c.name }}</h2>
@@ -33328,6 +33431,27 @@ def ac_college_mattress_return(slug, allocation_id):
     return redirect(url_for("ac_college_mattress_returns", slug=slug))
 
 
+@app.route("/academic/college/<slug>/mattresses/cancel/<allocation_id>", methods=["POST"])
+@login_required
+def ac_college_mattress_cancel(slug, allocation_id):
+    c = _college_by_slug(slug)
+    if not _college_can(c, "stores"):
+        abort(403)
+    al = first_row("koja_mattress_allocations", {"id": allocation_id, "college_id": (c or {}).get("id")})
+    if not al:
+        abort(404)
+    if al.get("status") != "allocated":
+        flash("Only a mattress that has not been collected can be cancelled.", "danger")
+    else:
+        _, err = db_update("koja_mattress_allocations", {"id": allocation_id, "status": "allocated"}, {"status": "cancelled"})
+        if err:
+            flash("Could not cancel the allocation. Please try again.", "danger")
+        else:
+            _college_audit(c, "mattress.cancelled", "allocation %s student %s" % (allocation_id, al.get("student_number")))
+            flash("Allocation cancelled. The student can be allocated again.", "success")
+    return redirect(url_for("ac_college_mattresses", slug=slug))
+
+
 @app.route("/academic/college/<slug>/finance.csv")
 @login_required
 def ac_college_finance_csv(slug):
@@ -33338,8 +33462,10 @@ def ac_college_finance_csv(slug):
     w = csv.writer(out)
     w.writerow(["Student number", "Name", "Programme", "Status", "Charged (K)", "Net paid (K)", "Balance (K)", "Account"])
     courses = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
+    fm = _college_fin_map(c)
     for a in _college_students(c):
-        _, _, total, paid, bal = _fin_totals(a["id"])
+        f = fm.get(a["id"], _ZERO_FIN)
+        total, paid, bal = f["total"], f["paid"], f["bal"]
         account = "PAID" if total > 0 and bal <= 0 else ("OWING" if bal > 0 else "NO CHARGES")
         w.writerow([_college_csv_cell(v) for v in [a.get("student_number"), a.get("full_name"), courses.get(a.get("course_id"), ""),
                     (a.get("status") or "").replace("_", " "), "%.2f" % total, "%.2f" % paid, "%.2f" % bal, account]])
@@ -33357,7 +33483,7 @@ def ac_college_occupancy_csv(slug):
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(["Hostel", "Room", "Bed", "Occupied", "Student number", "Student name"])
-    apps = {a["id"]: a for a in _ac_rows("koja_college_applications", {"college_id": c["id"]}, limit=5000)}
+    apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
     for h in _college_beds(c):
         for r in h["rooms"]:
             for b in r["beds"]:
@@ -33375,7 +33501,7 @@ def ac_college_stores_csv(slug):
     c = _college_by_slug(slug)
     if not _college_can(c, "stores"):
         abort(404)
-    rows = _ac_rows("koja_stores_transactions", {"college_id": c["id"]}, order="created_at.desc", limit=5000)
+    rows = _ac_rows_all("koja_stores_transactions", {"college_id": c["id"]}, order="created_at.desc")
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(["When", "Type", "Quantity", "Student number", "By"])
