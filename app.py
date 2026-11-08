@@ -30,7 +30,7 @@ _HTTP.mount('http://', _HTTP_ADAPTER)
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, jsonify, abort, Response, stream_with_context
+    render_template_string, flash, send_file, jsonify, abort, Response, stream_with_context, g
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -22396,6 +22396,10 @@ def _ac_teacher_for_user(uid=None):
 def _ac_page(title, tpl, **ctx):
     ctx.setdefault("csrf", Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
     ctx.setdefault("money", market_money)
+    portal_app = g.get("portal_app")
+    if portal_app is not None:
+        ctx.setdefault("portal_menu", _portal_menu_html(portal_app))
+        tpl = PORTAL_SHELL_CSS + '<div class="portal"><nav class="portal-menu">{{ portal_menu }}</nav><div>' + tpl + '</div></div>'
     return render_page(title, tpl, **ctx)
 
 
@@ -24384,14 +24388,62 @@ def ac_svc_helpdesk(aid):
                     can_use=_svc_can_use(a), categories=HELPDESK_CATEGORIES)
 
 
+PORTAL_SHELL_CSS = """
+<style>
+  .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
+  .portal-menu{display:flex;flex-direction:column;gap:6px}
+  .portal-menu a,.portal-menu span{display:block;padding:9px 12px;border:1px solid #ccc;border-radius:6px;text-decoration:none;color:#111 !important;background:#fff !important}
+  .portal-menu a:hover{background:#eef3ff !important}
+  .portal-menu .off{color:#666 !important;background:#f4f4f4 !important;cursor:default}
+  .portal-menu .off small{display:block;font-size:11px}
+  @media (max-width:760px){ .portal{grid-template-columns:1fr} }
+</style>
+"""
+
+
+def _portal_menu_html(a):
+    """The student services menu, the same one the portal Home page shows."""
+    aid = a["id"]
+    can_use = a.get("status") in ("accepted", "enrolled")
+    items = [
+        ("Home", url_for("ac_student_portal", aid=aid), True, ""),
+        ("Apply for Accommodation", url_for("ac_application_room", aid=aid), can_use, "Opens once you accept your place"),
+        ("Helpdesk Inbox", url_for("ac_svc_helpdesk", aid=aid) + "#inbox", True, ""),
+        ("Helpdesk Support", url_for("ac_svc_helpdesk", aid=aid) + "#support", True, ""),
+        ("Personal Information", url_for("ac_application_view", aid=aid), True, ""),
+        ("View CA", url_for("ac_svc_ca", aid=aid), True, ""),
+        ("Grades", url_for("ac_svc_grades", aid=aid), True, ""),
+        ("Payments", url_for("ac_application_money", aid=aid) + "#payments", True, ""),
+        ("Payment Options", url_for("ac_application_money", aid=aid) + "#payment-options", True, ""),
+        ("Timetable", url_for("ac_svc_timetable", aid=aid), True, ""),
+        ("Course Evaluation", url_for("ac_svc_evaluation", aid=aid), True, ""),
+        ("Course registration", url_for("ac_svc_registration", aid=aid), True, ""),
+        ("Print Exam Docket", url_for("ac_svc_docket", aid=aid), True, ""),
+        ("Mattress collection", url_for("ac_application_mattress", aid=aid), True, ""),
+        ("Change Password", url_for("ac_change_password"), True, ""),
+        ("Logout", url_for("logout"), True, ""),
+    ]
+    out = []
+    for label, href, on, note in items:
+        if on:
+            out.append('<a href="%s">%s</a>' % (escape(href), escape(label)))
+        else:
+            out.append('<span class="off">%s<small>%s</small></span>' % (escape(label), escape(note)))
+    return Markup("".join(out))
+
+
 def _svc_student_academic(aid, title, template, extra=None):
     a, c, course, is_student, is_manager = _svc_app(aid)
     if not is_student:
         abort(404)
-    if not _svc_can_use(a):
-        return _ac_page(title, r'''<div class="card"><h2>%s</h2><p>This opens once you accept your place.</p>
+    g.portal_app = a
+    try:
+        if not _svc_can_use(a):
+            return _ac_page(title, r'''<div class="card"><h2>%s</h2><p>This opens once you accept your place.</p>
 <p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''' % title, back=_svc_back(aid))
-    return template(a, c, course, extra or {})
+        return template(a, c, course, extra or {})
+    finally:
+        g.portal_app = None
 
 
 @app.route("/academic/services/<aid>/grades")
