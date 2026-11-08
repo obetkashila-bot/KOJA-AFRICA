@@ -23631,7 +23631,7 @@ def ac_college_view(slug):
 <button class="btn" type="submit">Add course</button></form></div>
 <div class="card"><h3>Applications</h3>
 <p class="small">{{ enrolments|length }} application(s) so far.</p>
-<p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a></p></div>
+<p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a> <a class="btn secondary" href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> <a class="btn secondary" href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> <a class="btn secondary" href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p></div>
 {% endif %}''',
                     c=c, courses=courses, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err)
 
