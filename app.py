@@ -24140,6 +24140,10 @@ def _svc_back(aid):
     return url_for("ac_student_portal", aid=aid)
 
 
+HELPDESK_CATEGORIES = ["Registration problem", "Missing CA marks", "Payment problem", "Accommodation",
+                       "Password or login", "Profile correction (name, NRC, programme)", "Exam docket or timetable", "Other"]
+
+
 @app.route("/academic/services/<aid>/helpdesk", methods=["GET", "POST"])
 @login_required
 def ac_svc_helpdesk(aid):
@@ -24147,6 +24151,11 @@ def ac_svc_helpdesk(aid):
     back = url_for("ac_application_view", aid=aid) if is_manager and not is_student else _svc_back(aid)
     if request.method == "POST":
         body = clean(request.form.get("body"))[:1000]
+        category = clean(request.form.get("category"))
+        if category not in HELPDESK_CATEGORIES:
+            category = "Other"
+        if body:
+            body = "[%s] %s" % (category, body)
         if not body:
             flash("Write your message first.", "danger")
         else:
@@ -24158,14 +24167,30 @@ def ac_svc_helpdesk(aid):
     thread = _ac_rows("koja_college_messages", {"application_id": aid}, order="created_at.asc", limit=500)
     return _ac_page("Helpdesk", r'''
 <div class="card"><h2>Helpdesk</h2><p class="small">{{ c.name }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h3>Help and self-service</h3>
+<p class="small">Try these first. Most problems can be fixed here without waiting for the college.</p>
+<ul>
+  <li><a href="{{ url_for('ac_change_password') }}">Change your password</a></li>
+  <li><a href="{{ url_for('ac_application_view', aid=a.id) }}">Check or correct your personal information</a></li>
+  <li><a href="{{ url_for('ac_svc_ca', aid=a.id) }}">View your continuous assessment (CA) marks</a></li>
+  <li><a href="{{ url_for('ac_application_money', aid=a.id) }}">Check your payments and balance</a></li>
+  <li><a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Course registration (needs the registration fee paid)</a></li>
+  <li><a href="{{ url_for('ac_svc_docket', aid=a.id) }}">Print your exam docket (locked until fees and CA are cleared)</a></li>
+  {% if can_use %}<li><a href="{{ url_for('ac_application_room', aid=a.id) }}">Reserve accommodation (room and bed space)</a></li>{% endif %}
+</ul>
+<p class="small"><strong>Exam slip locked?</strong> Check two things: your fees must be at the required percentage, and your CA marks for every registered module must be published. The Print Exam Docket page shows which one is missing.</p>
+</div>
 <div class="card"><h3>Messages</h3>
 {% for m in thread %}<div style="margin:8px 0;padding:8px;border-radius:6px;background:{{ '#f1f5f9' if m.sender == 'student' else '#ecfdf5' }}"><strong>{{ 'Student' if m.sender == 'student' else 'College' }}</strong> <span class="small">{{ m.created_at[:16].replace('T', ' ') }}</span><p style="margin:4px 0;white-space:pre-wrap">{{ m.body }}</p></div>
 {% else %}<p class="small">No messages yet.</p>{% endfor %}
 </div>
 <div class="card"><h3>{{ 'Reply to the student' if is_manager and not is_student else 'Message the college' }}</h3>
-<form method="post">{{ csrf }}<textarea name="body" rows="4" maxlength="1000" required style="width:100%"></textarea>
+<form method="post">{{ csrf }}
+<label>What is this about?<select name="category">{% for cat in categories %}<option value="{{ cat }}">{{ cat }}</option>{% endfor %}</select></label>
+<textarea name="body" rows="4" maxlength="1000" required style="width:100%" placeholder="Describe the problem and what you have already tried"></textarea>
 <p><button class="btn" type="submit">Send</button></p></form></div>''',
-                    a=a, c=c, back=back, thread=thread, is_manager=is_manager, is_student=is_student, csrf_ok=True)
+                    a=a, c=c, back=back, thread=thread, is_manager=is_manager, is_student=is_student, csrf_ok=True,
+                    can_use=_svc_can_use(a), categories=HELPDESK_CATEGORIES)
 
 
 def _svc_student_academic(aid, title, template, extra=None):
