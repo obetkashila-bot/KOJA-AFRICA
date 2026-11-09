@@ -33746,7 +33746,56 @@ def ac_college_mattress_qr_image(slug,allocation_id):
 def ac_college_mattress_scan(slug):
     c=_college_by_slug(slug)
     if not _college_can(c, 'stores'): abort(404)
-    return _ac_page("Stores scanning desk",r'''<div class="card"><h2>Stores Office — scan mattress QR</h2><p>Scan the QR with the device camera and open its link, or search by student number.</p><form method="get" action="{{ url_for('ac_college_mattress_scan_lookup',slug=c.slug) }}"><label>Student number<input name="q" required autofocus></label><button class="btn">Find student</button></form></div>''',c=c)
+    return _ac_page("Stores scanning desk",r'''<div class="card"><h2>Stores Office — scan mattress QR</h2>
+<p>Hold the student's QR inside the square. The scan opens automatically. You can also search by student number below.</p>
+<div id="qrCam" style="display:none">
+  <div style="position:relative;width:100%;max-width:340px;aspect-ratio:1;margin:0 auto;background:#000;border-radius:12px;overflow:hidden">
+    <video id="qrVideo" playsinline muted style="width:100%;height:100%;object-fit:cover"></video>
+    <div style="position:absolute;left:12.5%;top:12.5%;width:75%;height:75%;border:3px solid #fff;border-radius:10px;box-shadow:0 0 0 999px rgba(0,0,0,.35);pointer-events:none"></div>
+  </div>
+  <p id="qrStatus" class="small" style="text-align:center">Starting camera…</p>
+</div>
+<p><button class="btn" type="button" id="qrStart">Open camera to scan</button></p>
+<p id="qrNoSupport" class="small" style="display:none;color:#b00">This browser cannot read QR codes from the camera. Open the phone camera, tap the QR link, or search by student number.</p>
+<form method="get" action="{{ url_for('ac_college_mattress_scan_lookup',slug=c.slug) }}"><label>Student number<input name="q" required></label><button class="btn secondary">Find student</button></form></div>
+<script>
+(function(){
+  var startBtn=document.getElementById('qrStart'), box=document.getElementById('qrCam'),
+      video=document.getElementById('qrVideo'), status=document.getElementById('qrStatus'),
+      noSupport=document.getElementById('qrNoSupport'), stream=null, timer=null, found=false;
+  var scanPath='/mattresses/scan/';
+  function stop(){ if(timer){clearInterval(timer);timer=null;} if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;} }
+  function onFound(value){
+    if(found) return;
+    try{
+      var u=new URL(value, location.href);
+      if(u.origin!==location.origin || u.pathname.indexOf(scanPath)===-1) { status.textContent='That QR is not a KOJA mattress pass.'; return; }
+      found=true; stop(); status.textContent='Found. Opening…'; location.href=u.href;
+    }catch(e){ status.textContent='That QR could not be read. Try again.'; }
+  }
+  if(!('BarcodeDetector' in window) || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)){
+    startBtn.style.display='none'; noSupport.style.display='block'; return;
+  }
+  startBtn.addEventListener('click', async function(){
+    startBtn.disabled=true; box.style.display='block'; status.textContent='Starting camera…';
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+      video.srcObject=stream; await video.play();
+      var detector=new BarcodeDetector({formats:['qr_code']});
+      status.textContent='Hold the QR inside the square.';
+      timer=setInterval(async function(){
+        if(found||video.readyState<2) return;
+        try{ var codes=await detector.detect(video); if(codes.length){ onFound(codes[0].rawValue); } }catch(e){}
+      }, 300);
+    }catch(e){
+      stop(); startBtn.disabled=false; box.style.display='none';
+      status.textContent=''; noSupport.style.display='block';
+      noSupport.textContent='The camera could not start. Allow camera access for this site, or search by student number.';
+    }
+  });
+  window.addEventListener('pagehide', stop);
+})();
+</script>''',c=c)
 
 @app.route("/academic/college/<slug>/mattresses/scan/find")
 @login_required
