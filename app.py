@@ -23913,6 +23913,10 @@ def ac_application_view(aid):
     docs_by_kind = {d.get("kind"): d for d in docs}
     checklist = _college_missing_items({k: a.get(k) for k in COLLEGE_APP_FIELDS}, docs) if a.get("status") == "draft" else []
     return _ac_page("Application", r'''
+{% if is_student %}<style>
+.pi-bg{position:fixed;inset:0;z-index:-1;background:url('{{ bg_url }}') center/cover no-repeat fixed;pointer-events:none}
+.pi-bg::after{content:"";position:absolute;inset:0;background:rgba(255,255,255,.86)}
+</style><div class="pi-bg" aria-hidden="true"></div>{% endif %}
 <div class="card"><h2>{{ course.title }}</h2><p class="small">{{ c.name }}{% if intake %} · {{ intake.name }}{% endif %}</p>
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
 {% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if is_owner and not is_student %}<form method="post" action="{{ url_for('ac_application_union', aid=a.id) }}" class="small" style="margin:6px 0">{{ csrf }}<label><input type="checkbox" name="union_member" value="1" {{ 'checked' if a.union_member }}> Union member (verified by the college)</label> <button class="btn secondary" type="submit">Save</button></form>
@@ -23991,7 +23995,7 @@ def ac_application_view(aid):
 {% endif %}''',
                     a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind, checklist=checklist,
                     doc_labels=COLLEGE_DOC_LABELS, is_owner=is_owner, is_student=is_student,
-                    staff_statuses=COLLEGE_STAFF_STATUSES)
+                    staff_statuses=COLLEGE_STAFF_STATUSES, bg_url=url_for("static", filename="college-library-bg.jpg"))
 
 
 @app.route("/academic/application/<aid>/contact", methods=["POST"])
