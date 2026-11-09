@@ -33718,7 +33718,7 @@ def ac_college_mattress_student_qr(slug,allocation_id):
     amount=float(ch.get("amount") or 0) if ch else 0; eligible=bool(ch and amount>0 and paid>=amount)
     scan_url=url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "",_external=True)
     return _ac_page("Mattress collection QR",r'''<div class="card"><h2>Mattress collection pass</h2><p><strong>{{ a.full_name }}</strong></p><p>Student number: <strong>{{ a.student_number }}</strong></p><p>Payment K{{ '%.2f' % paid }} / K{{ '%.2f' % amount }}</p>
-{% if eligible %}<p><strong>Payment verified — ready for Stores collection.</strong></p><img alt="Mattress collection QR" style="width:260px;max-width:100%" src="{{ url_for('ac_college_mattress_qr_image',slug=c.slug,allocation_id=al.id) }}"><p class="small">QR image requires the Python package qrcode[pil]. Secure link fallback: <input readonly value="{{ scan_url }}" style="width:100%"></p>{% else %}<p><strong>Collection locked.</strong> Accounts must verify the mattress charge payment.</p>{% endif %}</div>''',a=a,c=c,al=al,paid=paid,amount=amount,eligible=eligible,scan_url=scan_url)
+{% if eligible %}<p><strong>Payment verified — ready for Stores collection.</strong></p><img alt="Mattress collection QR" style="width:260px;max-width:100%" src="{{ url_for('ac_college_mattress_qr_image',slug=c.slug,allocation_id=al.id) }}"><p class="small">If the QR image does not load, use this secure link: <input readonly value="{{ scan_url }}" style="width:100%"></p>{% else %}<p><strong>Collection locked.</strong> Accounts must verify the mattress charge payment.</p>{% endif %}</div>''',a=a,c=c,al=al,paid=paid,amount=amount,eligible=eligible,scan_url=scan_url)
 
 @app.route("/academic/college/<slug>/mattresses/qr/<allocation_id>/image")
 @login_required
@@ -33730,11 +33730,16 @@ def ac_college_mattress_qr_image(slug,allocation_id):
     ch=_mattress_charge(a["id"],c["id"])
     if not ch or _mattress_paid_total(a["id"],ch["id"])<float(ch.get("amount") or 0): abort(403)
     scan_url=url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "",_external=True)
-    try:
-        import qrcode
-        img=qrcode.make(scan_url); output=io.BytesIO(); img.save(output,format="PNG"); output.seek(0)
-        return send_file(output,mimetype="image/png",max_age=0)
-    except ImportError: return Response("Install qrcode[pil] to enable QR image rendering.",status=503,mimetype="text/plain")
+    # Built in: ReportLab (already in requirements) draws the QR as SVG. No extra package or image library needed.
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.graphics import renderSVG
+    widget=QrCodeWidget(scan_url, barLevel="M", barBorder=2)
+    bounds=widget.getBounds(); size=300
+    drawing=Drawing(size,size,transform=[size/(bounds[2]-bounds[0]),0,0,size/(bounds[3]-bounds[1]),0,0])
+    drawing.add(widget)
+    svg=renderSVG.drawToString(drawing)
+    return Response(svg,mimetype="image/svg+xml",headers={"Cache-Control":"no-store"})
 
 @app.route("/academic/college/<slug>/mattresses/scan")
 @login_required
