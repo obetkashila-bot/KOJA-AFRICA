@@ -23521,6 +23521,42 @@ NKUMBI_PROGRAMMES = [
 ]
 
 
+COLLEGE_SCHOOLS = ["School of Agriculture", "School of Business", "School of Education", "School of Engineering and Trades", "Other programmes"]
+
+
+def _school_for_text(text):
+    """Maps a programme's group or description to its school (used for the Nkumbi seed and for programmes with no school set)."""
+    t = (text or "").lower()
+    if "agricultur" in t:
+        return "School of Agriculture"
+    if "business" in t or "accountan" in t or "management" in t or "zica" in t:
+        return "School of Business"
+    if "teacher" in t or "secondary" in t or "education" in t:
+        return "School of Education"
+    if "engineering" in t or "trades" in t:
+        return "School of Engineering and Trades"
+    return "Other programmes"
+
+
+def _course_school(k):
+    """The school saved on the programme, or one worked out from its description for older programmes."""
+    return k.get("school") or _school_for_text(k.get("description") or "")
+
+
+def _school_groups(courses):
+    """Programmes grouped by school, in the college's school order. Empty schools are left out."""
+    groups = {}
+    for k in courses:
+        groups.setdefault(_course_school(k), []).append(k)
+    order = COLLEGE_SCHOOLS + sorted(name for name in groups if name not in COLLEGE_SCHOOLS)
+    return [{"name": name, "courses": groups[name]} for name in order if groups.get(name)]
+
+
+def _course_school_choice(value):
+    v = clean(value)
+    return v if v in COLLEGE_SCHOOLS else "Other programmes"
+
+
 def _college_seed_programmes(c):
     """Loads the Nkumbi programme list once, when the college has no courses yet. Returns an error message or None."""
     if "nkumbi" not in (c.get("name") or "").lower():
@@ -23530,7 +23566,7 @@ def _college_seed_programmes(c):
     for i, (title, dept) in enumerate(NKUMBI_PROGRAMMES, start=1):
         _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title, "course_code": "%02d" % i,
                            "description": dept + ". Fee to be confirmed with the college.", "fee": 0,
-                           "currency": "ZMW", "created_at": utc_now()})
+                           "school": _school_for_text(dept), "currency": "ZMW", "created_at": utc_now()})
         if err:
             return str(err)[:300]
     return None
@@ -23593,6 +23629,7 @@ def ac_college_view(slug):
         abort(404)
     seed_err = _college_seed_programmes(c) if is_owner or uid else None
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    school_groups = _school_groups(courses)
     enrolments = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=500) if is_owner else []
     mine_ids = set()
     enrolled_app = None
@@ -23614,21 +23651,23 @@ def ac_college_view(slug):
 <p class="small">You have an accepted place{% if enrolled_app.student_number %} · student number <strong>{{ enrolled_app.student_number }}</strong>{% endif %}. You do not need to apply again. Use college services for fees, rooms and your application.</p>
 <p><a class="btn" href="{{ url_for('ac_student_portal', aid=enrolled_app.id) }}">College services</a> <a class="btn secondary" href="{{ url_for('ac_application_money', aid=enrolled_app.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=enrolled_app.id) }}">Room</a></p></div>{% endif %}
 <div class="card"><h3>Courses</h3>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
-{% for k in courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
+{% for g in school_groups %}<h3 style="margin:18px 0 4px">{{ g.name }}</h3>{% for k in g.courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
 {% if k.description %}<p class="small">{{ k.description }}</p>{% endif %}
 {% if is_owner %}<form method="post" action="{{ url_for('ac_course_set_code', cid=k.id) }}" class="small">{{ csrf }}<label>Course code (2 digits) <input name="course_code" value="{{ k.course_code or '' }}" maxlength="2" style="width:70px"></label> <button class="btn secondary" type="submit">Save code</button></form>{% endif %}
+{% if is_owner %}<form method="post" action="{{ url_for('ac_course_set_school', cid=k.id) }}" class="small">{{ csrf }}<label>School <select name="school">{% for s in school_choices %}<option value="{{ s }}" {{ 'selected' if s == g.name }}>{{ s }}</option>{% endfor %}</select></label> <button class="btn secondary" type="submit">Save school</button></form>{% endif %}
 {% if not is_real_owner and not user %}<p><a class="btn" href="{{ url_for('login', next=request.path) }}">Sign in to apply</a></p>{% endif %}{% if user and not is_real_owner and not enrolled_app %}
   {% if k.id in mine_ids %}<p class="small">You have an application. <a href="{{ url_for('ac_my_applications') }}">See your applications</a></p>
   {% else %}<a class="btn" href="{{ url_for('ac_college_apply', slug=c.slug, cid=k.id) }}">Apply for this course</a>{% endif %}
 {% endif %}
 </div>
-{% else %}<p>No courses listed yet.</p>{% endfor %}</div>
+{% endfor %}{% else %}<p>No courses listed yet.</p>{% endfor %}</div>
 {% if is_owner %}
 <div class="card"><h3>Add a course</h3>
 <form method="post" action="{{ url_for('ac_college_course_add', slug=c.slug) }}">{{ csrf }}
 <label>Course title<input name="title" required maxlength="150"></label>
 <label>Course code (2 digits, optional: the next free number is used if blank)<input name="course_code" maxlength="2" placeholder="e.g. 06"></label>
+<label>School<select name="school">{% for s in school_choices %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></label>
 <label>Fee<input name="fee" type="number" min="0" step="0.01" value="0"></label>
 <label>Currency<input name="currency" value="ZMW" maxlength="3"></label>
 <label>Description<textarea name="description" rows="3" maxlength="1000"></textarea></label>
@@ -23637,7 +23676,7 @@ def ac_college_view(slug):
 <p class="small">{{ enrolments|length }} application(s) so far.</p>
 <p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a> <a class="btn secondary" href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> <a class="btn secondary" href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> <a class="btn secondary" href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p></div>
 {% endif %}''',
-                    c=c, courses=courses, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err)
+                    c=c, courses=courses, school_groups=school_groups, school_choices=COLLEGE_SCHOOLS, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err)
 
 
 def _course_code_2(v):
@@ -23660,6 +23699,21 @@ def _next_course_code(c):
     while n in used:
         n += 1
     return "%02d" % n if n <= 99 else None
+
+
+@app.route("/academic/course/<cid>/school", methods=["POST"])
+@login_required
+def ac_course_set_school(cid):
+    k = first_row("koja_college_courses", {"id": cid})
+    if not k:
+        abort(404)
+    c = first_row("koja_colleges", {"id": k["college_id"]}) or {}
+    if not _college_is_owner(c):
+        abort(403)
+    school = _course_school_choice(request.form.get("school"))
+    _, err = db_update("koja_college_courses", {"id": cid}, {"school": school})
+    flash(("Programme moved to %s." % school) if not err else "Could not change the school. Run koja_college_schools.sql first.", "success" if not err else "danger")
+    return redirect(url_for("ac_college_view", slug=c.get("slug")))
 
 
 @app.route("/academic/course/<cid>/code", methods=["POST"])
@@ -23694,7 +23748,7 @@ def ac_college_course_add(slug):
     if not code or _course_code_taken(c, code):
         flash("Course code must be two digits (01 to 99) and not used by another course in this college.", "danger")
         return redirect(url_for("ac_college_view", slug=slug))
-    _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title, "course_code": code,
+    _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title, "course_code": code, "school": _course_school_choice(request.form.get("school")),
                       "description": clean(request.form.get("description"))[:1000],
                       "fee": _ac_num(request.form.get("fee"), 0), "currency": (re.sub(r"[^A-Z]", "", clean(request.form.get("currency")).upper())[:3] or "ZMW"),
                       "created_at": utc_now()})
