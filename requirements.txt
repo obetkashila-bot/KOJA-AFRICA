@@ -13,3 +13,7 @@ pywebpush>=2.0            # Web push notifications (VAPID)
 google-auth>=2.29         # Google Search Console (GSC_SERVICE_ACCOUNT_JSON)
 reportlab>=4.0             # Proposal Builder PDF export
 openpyxl>=3.1            # Excel (.xlsx) text extraction for SmartCV document scan
+sentry-sdk>=2.0
+
+# Mattress QR passes use reportlab (above), so no extra package is needed.
+python-pptx>=1.0            # PowerPoint (.pptx) text and pictures for the room screen

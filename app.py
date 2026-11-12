@@ -23521,12 +23521,14 @@ NKUMBI_PROGRAMMES = [
 ]
 
 
-COLLEGE_SCHOOLS = ["School of Agriculture", "School of Business", "School of Education", "School of Engineering and Trades", "Other programmes"]
+COLLEGE_SCHOOLS = ["School of Agriculture", "School of Business", "School of Education", "School of Engineering and Trades", "School of Short Courses", "Other programmes"]
 
 
 def _school_for_text(text):
     """Maps a programme's group or description to its school (used for the Nkumbi seed and for programmes with no school set)."""
     t = (text or "").lower()
+    if "short course" in t or "driving" in t:
+        return "School of Short Courses"
     if "agricultur" in t:
         return "School of Agriculture"
     if "business" in t or "accountan" in t or "management" in t or "zica" in t:
@@ -23540,7 +23542,7 @@ def _school_for_text(text):
 
 def _course_school(k):
     """The school saved on the programme, or one worked out from its description for older programmes."""
-    return k.get("school") or _school_for_text(k.get("description") or "")
+    return k.get("school") or _school_for_text((k.get("title") or "") + " " + (k.get("description") or ""))
 
 
 def _school_groups(courses):
@@ -23566,7 +23568,7 @@ def _college_seed_programmes(c):
     for i, (title, dept) in enumerate(NKUMBI_PROGRAMMES, start=1):
         _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title, "course_code": "%02d" % i,
                            "description": dept + ". Fee to be confirmed with the college.", "fee": 0,
-                           "school": _school_for_text(dept), "currency": "ZMW", "created_at": utc_now()})
+                           "school": _school_for_text(title + " " + dept), "currency": "ZMW", "created_at": utc_now()})
         if err:
             return str(err)[:300]
     return None
@@ -25226,6 +25228,7 @@ def ac_ca_manage(slug):
     lecturers = _ac_rows("koja_college_module_lecturers", {"college_id": c["id"], "course_id": course_id, "module": module}, order="created_at.asc", limit=100) if is_owner and course_id and module else []
     return _ac_page("Continuous assessment", r'''
 <div class="card"><h2>Continuous assessment: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_exams', slug=c.slug) }}">Exams and marking</a></p>
 {% if is_owner %}<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p>{% endif %}
 <form method="get"><label>Course<select name="course_id">{% for k in courses %}<option value="{{ k.id }}" {{ 'selected' if k.id == course_id }}>{{ k.title }}</option>{% endfor %}</select></label>
 <label>Module<select name="module" required>{% for m in module_names %}<option value="{{ m }}" {{ 'selected' if m == module }}>{{ m }}</option>{% else %}<option value="">No modules for this programme yet</option>{% endfor %}</select></label>
@@ -25348,6 +25351,767 @@ def ac_lecturer_home():
 {% for x in items %}<tr style="border-top:1px solid #ddd"><td>{{ x.college }}</td><td>{{ x.course }}</td><td>{{ x.module }}</td><td><a class="btn secondary" href="{{ x.url }}">Open CA</a></td></tr>{% endfor %}</table></div>
 {% else %}<p>No modules are assigned to your account yet. Ask the college administrator to assign you using your KOJA account email.</p>{% endif %}
 </div>''', items=items)
+
+
+# ---- Exams and marking (AHEM stage 1) ----
+def _exam_num(v):
+    return "%g" % float(v)
+
+
+def _exam_parse_criteria(text):
+    """One line per marking point: question | expected point | marks | keywords (comma separated). Returns (rows, errors)."""
+    rows, errors = [], []
+    for n, line in enumerate((text or "").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 3:
+            errors.append("Line %d needs: question | expected point | marks | keywords" % n)
+            continue
+        q, point, kw = parts[0][:20], parts[1][:200], (parts[3][:500] if len(parts) > 3 else "")
+        try:
+            m = float(parts[2])
+        except ValueError:
+            errors.append("Line %d: marks must be a number." % n)
+            continue
+        if not q or not point or m <= 0 or m > 100:
+            errors.append("Line %d: check the question, the point and the marks." % n)
+            continue
+        rows.append({"question_no": q, "expected_point": point, "marks": m, "keywords": kw, "sort_order": len(rows) + 1})
+    return rows, errors
+
+
+def _exam_words(text):
+    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def _exam_mark_answer(criteria, answer):
+    """Proposes marks for one answer. A marking point scores in full when one of its keywords appears as whole words in the answer.
+    It is transparent: the feedback says what matched. It proposes marks; the lecturer decides. It does not understand meaning yet."""
+    text = " " + _exam_words(answer) + " "
+    total, pts = 0.0, []
+    for crit in criteria:
+        got_max = float(crit["marks"])
+        terms = [_exam_words(t) for t in (crit.get("keywords") or "").split(",")]
+        hit = next((t for t in terms if t and (" " + t + " ") in text), None)
+        got = got_max if hit else 0.0
+        total += got
+        pts.append({"point": crit["expected_point"], "max": got_max, "awarded": got,
+                    "evidence": hit or "", "reason": ("matched '%s'" % hit) if hit else "not found"})
+    return total, pts
+
+
+def _exam_feedback_view(fb):
+    # Reads stored feedback. Structured feedback (JSON with points) becomes a comparison table; older plain text is shown as it is.
+    text = fb or ""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("points"), list):
+        pts = [p for p in data["points"] if isinstance(p, dict)]
+        return {"engine": str(data.get("engine") or "Marking"), "points": pts, "text": ""}
+    return {"engine": "", "points": [], "text": text}
+
+
+def _exam_questions(criteria):
+    order, maxes = [], {}
+    for x in sorted(criteria, key=lambda r: (r.get("sort_order") or 0)):
+        q = x["question_no"]
+        if q not in maxes:
+            order.append(q)
+            maxes[q] = 0.0
+        maxes[q] += float(x["marks"])
+    return [{"no": q, "max": maxes[q]} for q in order]
+
+
+def _exam_results(questions, students, cells):
+    out = []
+    max_total = sum(q["max"] for q in questions)
+    for s in students:
+        marks, total = [], 0.0
+        for q in questions:
+            cell = cells.get("%s|%s" % (s["id"], q["no"])) or {}
+            v = cell.get("final_marks")
+            if v is None:
+                v = cell.get("proposed_marks")
+            marks.append(v)
+            total += float(v or 0)
+        out.append({"number": s.get("student_number") or "-", "name": s.get("full_name") or "", "marks": marks, "total": total,
+                    "max": max_total, "pct": (total / max_total * 100) if max_total else 0,
+                    "complete": all(v is not None for v in marks)})
+    return out
+
+
+def _exam_load(slug, eid):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    e = first_row("koja_exams", {"id": eid, "college_id": c["id"]})
+    if not e:
+        abort(404)
+    if not _ca_can_module(c, e["course_id"], e["module"]):
+        abort(403)
+    return c, e
+
+
+@app.route("/academic/college/<slug>/exams", methods=["GET", "POST"])
+@login_required
+def ac_exams(slug):
+    c = _ca_access_check(slug)
+    courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    picks = []
+    for k in courses:
+        for m in _course_module_names(c["id"], k["id"]):
+            if _ca_can_module(c, k["id"], m):
+                picks.append({"value": "%s|%s" % (k["id"], m), "label": "%s · %s" % (k["title"], m)})
+    if request.method == "POST":
+        pick = clean(request.form.get("pick"))
+        cid, _, module = pick.partition("|")
+        title = clean(request.form.get("title"))[:150]
+        rows, errors = _exam_parse_criteria(request.form.get("criteria"))
+        if not any(p["value"] == pick for p in picks):
+            flash("Choose a module you can mark.", "danger")
+        elif not title:
+            flash("Give the exam a title.", "danger")
+        elif errors or not rows:
+            flash(errors[0] if errors else "Add at least one marking point.", "danger")
+        else:
+            eid = str(uuid.uuid4())
+            _, err = db_insert("koja_exams", {"id": eid, "college_id": c["id"], "course_id": cid, "module": module, "title": title,
+                               "created_by": _ac_uid(), "created_at": utc_now()})
+            if err:
+                flash("Could not create the exam.", "danger")
+            else:
+                db_insert("koja_exam_criteria", [dict(r, id=str(uuid.uuid4()), exam_id=eid, college_id=c["id"], created_at=utc_now()) for r in rows])
+                _college_audit(c, "exam.created", "%s (%s)" % (title, module))
+                return redirect(url_for("ac_exam_view", slug=slug, eid=eid))
+        return redirect(url_for("ac_exams", slug=slug))
+    exams = [e for e in _ac_rows("koja_exams", {"college_id": c["id"]}, order="created_at.desc", limit=300)
+             if _ca_can_module(c, e["course_id"], e["module"])]
+    return _ac_page("Exams", r'''
+<div class="card"><h2>Exams and marking: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Back to continuous assessment</a></p>
+<p class="small">Marking has three steps: enter each student's answers, propose marks from the marking points, then approve. Nothing is official until you approve it, and you can change any mark before then.</p></div>
+<div class="card"><h3>Exams</h3>
+{% for e in exams %}<p><a href="{{ url_for('ac_exam_view', slug=c.slug, eid=e.id) }}"><strong>{{ e.title }}</strong></a> · {{ e.module }} · {% if e.approved_at %}<strong>approved</strong>{% else %}open{% endif %}</p>{% else %}<p>No exams yet.</p>{% endfor %}
+</div>
+<div class="card"><h3>New exam</h3>
+<form method="post">{{ csrf }}
+<label>Module<select name="pick" required>{% for p in picks %}<option value="{{ p.value }}">{{ p.label }}</option>{% else %}<option value="">No modules you can mark yet</option>{% endfor %}</select></label>
+<label>Exam title<input name="title" required maxlength="150" placeholder="e.g. Mid-semester test"></label>
+<label>Marking points: one per line, as question | expected point | marks | keywords (separated by commas)<textarea name="criteria" rows="8" required placeholder="Q1 | Controls movement of substances | 2 | controls, transports, moves in and out"></textarea></label>
+<p class="small">Keywords are whole words or phrases a student might write. A point scores in full when one of them appears. List the forms you accept, for example: control, controls, controlling.</p>
+<button class="btn" type="submit">Create exam</button></form></div>
+''', c=c, exams=exams, picks=picks)
+
+
+@app.route("/academic/college/<slug>/exams/<eid>")
+@login_required
+def ac_exam_view(slug, eid):
+    c, e = _exam_load(slug, eid)
+    criteria = _ac_rows_all("koja_exam_criteria", {"exam_id": e["id"]})
+    questions = _exam_questions(criteria)
+    students = _ca_module_students(c, e["course_id"], e["module"])
+    cells = {}
+    for a in _ac_rows_all("koja_exam_answers", {"exam_id": e["id"]}):
+        cells["%s|%s" % (a["application_id"], a["question_no"])] = a
+    results = _exam_results(questions, students, cells)
+    max_total = sum(q["max"] for q in questions)
+    sheets = _ac_rows_all("koja_exam_sheets", {"exam_id": e["id"]}, order="created_at.asc")
+    return _ac_page(e["title"], r'''
+<div class="card"><h2>{{ e.title }}</h2><p class="small">{{ c.name }} · {{ e.module }}{% if e.approved_at %} · <strong>Approved, locked</strong>{% endif %}</p>
+<p class="small"><a href="{{ url_for('ac_exams', slug=c.slug) }}">All exams</a></p>
+<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Question</th><th>Maximum</th></tr>
+{% for q in questions %}<tr style="border-top:1px solid #ddd"><td>{{ q.no }}</td><td align="center">{{ '%g' % q.max }}</td></tr>{% endfor %}</table></div></div>
+
+{% if not e.approved_at %}<div class="card"><h3>Propose and approve</h3>
+<p class="small">Propose marks first. Check every answer, change any mark you disagree with, then approve.</p>
+<form method="post" action="{{ url_for('ac_exam_propose', slug=c.slug, eid=e.id) }}">{{ csrf }}<button class="btn" type="submit">Propose marks for all answers</button></form>
+<form method="post" action="{{ url_for('ac_exam_approve', slug=c.slug, eid=e.id) }}" style="margin-top:8px">{{ csrf }}<button class="btn secondary" type="submit">Approve marks</button></form></div>{% endif %}
+
+<div class="card"><h3>Results</h3>
+<p class="small">{% if e.approved_at %}Official results.{% else %}Not official yet. Totals use the final mark where you set one, otherwise the proposed mark.{% endif %}</p>
+{% if results %}<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Student number</th><th align="left">Name</th>{% for q in questions %}<th>{{ q.no }}</th>{% endfor %}<th>Total /{{ '%g' % max_total }}</th><th>%</th></tr>
+{% for r in results %}<tr style="border-top:1px solid #ddd"><td>{{ r.number }}</td><td>{{ r.name }}</td>{% for m in r.marks %}<td align="center">{{ '%g' % m if m is not none else '-' }}</td>{% endfor %}<td align="center"><strong>{{ '%g' % r.total }}</strong>{% if not r.complete %} <span class="small">incomplete</span>{% endif %}</td><td align="center">{{ '%.0f' % r.pct }}%</td></tr>{% endfor %}</table></div>
+{% else %}<p>No students are registered for this module yet.</p>{% endif %}</div>
+
+{% if not e.approved_at %}<div class="card"><h3>Marking key and answer sheets</h3>
+<p class="small"><a href="{{ url_for('ac_exam_key', slug=c.slug, eid=e.id) }}">Marking key</a> · photograph each page. The system reads the student's name or number on the page and files it with that student.</p>
+<form method="post" action="{{ url_for('ac_exam_sheets_upload', slug=c.slug, eid=e.id) }}" enctype="multipart/form-data">{{ csrf }}
+<label>Photos of answer sheets (choose several at once)<input type="file" name="sheets" accept="image/*" multiple capture="environment"></label>
+<button class="btn secondary" type="submit">Upload sheets</button></form>
+{% if sheets %}<form method="post" action="{{ url_for('ac_exam_analyse', slug=c.slug, eid=e.id) }}" style="margin-top:8px">{{ csrf }}<button class="btn" type="submit" {{ 'disabled' if not ai_on }}>Read and mark uploaded sheets</button></form>{% endif %}
+{% if not ai_on %}<p class="small">AI is not set up on this server, so sheets cannot be read yet.</p>{% endif %}
+{% for sh in sheets %}<div style="border-top:1px solid #ddd;padding:8px 0"><strong>{{ sh.read_name or 'Name not read' }}</strong> · {{ sh.read_number or 'number not read' }} · <span class="small">{{ sh.status }}</span>
+· <a href="{{ url_for('ac_exam_sheet_image', slug=c.slug, eid=e.id, sid=sh.id) }}" target="_blank">View photo</a>
+{% if sh.status == 'unmatched' %}<form method="post" action="{{ url_for('ac_exam_sheet_assign', slug=c.slug, eid=e.id, sid=sh.id) }}">{{ csrf }}
+<label>File this sheet with<select name="student">{% for st in students %}<option value="{{ st.id }}">{{ st.student_number or '-' }} · {{ st.full_name }}</option>{% endfor %}</select></label>
+<button class="btn secondary" type="submit">File and mark</button></form>{% endif %}
+{% if sh.error %}<p class="small" style="color:#b00">{{ sh.error }}</p>{% endif %}</div>
+{% else %}<p class="small">No sheets uploaded yet.</p>{% endfor %}
+</div>{% endif %}
+
+{% for s in students %}<div class="card"><h3>{{ s.student_number or '-' }} · {{ s.full_name }}</h3>
+<form method="post" action="{{ url_for('ac_exam_student', slug=c.slug, eid=e.id, aid=s.id) }}">{{ csrf }}
+{% for q in questions %}{% set cell = cells.get(s.id ~ '|' ~ q.no, {}) %}
+<div style="border-top:1px solid #ddd;padding:8px 0"><strong>{{ q.no }}</strong> <span class="small">maximum {{ '%g' % q.max }}</span>
+<label>Answer<textarea name="answer_{{ loop.index0 }}" rows="3" {{ 'disabled' if e.approved_at }}>{{ cell.get('answer_text') or '' }}</textarea></label>
+<p class="small">Proposed: {% if cell.get('proposed_marks') is not none %}<strong>{{ '%g' % cell.get('proposed_marks') }}</strong> of {{ '%g' % q.max }}{% set fbv = fbview(cell.get('feedback')) %}{% if fbv['points'] %}
+<table class="small" style="width:100%;border-collapse:collapse;margin-top:6px"><tr><th align="left">Key point</th><th align="center">Marks</th><th align="left">Evidence in answer, or reason</th></tr>
+{% for pt in fbv['points'] %}<tr style="border-top:1px solid #ddd"><td>{{ pt['point'] }}</td><td align="center">{{ '%g' % pt['awarded'] }} of {{ '%g' % pt['max'] }}</td><td>{% if pt['evidence'] %}&ldquo;{{ pt['evidence'] }}&rdquo;{% else %}{{ pt['reason'] }}{% endif %}</td></tr>{% endfor %}</table>
+<span>{{ fbv['engine'] }}</span>{% else %}<br>{{ fbv['text'] }}{% endif %}{% else %}not yet{% endif %}</p>
+<label>Final mark (out of {{ '%g' % q.max }})<input name="final_{{ loop.index0 }}" type="number" min="0" max="{{ q.max }}" step="0.5" value="{{ cell.get('final_marks') if cell.get('final_marks') is not none else '' }}" {{ 'disabled' if e.approved_at }}></label></div>
+{% endfor %}
+{% if not e.approved_at %}<button class="btn" type="submit">Save this student</button>{% endif %}</form></div>
+{% endfor %}''', c=c, e=e, questions=questions, students=students, cells=cells, results=results, max_total=max_total, sheets=sheets, ai_on=_exam_ai_ready(), fbview=_exam_feedback_view)
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/student/<aid>", methods=["POST"])
+@login_required
+def ac_exam_student(slug, eid, aid):
+    c, e = _exam_load(slug, eid)
+    back = url_for("ac_exam_view", slug=slug, eid=eid)
+    if e.get("approved_at"):
+        flash("This exam is approved and locked.", "danger")
+        return redirect(back)
+    if aid not in {s["id"] for s in _ca_module_students(c, e["course_id"], e["module"])}:
+        abort(404)
+    questions = _exam_questions(_ac_rows_all("koja_exam_criteria", {"exam_id": eid}))
+    problems = 0
+    for i, q in enumerate(questions):
+        text = (request.form.get("answer_%d" % i) or "").strip()[:5000]
+        row = first_row("koja_exam_answers", {"exam_id": eid, "application_id": aid, "question_no": q["no"]})
+        payload = {"answer_text": text, "updated_at": utc_now()}
+        raw = clean(request.form.get("final_%d" % i))
+        if raw == "":
+            payload["final_marks"] = None
+        else:
+            try:
+                v = float(raw)
+            except ValueError:
+                v = -1
+            if 0 <= v <= q["max"]:
+                payload["final_marks"] = v
+            else:
+                problems += 1
+        if row and (row.get("answer_text") or "") != text:
+            # a changed answer makes the old proposal out of date
+            payload["proposed_marks"] = None
+            payload["feedback"] = ""
+            payload["proposed_at"] = None
+        if row:
+            db_update("koja_exam_answers", {"id": row["id"]}, payload)
+        else:
+            db_insert("koja_exam_answers", dict(payload, id=str(uuid.uuid4()), exam_id=eid, college_id=c["id"],
+                                                 application_id=aid, question_no=q["no"], created_at=utc_now()))
+    flash("Saved." if not problems else "Saved. %d final mark(s) were out of range and not changed." % problems,
+          "success" if not problems else "danger")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/propose", methods=["POST"])
+@login_required
+def ac_exam_propose(slug, eid):
+    c, e = _exam_load(slug, eid)
+    if e.get("approved_at"):
+        flash("This exam is approved and locked.", "danger")
+        return redirect(url_for("ac_exam_view", slug=slug, eid=eid))
+    n, engine_failed = _exam_propose_all(c, e)
+    flash("Proposed marks for %d answer(s). Check each one before you approve." % n + (" The marker failed for some, so the keyword check was used." if engine_failed else ""), "success" if not engine_failed else "danger")
+    return redirect(url_for("ac_exam_view", slug=slug, eid=eid))
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/approve", methods=["POST"])
+@login_required
+def ac_exam_approve(slug, eid):
+    c, e = _exam_load(slug, eid)
+    back = url_for("ac_exam_view", slug=slug, eid=eid)
+    if e.get("approved_at"):
+        flash("These marks are already approved.", "info")
+        return redirect(back)
+    rows = [a for a in _ac_rows_all("koja_exam_answers", {"exam_id": eid}) if (a.get("answer_text") or "").strip()]
+    missing = [a for a in rows if a.get("proposed_marks") is None]
+    if missing:
+        flash("%d answer(s) have no proposed mark yet. Propose marks first." % len(missing), "danger")
+        return redirect(back)
+    for a in rows:
+        final = a.get("final_marks") if a.get("final_marks") is not None else a.get("proposed_marks")
+        db_update("koja_exam_answers", {"id": a["id"]}, {"final_marks": final, "updated_at": utc_now()})
+    db_update("koja_exams", {"id": eid}, {"approved_at": utc_now(), "approved_by": _ac_uid()})
+    _college_audit(c, "exam.approved", e["title"])
+    flash("Marks approved. They are now official and the exam is locked.", "success")
+    return redirect(back)
+
+
+# ---- Exam AI: marking key, sheet reading and AI marking (AHEM stage 2) ----
+EXAM_SHEET_MB = 8
+EXAM_SHEET_TYPES = {"jpg", "jpeg", "png", "webp"}
+EXAM_SHEET_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+
+EXAM_KEY_SYSTEM = ("You convert a teacher's marking key into marking points for a written exam. Keep the teacher's question labels and marks exactly. "
+                   "For each point give 3 to 6 short words or phrases a student might write for it. "
+                   'Return JSON only, in this form: {"points": [{"question": "Q1", "point": "...", "marks": 2, "keywords": ["..."]}]}')
+EXAM_READ_SYSTEM = ("You read a photo of a handwritten exam answer booklet page. Find the student's name and examination number if they are written. "
+                    "Transcribe the answer written for each question label you are given, exactly as written. Write [unclear] for words you cannot read. "
+                    "Do not mark anything. Return JSON only: "
+                    '{"student_name": "", "student_number": "", "answers": {"Q1": "..."}}')
+EXAM_MARK_SYSTEM = ("You mark a student's written answers against a marking key. For each question, award a marking point its marks only when the answer clearly makes that point, "
+                    "in any wording with the same meaning. Never award more than a point's marks, and give a short reason for each point. "
+                    "For evidence, copy the exact words from the student's answer that make the point, or leave it empty if the answer does not make it. Return JSON only: "
+                    '{"questions": {"Q1": {"points": [{"point": "...", "awarded": 2, "evidence": "exact words from the answer", "reason": "..."}]}}}')
+
+
+def _exam_ai_ready():
+    return bool((os.getenv("OPENAI_API_KEY") or "").strip() or (os.getenv("GEMINI_API_KEY") or "").strip())
+
+
+def _exam_openai_call(system_prompt, user_text, images, max_tokens, model, key):
+    content = [{"type": "input_text", "text": user_text}]
+    for mime, raw in images:
+        content.append({"type": "input_image", "image_url": "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))})
+    payload = {"model": model, "instructions": system_prompt, "input": [{"role": "user", "content": content}], "max_output_tokens": max_tokens}
+    r = _HTTP.post("https://api.openai.com/v1/responses", json=payload, timeout=(5, 90),
+                   headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+    if not r.ok:
+        raise RuntimeError("AI provider returned %s" % r.status_code)
+    data = r.json()
+    text = (data.get("output_text") or "").strip()
+    if not text:
+        text = "\n".join(part.get("text", "") for item in (data.get("output") or []) for part in (item.get("content") or [])
+                         if part.get("type") == "output_text")
+    return text
+
+
+def _exam_gemini_call(system_prompt, user_text, images, max_tokens, model, key):
+    parts = [{"text": user_text}]
+    for mime, raw in images:
+        parts.append({"inline_data": {"mime_type": mime, "data": base64.b64encode(raw).decode("ascii")}})
+    payload = {"systemInstruction": {"parts": [{"text": system_prompt}]}, "contents": [{"role": "user", "parts": parts}],
+               "generationConfig": {"temperature": 0, "maxOutputTokens": max_tokens, "responseMimeType": "application/json"}}
+    r = _HTTP.post("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % model, json=payload,
+                   timeout=(5, 90), headers={"x-goog-api-key": key, "Content-Type": "application/json"})
+    if not r.ok:
+        raise RuntimeError("AI provider returned %s" % r.status_code)
+    cands = r.json().get("candidates") or []
+    if not cands:
+        return ""
+    return "".join(p.get("text", "") for p in ((cands[0].get("content") or {}).get("parts") or []))
+
+
+def _exam_ai_request(system_prompt, user_text, images=None, max_tokens=2000):
+    # Calls the AI provider. EXAM_AI_PROVIDER=openai or gemini chooses which one is tried first (default: openai, then gemini).
+    # images is a list of (mime, bytes). Returns the reply text, or raises RuntimeError.
+    images = images or []
+    _groq_models, gemini_models, openai_models = _ai_model_candidates()
+    oa_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    gm_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    prefer = (os.getenv("EXAM_AI_PROVIDER") or "").strip().lower()
+    order = ["gemini", "openai"] if prefer == "gemini" else ["openai", "gemini"]
+    for prov in order:
+        if prov == "openai" and oa_key and openai_models:
+            return _exam_openai_call(system_prompt, user_text, images, max_tokens, openai_models[0], oa_key)
+        if prov == "gemini" and gm_key and gemini_models:
+            return _exam_gemini_call(system_prompt, user_text, images, max_tokens, gemini_models[0], gm_key)
+    raise RuntimeError("No AI provider is configured.")
+
+
+def _exam_json(text):
+    t = (text or "").strip()
+    a, b = t.find("{"), t.rfind("}")
+    if a < 0 or b <= a:
+        return None
+    try:
+        return json.loads(t[a:b + 1])
+    except ValueError:
+        return None
+
+
+def _exam_key_draft(key_text):
+    # Turns the teacher's key into marking-point lines for the teacher to check.
+    data = _exam_json(_exam_ai_request(EXAM_KEY_SYSTEM, "Marking key:\n" + (key_text or "")[:20000], max_tokens=3000)) or {}
+    lines = []
+    for p in data.get("points") or []:
+        q = clean(str(p.get("question") or ""))[:20]
+        point = clean(str(p.get("point") or ""))[:200]
+        try:
+            m = float(p.get("marks"))
+        except (TypeError, ValueError):
+            continue
+        kws = ", ".join(clean(str(k))[:60] for k in (p.get("keywords") or []) if clean(str(k)))
+        if q and point and m > 0:
+            lines.append("%s | %s | %s | %s" % (q, point, _exam_num(m), kws))
+    return "\n".join(lines)
+
+
+def _exam_read_sheet(raw, mime, question_nos):
+    # Reads one page: the student's name and number, and the answer under each question label.
+    user = "Question labels on this paper: %s. Use exactly these labels as the keys in answers." % ", ".join(question_nos)
+    data = _exam_json(_exam_ai_request(EXAM_READ_SYSTEM, user, images=[(mime, raw)], max_tokens=3000))
+    if data is None:
+        raise RuntimeError("The sheet could not be read.")
+    answers = {}
+    for q in question_nos:
+        v = (data.get("answers") or {}).get(q)
+        if v and clean(str(v)):
+            answers[q] = clean(str(v))[:5000]
+    return {"student_name": clean(str(data.get("student_name") or ""))[:150],
+            "student_number": re.sub(r"\s", "", str(data.get("student_number") or ""))[:40], "answers": answers}
+
+
+def _exam_match_student(students, number, name):
+    num = (number or "").lower()
+    if num:
+        for st in students:
+            if (st.get("student_number") or "").lower() == num:
+                return st
+    words = set(re.findall(r"[a-z]+", (name or "").lower()))
+    if len(words) >= 2:
+        hits = [st for st in students if words <= set(re.findall(r"[a-z]+", (st.get("full_name") or "").lower()))]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def _exam_ai_mark(by_q, answers):
+    # One AI call marks all of one student's answers. by_q: {question: [criteria rows]}, answers: {question: text}.
+    key = {q: [{"point": r["expected_point"], "marks": float(r["marks"])} for r in rows] for q, rows in by_q.items() if q in answers}
+    if not key:
+        return {}
+    user = "Marking key and answers (JSON):\n" + json.dumps({"key": key, "answers": {q: answers[q] for q in key}}, ensure_ascii=False)
+    data = _exam_json(_exam_ai_request(EXAM_MARK_SYSTEM, user, max_tokens=3000))
+    if data is None:
+        raise RuntimeError("The marks could not be read.")
+    out = {}
+    for q, rows in by_q.items():
+        if q not in key:
+            continue
+        got_points = ((data.get("questions") or {}).get(q) or {}).get("points") or []
+        by_text = {clean(str(p.get("point") or "")).lower(): p for p in got_points}
+        total, pts = 0.0, []
+        answer_text = clean(str(answers.get(q) or "")).lower()
+        for idx, r in enumerate(rows):
+            p = by_text.get(r["expected_point"].strip().lower()) or (got_points[idx] if idx < len(got_points) and isinstance(got_points[idx], dict) else {})
+            try:
+                awarded = float(p.get("awarded") or 0)
+            except (TypeError, ValueError):
+                awarded = 0.0
+            awarded = max(0.0, min(float(r["marks"]), awarded))
+            total += awarded
+            reason = clean(str(p.get("reason") or ""))[:200]
+            evidence = clean(str(p.get("evidence") or ""))[:200]
+            if not evidence or evidence.lower() not in answer_text:
+                evidence = ""  # a quote that is not in the answer is dropped, never shown as evidence
+            pts.append({"point": r["expected_point"], "max": float(r["marks"]), "awarded": awarded, "evidence": evidence, "reason": reason})
+        out[q] = (total, json.dumps({"engine": "AI marking", "points": pts}, ensure_ascii=False))
+    return out
+
+
+def _exam_keyword_marker(by_q, answers):
+    # The keyword check. Always available, so marking still works without AI.
+    out = {}
+    for q, text in answers.items():
+        if q in by_q:
+            total, pts = _exam_mark_answer(by_q.get(q, []), text)
+            out[q] = (total, json.dumps({"engine": "Keyword check", "points": pts}, ensure_ascii=False))
+    return out
+
+
+# Engines. A reader turns one sheet photo into {"student_name", "student_number", "answers"}.
+# A marker turns {question: [criteria]} and {question: answer text} into {question: (total, feedback)}.
+# A future scanning machine plugs in by registering its own reader and/or marker here, then setting EXAM_READER / EXAM_MARKER.
+EXAM_ENGINES = {"reader": {}, "marker": {}}
+
+
+def _exam_register(kind, name, fn):
+    EXAM_ENGINES[kind][name.lower()] = fn
+
+
+_exam_register("reader", "ai", _exam_read_sheet)
+_exam_register("marker", "ai", _exam_ai_mark)
+_exam_register("marker", "keyword", _exam_keyword_marker)
+
+
+def _exam_engine(kind):
+    # The engine to use for this kind: EXAM_READER or EXAM_MARKER if it is registered, else the default.
+    # Default marker: AI when set up, otherwise the keyword check. Default reader: AI when set up, otherwise none (returns None).
+    engines = EXAM_ENGINES[kind]
+    env_name = "EXAM_READER" if kind == "reader" else "EXAM_MARKER"
+    wanted = (os.getenv(env_name) or "").strip().lower()
+    if wanted:
+        if wanted in engines:
+            return wanted, engines[wanted]
+        logger.warning("%s=%s is not a registered engine; using the default", env_name, wanted)
+    if kind == "marker":
+        if _exam_ai_ready() and "ai" in engines:
+            return "ai", engines["ai"]
+        return "keyword", engines["keyword"]
+    if _exam_ai_ready() and "ai" in engines:
+        return "ai", engines["ai"]
+    return None, None
+
+
+def _exam_propose_all(c, e, only_app_ids=None):
+    # Proposes marks for every answer that has text, using the configured marker engine.
+    # If the engine fails for a student, the keyword check is used for that student. Returns (count, whether the engine failed).
+    by_q = {}
+    for x in sorted(_ac_rows_all("koja_exam_criteria", {"exam_id": e["id"]}), key=lambda r: r.get("sort_order") or 0):
+        by_q.setdefault(x["question_no"], []).append(x)
+    answers = [a for a in _ac_rows_all("koja_exam_answers", {"exam_id": e["id"]})
+               if (a.get("answer_text") or "").strip() and (only_app_ids is None or a["application_id"] in only_app_ids)]
+    per_student = {}
+    for a in answers:
+        per_student.setdefault(a["application_id"], []).append(a)
+    name, marker = _exam_engine("marker")
+    done, failed = 0, False
+    # One paper at a time, one paper every EXAM_PAPER_GAP seconds (default 1), so the AI is not flooded.
+    gap = max(0.0, float(os.getenv("EXAM_PAPER_GAP") or 1))
+    for idx, (aid, rows) in enumerate(per_student.items()):
+        if idx and gap:
+            time.sleep(gap)
+        texts = {a["question_no"]: a["answer_text"] for a in rows}
+        try:
+            results = marker(by_q, texts) or {}
+        except Exception as exc:
+            logger.warning("exam marker %s failed: %s", name, exc)
+            failed = True
+            results = {}
+        for a in rows:
+            q = a["question_no"]
+            if q in results:
+                total, feedback = results[q]
+            else:
+                total, feedback = _exam_keyword_marker(by_q, {q: a["answer_text"]}).get(q, (0.0, "No marking points for this question."))
+            db_update("koja_exam_answers", {"id": a["id"]}, {"proposed_marks": total, "feedback": feedback, "proposed_at": utc_now()})
+            done += 1
+    return done, failed
+
+
+def _exam_sheet_answers(sh):
+    try:
+        return json.loads(sh.get("read_answers") or "{}") or {}
+    except ValueError:
+        return {}
+
+
+def _exam_apply_sheet(c, e, sheet_id, aid, answers):
+    # Writes a sheet's answers to a student. A second page for the same student is added under the first.
+    for q in [x["no"] for x in _exam_questions(_ac_rows_all("koja_exam_criteria", {"exam_id": e["id"]}))]:
+        text = (answers.get(q) or "").strip()
+        if not text:
+            continue
+        row = first_row("koja_exam_answers", {"exam_id": e["id"], "application_id": aid, "question_no": q})
+        if row:
+            old = (row.get("answer_text") or "").strip()
+            if text in old:
+                continue
+            db_update("koja_exam_answers", {"id": row["id"]}, {"answer_text": (old + "\n" + text).strip()[:10000], "proposed_marks": None,
+                                                              "feedback": "", "proposed_at": None, "updated_at": utc_now()})
+        else:
+            db_insert("koja_exam_answers", {"id": str(uuid.uuid4()), "exam_id": e["id"], "college_id": c["id"], "application_id": aid,
+                                            "question_no": q, "answer_text": text[:10000], "created_at": utc_now(), "updated_at": utc_now()})
+    db_update("koja_exam_sheets", {"id": sheet_id}, {"application_id": aid, "status": "read", "error": ""})
+
+
+def _exam_sheet_bytes(path):
+    r = _HTTP.get(sb_storage_url(path), headers=sb_headers(), timeout=60)
+    if not r.ok:
+        raise RuntimeError("Could not load the sheet.")
+    return r.content
+
+
+def _exam_key_text(e):
+    rows = sorted(_ac_rows_all("koja_exam_criteria", {"exam_id": e["id"]}), key=lambda r: r.get("sort_order") or 0)
+    return "\n".join("%s | %s | %s | %s" % (x["question_no"], x["expected_point"], _exam_num(x["marks"]), x.get("keywords") or "") for x in rows)
+
+
+def _exam_key_page(c, e, text, notice=None):
+    return _ac_page("Marking key", r'''
+<div class="card"><h2>Marking key: {{ e.title }}</h2><p class="small"><a href="{{ url_for('ac_exam_view', slug=c.slug, eid=e.id) }}">Back to the exam</a></p>
+{% if notice %}<p class="small"><strong>{{ notice }}</strong></p>{% endif %}
+<p class="small">Upload the teacher's marking key (text, Word or PDF), or paste it. Read it with AI to get draft marking points, check them, then save.</p>
+{% if ai_on %}<form method="post" action="{{ url_for('ac_exam_key_read', slug=c.slug, eid=e.id) }}" enctype="multipart/form-data">{{ csrf }}
+<label>Marking key file<input type="file" name="key" accept=".txt,.md,.pdf,.docx"></label>
+<label>Or paste the key<textarea name="key_text" rows="5"></textarea></label>
+<button class="btn" type="submit">Read key with AI</button></form>
+{% else %}<p class="small">AI is not configured, so type the marking points yourself.</p>{% endif %}
+</div>
+<div class="card"><h3>Marking points</h3><p class="small">One per line: question | expected point | marks | keywords (separated by commas). The keywords are used by the keyword check when AI is not available.</p>
+<form method="post" action="{{ url_for('ac_exam_key_save', slug=c.slug, eid=e.id) }}">{{ csrf }}
+<textarea name="points" rows="10" required>{{ text }}</textarea>
+<button class="btn" type="submit">Save marking points</button></form>
+<p class="small">Saving replaces the marking points. Answers already entered are kept. Propose marks again after you change the key.</p></div>
+''', c=c, e=e, text=text, ai_on=_exam_ai_ready(), notice=notice)
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/key")
+@login_required
+def ac_exam_key(slug, eid):
+    c, e = _exam_load(slug, eid)
+    return _exam_key_page(c, e, _exam_key_text(e))
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/key/read", methods=["POST"])
+@login_required
+def ac_exam_key_read(slug, eid):
+    c, e = _exam_load(slug, eid)
+    if e.get("approved_at"):
+        flash("This exam is approved and locked.", "danger")
+        return redirect(url_for("ac_exam_view", slug=slug, eid=eid))
+    if not _exam_ai_ready():
+        flash("AI is not configured. Type the marking points instead.", "danger")
+        return redirect(url_for("ac_exam_key", slug=slug, eid=eid))
+    text = (request.form.get("key_text") or "").strip()
+    f = request.files.get("key")
+    if f and f.filename:
+        raw = f.read(5 * 1024 * 1024 + 1)
+        if len(raw) > 5 * 1024 * 1024:
+            flash("The key file is too large (5 MB limit).", "danger")
+            return redirect(url_for("ac_exam_key", slug=slug, eid=eid))
+        extracted, _name, _ext = _ai_file_extract(f.filename, raw)
+        text = (extracted or text).strip()
+    if not text:
+        flash("Upload the key or paste it.", "danger")
+        return redirect(url_for("ac_exam_key", slug=slug, eid=eid))
+    try:
+        draft = _exam_key_draft(text)
+    except Exception as exc:
+        logger.warning("exam key AI failed: %s", exc)
+        flash("AI could not read the key. Try again, or type the marking points.", "danger")
+        return redirect(url_for("ac_exam_key", slug=slug, eid=eid))
+    if not draft:
+        flash("AI found no marking points in that key. Check the file, or type the points.", "danger")
+        return redirect(url_for("ac_exam_key", slug=slug, eid=eid))
+    return _exam_key_page(c, e, draft, notice="Check the draft below, then save it.")
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/key/save", methods=["POST"])
+@login_required
+def ac_exam_key_save(slug, eid):
+    c, e = _exam_load(slug, eid)
+    back = url_for("ac_exam_key", slug=slug, eid=eid)
+    if e.get("approved_at"):
+        flash("This exam is approved and locked.", "danger")
+        return redirect(url_for("ac_exam_view", slug=slug, eid=eid))
+    rows, errors = _exam_parse_criteria(request.form.get("points"))
+    if errors or not rows:
+        flash(errors[0] if errors else "Add at least one marking point.", "danger")
+        return redirect(back)
+    db_delete("koja_exam_criteria", {"exam_id": eid})
+    db_insert("koja_exam_criteria", [dict(r, id=str(uuid.uuid4()), exam_id=eid, college_id=c["id"], created_at=utc_now()) for r in rows])
+    _college_audit(c, "exam.key_saved", e["title"])
+    flash("Marking points saved. Propose marks again to use the new key.", "success")
+    return redirect(url_for("ac_exam_view", slug=slug, eid=eid))
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/sheets", methods=["POST"])
+@login_required
+def ac_exam_sheets_upload(slug, eid):
+    c, e = _exam_load(slug, eid)
+    back = url_for("ac_exam_view", slug=slug, eid=eid)
+    if e.get("approved_at"):
+        flash("This exam is approved and locked.", "danger")
+        return redirect(back)
+    files = [f for f in request.files.getlist("sheets") if f and f.filename]
+    if not files:
+        flash("Choose one or more photos of answer sheets.", "danger")
+        return redirect(back)
+    saved, failed = 0, 0
+    for f in files:
+        info, err = upload_storage(f, folder="exam-sheets", public=False, max_mb=EXAM_SHEET_MB, allowed=EXAM_SHEET_TYPES)
+        if err or not info:
+            failed += 1
+            continue
+        ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else "jpg"
+        db_insert("koja_exam_sheets", {"id": str(uuid.uuid4()), "exam_id": eid, "college_id": c["id"], "storage_path": info["path"],
+                                       "mime": EXAM_SHEET_MIME.get(ext, "image/jpeg"), "status": "uploaded", "uploaded_by": _ac_uid(),
+                                       "created_at": utc_now()})
+        saved += 1
+    msg = "%d sheet(s) uploaded." % saved
+    if failed:
+        msg += " %d could not be uploaded (JPG, PNG or WebP, up to %d MB each)." % (failed, EXAM_SHEET_MB)
+    flash(msg, "success" if saved and not failed else "danger")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/analyse", methods=["POST"])
+@login_required
+def ac_exam_analyse(slug, eid):
+    c, e = _exam_load(slug, eid)
+    back = url_for("ac_exam_view", slug=slug, eid=eid)
+    if e.get("approved_at"):
+        flash("This exam is approved and locked.", "danger")
+        return redirect(back)
+    reader_name, reader = _exam_engine("reader")
+    if reader is None:
+        flash("No sheet reader is set up. AI is not configured on this server: add OPENAI_API_KEY or GEMINI_API_KEY, or set EXAM_READER.", "danger")
+        return redirect(back)
+    qnos = [q["no"] for q in _exam_questions(_ac_rows_all("koja_exam_criteria", {"exam_id": eid}))]
+    students = _ca_module_students(c, e["course_id"], e["module"])
+    read_n, unmatched, failed = 0, 0, 0
+    for sh in _ac_rows_all("koja_exam_sheets", {"exam_id": eid}, order="created_at.asc"):
+        if sh.get("status") not in ("uploaded", "failed"):
+            continue
+        try:
+            info = reader(_exam_sheet_bytes(sh["storage_path"]), sh.get("mime") or "image/jpeg", qnos)
+        except Exception as exc:
+            logger.warning("exam sheet read failed: %s", exc)
+            db_update("koja_exam_sheets", {"id": sh["id"]}, {"status": "failed", "error": "This photo could not be read. Try a clearer photo."})
+            failed += 1
+            continue
+        db_update("koja_exam_sheets", {"id": sh["id"]}, {"read_name": info["student_name"], "read_number": info["student_number"],
+                                                        "read_answers": json.dumps(info["answers"]), "status": "unmatched", "error": ""})
+        m = _exam_match_student(students, info["student_number"], info["student_name"])
+        if m:
+            _exam_apply_sheet(c, e, sh["id"], m["id"], info["answers"])
+            read_n += 1
+        else:
+            unmatched += 1
+    done, engine_failed = _exam_propose_all(c, e)
+    parts = ["%d sheet(s) filed with a student" % read_n]
+    if unmatched:
+        parts.append("%d need a student chosen below" % unmatched)
+    if failed:
+        parts.append("%d could not be read" % failed)
+    flash("; ".join(parts) + ". %d answer(s) marked." % done + (" The marker failed for some answers, so the keyword check was used for them." if engine_failed else ""),
+          "success" if not (unmatched or failed or engine_failed) else "danger")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/sheets/<sid>/assign", methods=["POST"])
+@login_required
+def ac_exam_sheet_assign(slug, eid, sid):
+    c, e = _exam_load(slug, eid)
+    back = url_for("ac_exam_view", slug=slug, eid=eid)
+    if e.get("approved_at"):
+        flash("This exam is approved and locked.", "danger")
+        return redirect(back)
+    sh = first_row("koja_exam_sheets", {"id": sid, "exam_id": eid})
+    if not sh:
+        abort(404)
+    aid = clean(request.form.get("student"))
+    if aid not in {st["id"] for st in _ca_module_students(c, e["course_id"], e["module"])}:
+        flash("Choose a student in this module.", "danger")
+        return redirect(back)
+    _exam_apply_sheet(c, e, sh["id"], aid, _exam_sheet_answers(sh))
+    _exam_propose_all(c, e, only_app_ids={aid})
+    flash("Sheet filed with the student and marked.", "success")
+    return redirect(back)
+
+
+@app.route("/academic/college/<slug>/exams/<eid>/sheets/<sid>/image")
+@login_required
+def ac_exam_sheet_image(slug, eid, sid):
+    c, e = _exam_load(slug, eid)
+    sh = first_row("koja_exam_sheets", {"id": sid, "exam_id": eid})
+    if not sh:
+        abort(404)
+    try:
+        raw = _exam_sheet_bytes(sh["storage_path"])
+    except RuntimeError:
+        abort(404)
+    return Response(raw, mimetype=sh.get("mime") or "image/jpeg", headers={"Cache-Control": "private, no-store"})
 
 
 @app.route("/academic/college/<slug>/ca/template")
@@ -29173,7 +29937,7 @@ def _ac_room_access(kind, rid):
     return None, False
 
 
-AC_SCREEN_DOC_TYPES = {"pdf", "png", "jpg", "jpeg", "webp"}  # what a browser can show on the screen
+AC_SCREEN_DOC_TYPES = {"pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "rtf", "odt", "ods", "odp", "png", "jpg", "jpeg", "webp", "gif"}  # documents and pictures. PDFs and pictures show on the screen; other documents are shown as a file to download
 AC_SCREEN_DOC_MB = 25
 
 
@@ -29223,6 +29987,41 @@ def ac_live_heartbeat():
     return jsonify({"ok": True})
 
 
+def _ac_room_key(kind, rid):
+    return "%s:%s" % (kind, rid)
+
+
+@app.route("/academic/room/<kind>/<rid>/chat/data")
+@login_required
+def ac_room_chat_data(kind, rid):
+    # The last 100 messages of this room, oldest first. Only people allowed into the room can read it.
+    obj, _ = _ac_room_access(kind, rid)
+    if not obj:
+        return jsonify(ok=False, error="The room is not open."), 403
+    uid = _ac_uid()
+    rows = list(reversed(_ac_rows("koja_room_chat", {"room_key": _ac_room_key(kind, rid)}, order="created_at.desc", limit=100)))
+    return jsonify(ok=True, messages=[{"id": r["id"], "name": r.get("sender_name") or "Learner", "text": r.get("message") or "",
+                                       "at": str(r.get("created_at") or ""), "mine": str(r.get("sender_id")) == uid} for r in rows])
+
+
+@app.route("/academic/room/<kind>/<rid>/chat/say", methods=["POST"])
+@login_required
+def ac_room_chat_say(kind, rid):
+    obj, _ = _ac_room_access(kind, rid)
+    if not obj:
+        return jsonify(ok=False, error="The room is not open."), 403
+    text = clean((request.get_json(silent=True) or {}).get("text"))[:500]
+    if not text:
+        return jsonify(ok=False, error="Write a message first."), 400
+    name = clean((current_user() or {}).get("full_name") or "Learner")[:80]
+    row = {"id": str(uuid.uuid4()), "room_key": _ac_room_key(kind, rid), "sender_id": _ac_uid(), "sender_name": name,
+           "message": text, "created_at": utc_now()}
+    _, err = db_insert("koja_room_chat", row)
+    if err:
+        return jsonify(ok=False, error="Could not send. Try again."), 500
+    return jsonify(ok=True)
+
+
 @app.route("/academic/room/<kind>/<rid>")
 @login_required
 def ac_room(kind, rid):
@@ -29235,6 +30034,227 @@ def ac_room(kind, rid):
     else:
         back_url = url_for("ac_class", cid=rid) if kind == "class" else (url_for("ac_teacher_dashboard") if is_teacher else url_for("ac_my_sessions"))
     return _ac_page("Live room", r'''
+<style>
+body{padding-bottom:84px}
+.meet-bottom{position:fixed!important;left:0;right:0;bottom:0;z-index:50;display:flex!important;flex-direction:row!important;align-items:center;justify-content:space-between;gap:6px;padding:8px 10px;margin:0;background:#202124;box-sizing:border-box;flex-wrap:wrap}
+.meet-left{color:#e8eaed;font-size:14px;white-space:nowrap;min-width:0}
+.meet-left .meet-sep{margin:0 8px;opacity:.5}
+.meet-center,.meet-right{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.meet-btn{width:auto!important;max-width:none;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;margin:0;width:46px!important;height:46px!important;min-height:46px;border:0;border-radius:50%!important;background:#3c4043;color:#fff;font:inherit;font-size:17px;font-weight:700;padding:0;cursor:pointer;line-height:1}
+.meet-btn[aria-pressed=true],.meet-btn.meet-on{background:#1a73e8}
+.meet-btn:disabled{opacity:.4;cursor:not-allowed}
+.meet-btn.meet-end{width:64px!important;border-radius:999px!important;background:#d93025}
+.meet-btn.meet-small{font-size:12px}
+.meet-btn[hidden]{display:none!important}
+.meet-btn.meet-active{background:#8ab4f8;color:#202124}
+.meet-react{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;z-index:55;display:flex;gap:6px;padding:8px 10px;background:#fff;border-radius:999px;box-shadow:0 6px 20px rgba(0,0,0,.3)}
+.meet-react[hidden]{display:none}
+.meet-react button{width:40px!important;height:40px!important;border:0;border-radius:50%!important;background:#f1f3f4;font-size:20px;cursor:pointer;padding:0}
+.meet-side{position:fixed;right:0;top:58px;bottom:76px;width:min(360px,100%);z-index:60;background:#fff;color:#202124;box-shadow:-4px 0 18px rgba(0,0,0,.25);overflow:auto;padding:12px;box-sizing:border-box;border-radius:12px 0 0 12px}
+.meet-side[hidden]{display:none}
+.meet-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.meet-head strong{font-size:18px}
+.meet-x{width:40px!important;height:40px!important;min-height:40px;border:0;border-radius:50%!important;background:#f1f3f4;font-size:20px;cursor:pointer;padding:0}
+.meet-tabs{display:flex;flex-wrap:nowrap;gap:2px;border-bottom:1px solid #dadce0;margin-bottom:8px}
+.meet-tab{flex:1 1 0;min-width:0;padding:0 2px;min-height:42px;border:0;background:none;font:inherit;font-size:13px;font-weight:600;color:#5f6368;cursor:pointer;border-bottom:3px solid transparent}
+.meet-tab[aria-selected=true]{color:#1a73e8;border-bottom-color:#1a73e8}
+.meet-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee;font-size:14px}
+.meet-row .meet-muted{margin-left:auto;color:#5f6368;font-size:12px}
+.meet-av{width:34px;height:34px;border-radius:50%;background:#7b1fa2;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;flex:0 0 34px}
+.meet-chatlog{height:52vh;overflow:auto;padding:4px 2px;border-bottom:1px solid #eee;margin-bottom:8px}
+.meet-msg{margin:8px 0;font-size:14px}
+.meet-msg .meet-when{color:#5f6368;font-size:12px;margin-left:6px}
+.meet-msg .meet-text{margin-top:2px;white-space:pre-wrap;word-break:break-word}
+.meet-chatform{display:flex;gap:6px;align-items:center}
+.meet-chatform input{flex:1 1 auto;min-width:0;width:100%;min-height:44px;border:1px solid #dadce0;border-radius:999px;padding:0 14px;font:inherit;font-size:14px;margin:0;width:auto}
+.meet-send{flex:0 0 auto!important;width:auto!important;min-width:0;min-height:44px;border:0;border-radius:999px;background:#1a73e8;color:#fff;font:inherit;font-weight:600;padding:0 16px;cursor:pointer;white-space:nowrap}
+.meet-side .small{color:#5f6368}
+#ac-stage .ac-tabs{display:flex}
+@media (max-width:759px){.meet-left{display:none}.meet-bottom{padding:6px 6px;gap:4px}.meet-btn{width:40px!important;height:40px!important;min-height:40px;font-size:15px}.meet-btn.meet-end{width:56px!important}.meet-center,.meet-right{gap:4px}.meet-side{bottom:112px}.meet-react{bottom:116px}body{padding-bottom:112px}}
+@media (min-width:760px){.meet-side{right:12px;top:70px;bottom:92px;border-radius:14px}}
+#ac-stage.ac-presenting #ac-boardbox,#ac-stage.ac-presenting #ac-board-h,#ac-stage.ac-presenting #ac-matpanel{display:none!important}
+#ac-stage.ac-presenting #ac-screenbox{display:contents!important}
+#ac-stage.ac-presenting #ac-doc-wrap{margin:0!important;min-width:0}
+#ac-stage.ac-presenting #ac-doc{min-height:0!important;background:#202124!important}
+#ac-stage.ac-presenting #ac-doc iframe{height:72vh!important;width:100%!important}
+#ac-stage.ac-presenting #ac-doc img{width:100%!important;height:auto!important;max-height:72vh!important;object-fit:contain!important;margin:0 auto!important;display:block}
+#ac-stage.ac-presenting #ac-screen{position:relative!important;margin:0!important}
+#ac-stage.ac-presenting #ac-videos{position:absolute!important;inset:0!important}
+@media (min-width:760px){
+#ac-stage.ac-presenting{display:grid!important;grid-template-columns:minmax(0,1fr) 240px!important;gap:12px!important;align-items:start!important}
+#ac-stage.ac-presenting #ac-doc-wrap{grid-column:1!important;grid-row:1!important}
+#ac-stage.ac-presenting #ac-screen{grid-column:2!important;grid-row:1!important;height:72vh!important;min-height:360px!important}
+#ac-stage.ac-presenting #ac-videos{grid-template-columns:1fr!important}
+}
+@media (max-width:759px){
+#ac-stage.ac-presenting{display:flex!important;flex-direction:column!important;gap:10px!important}
+#ac-stage.ac-presenting #ac-doc-wrap{order:1}
+#ac-stage.ac-presenting #ac-screen{order:2;height:150px!important}
+#ac-stage.ac-presenting #ac-videos{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))!important}
+}
+</style>
+<div class="meet-react" id="meet-react" hidden role="group" aria-label="Send a reaction"><button type="button" data-emoji="👍" aria-label="Thumbs up">👍</button><button type="button" data-emoji="👏" aria-label="Clap">👏</button><button type="button" data-emoji="😂" aria-label="Laugh">😂</button><button type="button" data-emoji="😮" aria-label="Surprised">😮</button><button type="button" data-emoji="🎉" aria-label="Celebrate">🎉</button><button type="button" data-emoji="❤️" aria-label="Heart">❤️</button></div>
+<aside id="meet-side" class="meet-side" hidden aria-label="Meeting panel">
+<div class="meet-head"><strong id="meet-side-title">People</strong><button type="button" id="meet-close" class="meet-x" aria-label="Close panel">&times;</button></div>
+<div class="meet-tabs" role="tablist"><button type="button" class="meet-tab" data-meet-tab="people" aria-selected="true">People</button><button type="button" class="meet-tab" data-meet-tab="chat" aria-selected="false">Chat</button><button type="button" class="meet-tab" data-meet-tab="materials" aria-selected="false">Materials</button><button type="button" class="meet-tab" data-meet-tab="activities" aria-selected="false">Activities</button></div>
+<div data-meet-pane="people"><p class="small" id="meet-count">In call</p><div id="meet-roster"></div></div>
+<div data-meet-pane="chat" hidden><div id="meet-chat-log" class="meet-chatlog" aria-live="polite"></div><form id="meet-chat-form" class="meet-chatform"><input id="meet-chat-input" maxlength="500" placeholder="Send a message" aria-label="Send a message" autocomplete="off"><button type="submit" class="meet-send">Send</button></form><p id="meet-chat-msg" class="small" role="status"></p></div>
+<div data-meet-pane="materials" hidden>{% if kind != 'public' %}<p><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Open materials and equipment</a></p>{% endif %}</div>
+<div data-meet-pane="activities" hidden>{% if kind != 'public' %}<p><a href="{{ url_for('ac_quiz_page', kind=kind, rid=rid) }}">Live quiz</a></p><p><a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a></p>{% endif %}</div>
+<div data-meet-pane="info" hidden><p>Meeting code: <strong>{{ rid[:8] }}</strong></p><p class="small" id="meet-info-time"></p><p class="small">{{ 'You are the teacher.' if is_teacher else 'You are a learner.' }}</p></div>
+</aside>
+<div class="meet-bottom" role="toolbar" aria-label="Call controls">
+<div class="meet-left"><span id="meet-clock">--:--</span><span class="meet-sep">|</span><span>{{ rid[:8] }}</span></div>
+<div class="meet-center">
+<button type="button" id="meet-mic" class="meet-btn" aria-pressed="false" title="Turn microphone on or off" aria-label="Microphone">&#127908;</button>
+<button type="button" id="meet-cam" class="meet-btn" aria-pressed="false" title="Turn camera on or off" aria-label="Camera">&#128247;</button>
+<button type="button" id="meet-cc" class="meet-btn meet-small" disabled title="Captions are not available yet" aria-label="Captions">CC</button>
+<button type="button" id="meet-react-btn" class="meet-btn" aria-expanded="false" title="Send a reaction" aria-label="Reactions">&#128512;</button>
+<button type="button" id="meet-hand" class="meet-btn" title="Raise hand" aria-label="Raise hand" {{ 'hidden' if is_teacher }}>&#9995;</button>
+<button type="button" id="meet-share" class="meet-btn" title="Show a PDF or picture" aria-label="Present a file">&#128421;</button>
+<button type="button" id="meet-more" class="meet-btn" title="More" aria-label="More options">&#8942;</button>
+<button type="button" id="meet-end" class="meet-btn meet-end" title="Leave the call" aria-label="Leave the call">&#9742;</button>
+</div>
+<div class="meet-right">
+<button type="button" id="meet-info-btn" class="meet-btn" title="Meeting details" aria-label="Meeting details">i</button>
+<button type="button" id="meet-people-btn" class="meet-btn" title="People" aria-label="People">&#128101;</button>
+<button type="button" id="meet-chat-btn" class="meet-btn" title="Chat" aria-label="Chat">&#128172;</button>
+<button type="button" id="meet-act-btn" class="meet-btn" title="Activities" aria-label="Activities">&#10022;</button>
+</div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var CSRF = {{ csrf_token()|tojson }};
+  var CHAT_DATA = {{ url_for('ac_room_chat_data', kind=kind, rid=rid)|tojson }};
+  var CHAT_SAY = {{ url_for('ac_room_chat_say', kind=kind, rid=rid)|tojson }};
+  var ME = {{ me_id|tojson }}; var IS_T = {{ is_teacher|tojson }};
+  var side = document.getElementById('meet-side');
+  var titles = {people: 'People', chat: 'Chat', materials: 'Materials', activities: 'Activities', info: 'Meeting details'};
+  var clocks = [document.getElementById('meet-clock')];
+  function tick() {
+    var t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    clocks.forEach(function (c) { if (c) c.textContent = t; });
+    var it = document.getElementById('meet-info-time'); if (it) it.textContent = 'Time now: ' + t;
+  }
+  tick(); setInterval(tick, 30000);
+  // Move the existing board-permission list and the teacher/student tool buttons into the side panel. Their ids and handlers stay.
+  var people = document.getElementById('ac-people');
+  if (people) side.querySelector('[data-meet-pane="people"]').appendChild(people.closest('.card') || people);
+  var acts = side.querySelector('[data-meet-pane="activities"]');
+  document.querySelectorAll('.ac-toolbar').forEach(function (t) { acts.insertBefore(t, acts.firstChild); });
+  var shareReal = document.getElementById('ac-share');
+  if (!shareReal || !IS_T) document.getElementById('meet-share').hidden = true;
+  var fileIn = document.getElementById('ac-doc-file');
+  if (fileIn) fileIn.addEventListener('change', function () { if (fileIn.files && fileIn.files.length) { var go = document.getElementById('ac-doc-show'); if (go) go.click(); } });
+
+  var current = null;
+  function show(name) {
+    current = name;
+    side.hidden = false;
+    side.querySelectorAll('[data-meet-pane]').forEach(function (p) { p.hidden = p.getAttribute('data-meet-pane') !== name; });
+    side.querySelectorAll('[data-meet-tab]').forEach(function (t) { t.setAttribute('aria-selected', String(t.getAttribute('data-meet-tab') === name)); });
+    document.getElementById('meet-side-title').textContent = titles[name] || 'Meeting';
+    ['people', 'chat', 'activities'].forEach(function (k) {
+      var b = document.getElementById({people: 'meet-people-btn', chat: 'meet-chat-btn', activities: 'meet-act-btn'}[k]);
+      b.classList.toggle('meet-active', current === k);
+    });
+    document.getElementById('meet-info-btn').classList.toggle('meet-active', current === 'info');
+    if (name === 'chat') { var log = document.getElementById('meet-chat-log'); log.scrollTop = log.scrollHeight; }
+  }
+  function hide() { side.hidden = true; current = null; ['meet-people-btn', 'meet-chat-btn', 'meet-act-btn', 'meet-info-btn'].forEach(function (id) { document.getElementById(id).classList.remove('meet-active'); }); }
+  function toggle(name) { if (!side.hidden && current === name) hide(); else show(name); }
+  side.querySelectorAll('[data-meet-tab]').forEach(function (t) { t.onclick = function () { show(t.getAttribute('data-meet-tab')); }; });
+  document.getElementById('meet-close').onclick = hide;
+  document.getElementById('meet-people-btn').onclick = function () { toggle('people'); };
+  document.getElementById('meet-chat-btn').onclick = function () { toggle('chat'); };
+  document.getElementById('meet-act-btn').onclick = function () { toggle('activities'); };
+  document.getElementById('meet-info-btn').onclick = function () { toggle('info'); };
+  document.getElementById('meet-more').onclick = function () { show('activities'); };
+
+  function lk() { return (window.__koja_room && window.__koja_room()) || null; }
+  function notice(text) { var m = document.getElementById('meet-chat-msg'); if (m) m.textContent = text || ''; }
+
+  // Controls
+  var micBtn = document.getElementById('meet-mic'), camBtn = document.getElementById('meet-cam');
+  micBtn.onclick = async function () {
+    var r = lk(); if (!r) { alert('The call is still connecting. Try again in a moment.'); return; }
+    var on = micBtn.getAttribute('aria-pressed') !== 'true';
+    try { await r.localParticipant.setMicrophoneEnabled(on); micBtn.setAttribute('aria-pressed', String(on)); } catch (e) { alert('Your microphone is blocked. Allow access in your browser and try again.'); }
+  };
+  camBtn.onclick = async function () {
+    var r = lk(); if (!r) { alert('The call is still connecting. Try again in a moment.'); return; }
+    var on = camBtn.getAttribute('aria-pressed') !== 'true';
+    try { await r.localParticipant.setCameraEnabled(on); camBtn.setAttribute('aria-pressed', String(on)); } catch (e) { alert('Your camera is blocked. Allow access in your browser and try again.'); }
+  };
+  var reactBtn = document.getElementById('meet-react-btn'), reactRow = document.getElementById('meet-react');
+  reactBtn.onclick = function () { var open = reactRow.hidden; reactRow.hidden = !open; reactBtn.setAttribute('aria-expanded', String(open)); };
+  reactRow.querySelectorAll('[data-emoji]').forEach(function (b) {
+    b.onclick = function () { reactRow.hidden = true; reactBtn.setAttribute('aria-expanded', 'false'); sendText(b.getAttribute('data-emoji')); };
+  });
+  document.getElementById('meet-hand').onclick = function () { var h = document.getElementById('ac-hand'); if (h) h.click(); };
+  document.getElementById('meet-share').onclick = function () { var f = document.getElementById('ac-doc-file'); if (IS_T && f) f.click(); else if (shareReal) shareReal.click(); };
+  document.getElementById('meet-end').onclick = function () { var l = document.getElementById('ac-leave'); if (l) l.click(); };
+
+  // People: the people in the call, read from the LiveKit room every 3 seconds
+  function roster() {
+    var r = lk(); var box = document.getElementById('meet-roster'); var count = document.getElementById('meet-count');
+    if (!r || !box) return;
+    var list = [r.localParticipant].concat(Array.from(r.remoteParticipants.values()));
+    box.textContent = '';
+    list.forEach(function (p) {
+      var name = (p === r.localParticipant) ? 'You' : (p.name || p.identity || 'Participant');
+      var row = document.createElement('div'); row.className = 'meet-row';
+      var av = document.createElement('span'); av.className = 'meet-av'; av.textContent = (name.trim().charAt(0) || '?').toUpperCase();
+      var nm = document.createElement('span'); nm.textContent = name;
+      var mu = document.createElement('span'); mu.className = 'meet-muted'; mu.textContent = p.isMicrophoneEnabled ? '' : 'Muted';
+      row.appendChild(av); row.appendChild(nm); row.appendChild(mu); box.appendChild(row);
+    });
+    count.textContent = 'In call (' + list.length + ')';
+  }
+  setInterval(roster, 3000);
+
+  // Chat: saved in the database, polled every 3 seconds
+  var seen = {};
+  var chatDown = false;
+  function renderMsg(m) {
+    var log = document.getElementById('meet-chat-log');
+    var atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    var wrap = document.createElement('div'); wrap.className = 'meet-msg';
+    var who = document.createElement('strong'); who.textContent = m.mine ? 'You' : (m.name || 'Learner');
+    var when = document.createElement('span'); when.className = 'meet-when';
+    var d = new Date(m.at); when.textContent = isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    var body = document.createElement('div'); body.className = 'meet-text'; body.textContent = m.text;
+    wrap.appendChild(who); wrap.appendChild(when); wrap.appendChild(body); log.appendChild(wrap);
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+  async function loadChat() {
+    try {
+      var res = await fetch(CHAT_DATA, { credentials: 'same-origin' });
+      var data = await res.json();
+      if (!data.ok) throw new Error('bad');
+      chatDown = false; notice('');
+      data.messages.forEach(function (m) { if (!seen[m.id]) { seen[m.id] = true; renderMsg(m); } });
+    } catch (e) { if (!chatDown) notice('The chat cannot load right now.'); chatDown = true; }
+  }
+  async function sendText(text) {
+    try {
+      var res = await fetch(CHAT_SAY, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF }, body: JSON.stringify({ text: text }) });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || !data.ok) { notice(data.error || 'Could not send. Try again.'); return false; }
+      notice(''); await loadChat(); return true;
+    } catch (e) { notice('Could not send. Check your connection.'); return false; }
+  }
+  document.getElementById('meet-chat-form').addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    var input = document.getElementById('meet-chat-input');
+    var text = (input.value || '').trim();
+    if (!text) return;
+    if (await sendText(text)) input.value = '';
+  });
+  loadChat(); setInterval(loadChat, 3000);
+  roster();
+});
+</script>
 <div class="ac-sk" style="background:none;border:0;padding:0;margin:0;box-shadow:none"><svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="koja-sketch"><feTurbulence type="fractalNoise" baseFrequency="0.06" numOctaves="2" seed="7"/><feDisplacementMap in="SourceGraphic" scale="2.2"/></filter></svg><h2 class="ac-words">Live room</h2><p id="ac-status" class="ac-words">Connecting…</p>
 <div class="actions">{% if kind == 'public' %}<button class="btn secondary ac-icon" type="button" id="ac-share-live" aria-label="Share this live class" title="Share" style="display:inline-flex;align-items:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg></button>{% endif %}<button class="btn secondary" type="button" id="ac-leave" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4H7v16h8M11 12h10M18 9l3 3-3 3"/></svg></span><span class="ac-words">Leave room</span></button>{% if is_teacher %}{% endif %}</div>
 <style>.ac-corner{position:absolute!important;right:10px;bottom:10px;width:36%;min-width:150px;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.45);border-radius:12px;overflow:hidden;touch-action:none;cursor:move}#ac-screenbox{position:relative}.ac-news{position:relative;aspect-ratio:16/9;background:#050b14;border-radius:14px;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -29272,7 +30292,7 @@ def ac_room(kind, rid):
 <div id="ac-matpanel" hidden><h3 class="ac-words">Materials</h3>{% for m in teaching_mats %}<p>{% if m.file_path %}<a href="{{ url_for('ac_material_file', mid=m.id) }}" target="_blank" rel="noopener">📄 {{ m.title }}</a>{% else %}<a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">🔗 {{ m.title }}</a>{% endif %}</p>{% else %}<p>No materials shared yet.</p>{% endfor %}
 <h3 class="ac-words">Equipment</h3>{% for e in teaching_eqs %}<p>{{ '✔' if e.ready else '○' }} {{ e.name }} × {{ e.quantity }} · {{ 'Teacher provides' if e.provided_by == 'teacher' else 'Bring one' }}</p>{% else %}<p>No equipment listed.</p>{% endfor %}</div>
 {% if kind != 'public' %}<p class="ac-words"><a href="{{ url_for('ac_teaching', kind=kind, rid=rid) }}">Full materials and equipment page</a> &middot; <a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a> &middot; <a href="{{ url_for('ac_board_page', kind=kind, rid=rid) }}">Maths and physics board</a></p>{% endif %}
-{% if is_teacher %}<div class="ac-toolbar" role="toolbar" aria-label="Teacher tools"><button class="btn" type="button" id="ac-listen" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg></span><span class="ac-lbl ac-words">Write what I say</span></button><button class="btn secondary ac-icon" type="button" id="ac-share" data-no-icon aria-label="Share screen" title="Share screen"><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span></button><label for="ac-doc-file" class="btn secondary" data-no-icon title="Choose a PDF or picture" aria-label="Choose a PDF or picture" style="display:inline-flex;align-items:center;margin-bottom:8px;cursor:pointer"><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v4h16v-4"/></svg></span></label><button class="btn" type="button" id="ac-doc-show" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16V8M8 12l4-4 4 4"/></svg></span><span class="ac-words">Show on screen</span></button><button class="btn secondary" type="button" id="ac-doc-close" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></span><span class="ac-words">Remove from screen</span></button><button class="btn secondary" type="button" id="ac-clear" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></span><span class="ac-words">Clear board</span></button><button class="btn secondary" type="button" id="ac-allow-all" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="ac-words">Allow everyone to write</span></button></div><div id="ac-requests"></div><p class="small ac-words" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" aria-label="Type or speak a line to write on the board" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></span><span class="ac-words">Write on board</span></button></div><p class="small ac-words">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card ac-words" style="margin-top:10px"><h3 class="ac-words">Show a document on the screen</h3><p class="small ac-words">PDF lesson or picture (PNG, JPG, WEBP), up to 25 MB. A PDF shows one page at a time: use &lsaquo; and &rsaquo; to move everyone through the slides.</p><input id="ac-doc-name" maxlength="160" aria-label="Title" class="ac-words"><input id="ac-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" aria-label="Choose a PDF or picture" class="ac-words"><p class="small ac-words" id="ac-doc-status"></p></div>{% endif %}
+{% if is_teacher %}<div class="ac-toolbar" role="toolbar" aria-label="Teacher tools"><button class="btn" type="button" id="ac-listen" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg></span><span class="ac-lbl ac-words">Write what I say</span></button><button class="btn secondary ac-icon" type="button" id="ac-share" data-no-icon aria-label="Share screen" title="Share screen"><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span></button><label for="ac-doc-file" class="btn secondary" data-no-icon title="Choose a document or picture" aria-label="Choose a document or picture" style="display:inline-flex;align-items:center;margin-bottom:8px;cursor:pointer"><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v4h16v-4"/></svg></span></label><button class="btn" type="button" id="ac-doc-show" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16V8M8 12l4-4 4 4"/></svg></span><span class="ac-words">Show on screen</span></button><button class="btn secondary" type="button" id="ac-doc-close" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></span><span class="ac-words">Remove from screen</span></button><button class="btn secondary" type="button" id="ac-clear" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></span><span class="ac-words">Clear board</span></button><button class="btn secondary" type="button" id="ac-allow-all" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="ac-words">Allow everyone to write</span></button></div><div id="ac-requests"></div><p class="small ac-words" id="ac-listen-status">Writes each sentence you say on the board for everyone.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><input id="ac-type-text" maxlength="300" aria-label="Type or speak a line to write on the board" style="flex:1;min-width:200px" enterkeyhint="send"><button class="btn" type="button" id="ac-type-write" data-no-icon><span class="ac-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></span><span class="ac-words">Write on board</span></button></div><p class="small ac-words">Works in any browser: tap the microphone on your phone keyboard, say the words, then press Write.</p>{% if is_teacher %}<div class="card ac-words" style="margin-top:10px"><h3 class="ac-words">Show a document on the screen</h3><p class="small ac-words">PDF lesson or picture (PNG, JPG, WEBP), up to 25 MB. A PDF shows one page at a time: use &lsaquo; and &rsaquo; to move everyone through the slides.</p><input id="ac-doc-name" maxlength="160" aria-label="Title" class="ac-words"><input id="ac-doc-file" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.rtf,.odt,.ods,.odp,.png,.jpg,.jpeg,.webp,.gif" aria-label="Choose a document or picture" class="ac-words"><p class="small ac-words" id="ac-doc-status"></p></div>{% endif %}
 <div class="card" style="margin-top:10px"><h3 class="ac-words">Who can write on the board</h3><div id="ac-people" class="small"></div></div>{% endif %}</div>
 {% if is_teacher %}<script>(function(){var HB={{ url_for('ac_live_heartbeat')|tojson }},K={{ kind|tojson }},R={{ rid|tojson }},T={{ csrf_token()|tojson }};function beat(){fetch(HB,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':T},body:JSON.stringify({kind:K,rid:R})}).catch(function(){});}beat();setInterval(beat,60000);})();</script>{% endif %}
 {% if kind == 'public' %}<div id="ac-share-sheet" hidden style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;padding:10px;margin:8px 0;background:#fff;border-radius:12px"><a data-share="fb" target="_blank" rel="noopener" aria-label="Share on Facebook" title="Facebook" style="display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:50%;background:#eef2f7;color:#111;border:0;text-decoration:none;font-weight:700;font-size:16px;cursor:pointer">f</a><a data-share="x" target="_blank" rel="noopener" aria-label="Share on X" title="X" style="display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:50%;background:#eef2f7;color:#111;border:0;text-decoration:none;font-weight:700;font-size:16px;cursor:pointer">X</a><a data-share="wa" target="_blank" rel="noopener" aria-label="Share on WhatsApp" title="WhatsApp" style="display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:50%;background:#eef2f7;color:#111;border:0;text-decoration:none;font-weight:700;font-size:16px;cursor:pointer"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.6-5A8.5 8.5 0 1 1 21 11.5z"/></svg></a><button type="button" data-share="copy" aria-label="Copy link" title="Copy link" style="display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:50%;background:#eef2f7;color:#111;border:0;text-decoration:none;font-weight:700;font-size:16px;cursor:pointer"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></button></div><script>(function(){var b=document.getElementById('ac-share-live'),sh=document.getElementById('ac-share-sheet');if(!b||!sh)return;var url=location.origin+location.pathname,text='Watch this live class on KOJA AFRICA';var e=encodeURIComponent;sh.querySelector('[data-share=fb]').href='https://www.facebook.com/sharer/sharer.php?u='+e(url);sh.querySelector('[data-share=x]').href='https://twitter.com/intent/tweet?url='+e(url)+'&text='+e(text);sh.querySelector('[data-share=wa]').href='https://wa.me/?text='+e(text+' '+url);function more(){if(navigator.share){navigator.share({title:'KOJA AFRICA live class',text:text,url:url}).catch(function(){});return true}return false}b.onclick=function(){if(more())return;sh.hidden=!sh.hidden};sh.querySelector('[data-share=copy]').onclick=function(){if(navigator.clipboard)navigator.clipboard.writeText(url).catch(function(){})};})();</script>{% endif %}
@@ -29439,6 +30459,7 @@ function showDoc(d){
   if(!wrap||!box)return;
   const same=!!(d&&d.url&&curDoc&&curDoc.id===d.id&&box.querySelector('#ac-slide'));
   curDoc=(d&&d.url)?d:null;
+  document.getElementById('ac-stage')?.classList.toggle('ac-presenting',!!curDoc);
   if(!curDoc){box.innerHTML='';wrap.hidden=true;return}
   tt.textContent='On screen: '+(curDoc.title||'Document');
   if(isPdfDoc(curDoc)){
@@ -29449,11 +30470,12 @@ function showDoc(d){
   }
   box.innerHTML='';
   if((curDoc.mime||'').indexOf('image/')===0){const im=document.createElement('img');im.src=curDoc.url;im.alt=curDoc.title||'Document';im.style.cssText='width:100%;height:auto;display:block';box.appendChild(im)}
-  else{const fr=document.createElement('iframe');fr.src=curDoc.url;fr.title=curDoc.title||'Document';fr.style.cssText='width:100%;height:70vh;border:0;display:block';box.appendChild(fr)}
+  else if(/wordprocessingml|presentationml|spreadsheetml|text\/csv|text\/plain/.test((curDoc.mime||'').toLowerCase())){const fr=document.createElement('iframe');fr.src=curDoc.url+(curDoc.url.indexOf('?')>=0?'&':'?')+'view=1';fr.title=curDoc.title||'Document';fr.setAttribute('sandbox','');fr.style.cssText='width:100%;height:70vh;border:0;display:block;background:#fff';box.appendChild(fr)}
+    else{const card=document.createElement('div');card.style.cssText='background:#fff;border-radius:12px;padding:24px;margin:16px;text-align:center';const h=document.createElement('p');h.style.cssText='font-weight:700;font-size:18px;margin:0 0 6px';h.textContent=curDoc.title||'Document';const n=document.createElement('p');n.className='small';n.style.margin='0 0 14px';n.textContent='Open this file on your device to read it.';const a=document.createElement('a');a.className='btn';a.href=curDoc.url;a.setAttribute('download','');a.textContent='Download to open';card.appendChild(h);card.appendChild(n);card.appendChild(a);box.appendChild(card)}
   wrap.hidden=false;
 }
 function setWrite(on){canDraw=IS_TEACHER||!!on;cv.style.cursor=canDraw?'crosshair':'not-allowed';const pm=document.getElementById('ac-perm');if(pm&&!IS_TEACHER)pm.textContent=canDraw?'You can write on the board now.':'Only the teacher writes on the board. Ask your teacher to let you write.'}
-let room=null;
+let room=null;window.__koja_room=function(){return room};window.__koja_showDoc=function(d){showDoc(d)};
 function setStatus(t){st.textContent=t;st.classList.toggle('ac-words',!/could not|failed|blocked|not supported|stopped|not allowed/i.test(t))}
 function drawText(t,x,y){cx.font='22px sans-serif';cx.fillStyle='#111';cx.fillText(t,x,y);cx.fillStyle='#111'}
 let lineY=40;
@@ -29688,7 +30710,7 @@ def ac_room_doc(kind, rid):
         return jsonify({"error": "Only the teacher can show a document."}), 403
     f = request.files.get("file")
     if not f or not f.filename:
-        return jsonify({"error": "Choose a PDF or picture to show."}), 400
+        return jsonify({"error": "Choose a document or picture to show."}), 400
     title = clean(request.form.get("title"))[:160] or f.filename[:160]
     info, err = upload_storage(f, folder="academic-room-docs", public=False, max_mb=AC_SCREEN_DOC_MB, allowed=AC_SCREEN_DOC_TYPES)
     if err:
@@ -29735,6 +30757,91 @@ def ac_room_slide(kind, rid):
     return jsonify({"ok": True})
 
 
+ROOM_VIEW_TYPES = {"docx", "pptx", "xlsx", "csv", "txt"}  # shown on the screen as a page. Older .doc/.ppt/.xls files are downloads.
+
+
+def _room_html_table(rows):
+    rows = [r for r in rows if any((c or "").strip() for c in r)]
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    body = "".join("<tr>" + "".join("<td>%s</td>" % escape((c or "").strip()) for c in (list(r) + [""] * (width - len(r)))) + "</tr>" for r in rows)
+    return "<table>%s</table>" % body
+
+
+def _room_img_html(blob, content_type):
+    return '<img src="data:%s;base64,%s" alt="">' % (escape(content_type or "image/png"), base64.b64encode(blob).decode("ascii"))
+
+
+def _room_doc_to_html(name, raw):
+    # Turns a Word, PowerPoint, Excel, CSV or text file into a plain page for the room screen. Text, tables and pictures are kept;
+    # fine layout is not. All text is escaped, and the page has no scripts.
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    parts = []
+    if ext == "docx":
+        from docx import Document
+        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+        doc = Document(io.BytesIO(raw))
+        rels = doc.part.rels
+        for child in doc.element.body.iterchildren():
+            tag = child.tag.split("}")[-1]
+            if tag == "p":
+                para = Paragraph(child, doc)
+                for blip in child.iter(qn("a:blip")):
+                    rid = blip.get(qn("r:embed"))
+                    if rid and rid in rels:
+                        part = rels[rid].target_part
+                        parts.append(_room_img_html(part.blob, part.content_type))
+                text = para.text or ""
+                if text.strip():
+                    style = (para.style.name if para.style is not None else "") or ""
+                    level = "h2" if (style.startswith("Heading") or style == "Title") else "p"
+                    parts.append("<%s>%s</%s>" % (level, escape(text), level))
+            elif tag == "tbl":
+                table = Table(child, doc)
+                parts.append(_room_html_table([[c.text for c in r.cells] for r in table.rows]))
+    elif ext == "pptx":
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+        prs = Presentation(io.BytesIO(raw))
+        for i, slide in enumerate(prs.slides, 1):
+            parts.append('<section class="slide"><p class="small">Slide %d</p>' % i)
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        text = "".join(run.text for run in para.runs)
+                        if text.strip():
+                            parts.append("<p>%s</p>" % escape(text))
+                if getattr(shape, "has_table", False) and shape.has_table:
+                    parts.append(_room_html_table([[c.text for c in r.cells] for r in shape.table.rows]))
+                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                    parts.append(_room_img_html(shape.image.blob, shape.image.content_type))
+            parts.append("</section>")
+    elif ext == "xlsx":
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+        for ws in wb.worksheets:
+            rows = [["" if v is None else str(v) for v in row] for row in ws.iter_rows(max_row=500, max_col=50, values_only=True)]
+            parts.append("<h2>%s</h2>" % escape(ws.title or "Sheet"))
+            parts.append(_room_html_table(rows))
+    elif ext == "csv":
+        text = raw.decode("utf-8-sig", errors="replace")
+        rows = list(csv.reader(io.StringIO(text)))[:500]
+        parts.append(_room_html_table(rows))
+    elif ext == "txt":
+        parts.append("<pre>%s</pre>" % escape(raw.decode("utf-8-sig", errors="replace")))
+    else:
+        raise ValueError("not a room document type")
+    return ("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<style>body{font-family:Arial,sans-serif;color:#202124;margin:0;padding:20px;background:#fff;line-height:1.5;word-wrap:break-word}"
+            "h2{font-size:20px;margin:18px 0 8px}img{max-width:100%;height:auto;display:block;margin:10px auto}"
+            "table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px}td{border:1px solid #dadce0;padding:6px 8px;vertical-align:top}"
+            "section.slide{border-bottom:2px solid #eee;padding-bottom:18px;margin-bottom:18px}.small{color:#5f6368;font-size:12px}pre{white-space:pre-wrap;font-family:inherit}</style>"
+            "</head><body>" + "".join(parts) + "</body></html>")
+
+
 @app.route("/academic/room/<kind>/<rid>/doc/<eid>")
 @login_required
 def ac_room_doc_file(kind, rid, eid):
@@ -29756,6 +30863,20 @@ def ac_room_doc_file(kind, rid, eid):
     if not r.ok:
         r.close()
         abort(404)
+    name = p0.get("name") or "document"
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if request.args.get("view") and ext in ROOM_VIEW_TYPES:
+        # Show the document on the room screen as a page. The page allows no scripts and no outside pictures.
+        try:
+            raw = r.content
+            page = _room_doc_to_html(name, raw)
+        except Exception:
+            logger.exception("Academic room document could not be shown")
+            page = "<!doctype html><html><body style=\"font-family:Arial,sans-serif;padding:20px\"><p>This file could not be shown here. Download it to open.</p></body></html>"
+        r.close()
+        return Response(page, mimetype="text/html", headers={
+            "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
     mime = p0.get("mime") or "application/octet-stream"
     return Response(stream_with_context(r.iter_content(65536)), mimetype=mime,
                     headers={"Content-Disposition": 'inline; filename="%s"' % (secure_filename(p0.get("name") or "document") or "document"),
