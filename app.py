@@ -30047,6 +30047,11 @@ body{padding-bottom:84px}
 .meet-btn.meet-small{font-size:12px}
 .meet-btn[hidden]{display:none!important}
 .meet-btn.meet-active{background:#8ab4f8;color:#202124}
+.meet-captions{position:fixed;left:50%;transform:translateX(-50%);bottom:92px;z-index:45;width:min(760px,94vw);box-sizing:border-box;background:rgba(32,33,36,.9);color:#fff;border-radius:10px;padding:8px 12px;font-size:16px;line-height:1.4;text-align:left}
+.meet-captions[hidden]{display:none}
+.meet-capline{margin:2px 0}
+.meet-capline strong{color:#8ab4f8}
+@media (max-width:759px){.meet-captions{bottom:112px;font-size:15px}}
 .meet-react{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;z-index:55;display:flex;gap:6px;padding:8px 10px;background:#fff;border-radius:999px;box-shadow:0 6px 20px rgba(0,0,0,.3)}
 .meet-react[hidden]{display:none}
 .meet-react button{width:40px!important;height:40px!important;border:0;border-radius:50%!important;background:#f1f3f4;font-size:20px;cursor:pointer;padding:0}
@@ -30103,12 +30108,13 @@ body{padding-bottom:84px}
 <div data-meet-pane="activities" hidden>{% if kind != 'public' %}<p><a href="{{ url_for('ac_quiz_page', kind=kind, rid=rid) }}">Live quiz</a></p><p><a href="{{ url_for('ac_demo_page', kind=kind, rid=rid) }}">Live demonstration</a></p>{% endif %}</div>
 <div data-meet-pane="info" hidden><p>Meeting code: <strong>{{ rid[:8] }}</strong></p><p class="small" id="meet-info-time"></p><p class="small">{{ 'You are the teacher.' if is_teacher else 'You are a learner.' }}</p></div>
 </aside>
+<div id="meet-captions" class="meet-captions" aria-live="polite" hidden></div>
 <div class="meet-bottom" role="toolbar" aria-label="Call controls">
 <div class="meet-left"><span id="meet-clock">--:--</span><span class="meet-sep">|</span><span>{{ rid[:8] }}</span></div>
 <div class="meet-center">
 <button type="button" id="meet-mic" class="meet-btn" aria-pressed="false" title="Turn microphone on or off" aria-label="Microphone">&#127908;</button>
 <button type="button" id="meet-cam" class="meet-btn" aria-pressed="false" title="Turn camera on or off" aria-label="Camera">&#128247;</button>
-<button type="button" id="meet-cc" class="meet-btn meet-small" disabled title="Captions are not available yet" aria-label="Captions">CC</button>
+<button type="button" id="meet-cc" class="meet-btn meet-small" aria-pressed="false" title="Turn captions on or off" aria-label="Captions">CC</button>
 <button type="button" id="meet-react-btn" class="meet-btn" aria-expanded="false" title="Send a reaction" aria-label="Reactions">&#128512;</button>
 <button type="button" id="meet-hand" class="meet-btn" title="Raise hand" aria-label="Raise hand" {{ 'hidden' if is_teacher }}>&#9995;</button>
 <button type="button" id="meet-share" class="meet-btn" title="Show a PDF or picture" aria-label="Present a file">&#128421;</button>
@@ -30127,7 +30133,7 @@ document.addEventListener('DOMContentLoaded', function () {
   var CSRF = {{ csrf_token()|tojson }};
   var CHAT_DATA = {{ url_for('ac_room_chat_data', kind=kind, rid=rid)|tojson }};
   var CHAT_SAY = {{ url_for('ac_room_chat_say', kind=kind, rid=rid)|tojson }};
-  var ME = {{ me_id|tojson }}; var IS_T = {{ is_teacher|tojson }};
+  var ME = {{ me_id|tojson }}; var IS_T = {{ is_teacher|tojson }}; var MY_NAME = {{ me_name|tojson }};
   var side = document.getElementById('meet-side');
   var titles = {people: 'People', chat: 'Chat', materials: 'Materials', activities: 'Activities', info: 'Meeting details'};
   var clocks = [document.getElementById('meet-clock')];
@@ -30253,6 +30259,71 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   loadChat(); setInterval(loadChat, 3000);
   roster();
+  // Captions: each speaker's browser turns speech into text (Chrome and Edge), and the text is sent to everyone in the call.
+  var ccBtn = document.getElementById('meet-cc'), capBox = document.getElementById('meet-captions');
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var capOn = false, rec = null, capHooked = false;
+  function addCaption(name, text) {
+    var line = document.createElement('div'); line.className = 'meet-capline';
+    var who = document.createElement('strong'); who.textContent = name + ': ';
+    line.appendChild(who); line.appendChild(document.createTextNode(text));
+    capBox.appendChild(line);
+    while (capBox.children.length > 3) capBox.removeChild(capBox.firstChild);
+    capBox.hidden = false;
+    clearTimeout(capBox._t);
+    capBox._t = setTimeout(function () { if (!capOn) capBox.hidden = true; }, 8000);
+  }
+  window.__koja_addCaption = addCaption;
+  function hookCaptions() {
+    if (capHooked) return;
+    var r = lk(); if (!r || typeof r.on !== 'function') return;
+    capHooked = true;
+    r.on('dataReceived', function (payload, participant, kind, topic) {
+      if (topic !== 'caption') return;
+      try {
+        var d = JSON.parse(new TextDecoder().decode(payload));
+        addCaption(String(d.n || 'Participant').slice(0, 60), String(d.t || '').slice(0, 300));
+      } catch (e) {}
+    });
+  }
+  setInterval(hookCaptions, 1000);
+  function sendCaption(text) {
+    var r = lk(); if (!r) return;
+    try { r.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ n: MY_NAME, t: text })), { reliable: true, topic: 'caption' }); } catch (e) {}
+  }
+  function startCaptions() {
+    if (!SR) { alert('Captions work in Chrome and Edge. Try one of those browsers.'); return false; }
+    rec = new SR();
+    rec.continuous = true; rec.interimResults = false; rec.lang = navigator.language || 'en-US';
+    rec.onresult = function (ev) {
+      for (var i = ev.resultIndex; i < ev.results.length; i++) {
+        if (ev.results[i].isFinal) {
+          var t = (ev.results[i][0].transcript || '').trim();
+          if (t) { addCaption(MY_NAME || 'You', t); sendCaption(t); }
+        }
+      }
+    };
+    rec.onend = function () { if (capOn) { try { rec.start(); } catch (e) {} } };
+    rec.onerror = function (ev) {
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+        stopCaptions();
+        alert('Captions cannot listen to the microphone. Allow microphone access for this site and try again.');
+      }
+    };
+    try { rec.start(); } catch (e) { return false; }
+    return true;
+  }
+  function stopCaptions() {
+    capOn = false;
+    if (rec) { try { rec.onend = null; rec.stop(); } catch (e) {} }
+    rec = null;
+    ccBtn.setAttribute('aria-pressed', 'false');
+  }
+  ccBtn.onclick = function () {
+    if (capOn) { stopCaptions(); return; }
+    capOn = true; ccBtn.setAttribute('aria-pressed', 'true');
+    if (!startCaptions()) { capOn = false; ccBtn.setAttribute('aria-pressed', 'false'); }
+  };
 });
 </script>
 <div class="ac-sk" style="background:none;border:0;padding:0;margin:0;box-shadow:none"><svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="koja-sketch"><feTurbulence type="fractalNoise" baseFrequency="0.06" numOctaves="2" seed="7"/><feDisplacementMap in="SourceGraphic" scale="2.2"/></filter></svg><h2 class="ac-words">Live room</h2><p id="ac-status" class="ac-words">Connecting…</p>
