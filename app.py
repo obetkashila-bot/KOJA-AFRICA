@@ -24237,7 +24237,10 @@ def ac_college_apply(slug, cid):
             if problem:
                 flash(problem + " Your draft is saved.", "danger")
                 return redirect(url_for("ac_application_view", aid=aid))
-            db_update("koja_college_applications", {"id": aid}, {"status": "submitted", "updated_at": utc_now()})
+            _, serr = db_update("koja_college_applications", {"id": aid}, {"status": "submitted", "updated_at": utc_now()})
+            if serr:
+                flash("Could not submit your application: " + str(serr)[:300] + " Your draft is saved.", "danger")
+                return redirect(url_for("ac_application_view", aid=aid))
             flash("Application submitted. You can follow its progress here.", "success")
             return redirect(url_for("ac_application_view", aid=aid))
         flash("Draft saved. Upload your documents and submit when you are ready.", "success")
@@ -24486,7 +24489,10 @@ def ac_application_submit(aid):
     if problem:
         flash(problem, "danger")
         return redirect(back)
-    db_update("koja_college_applications", {"id": aid}, {"status": "submitted", "updated_at": utc_now()})
+    _, serr = db_update("koja_college_applications", {"id": aid}, {"status": "submitted", "updated_at": utc_now()})
+    if serr:
+        flash("Could not submit your application: " + str(serr)[:300] + " Your draft is saved.", "danger")
+        return redirect(back)
     flash("Application submitted. You can follow its progress here.", "success")
     return redirect(back)
 
@@ -26997,7 +27003,10 @@ def ac_college_admissions(slug):
     drafts = len([x for x in all_rows if x.get("status") == "draft"])
     everything = [x for x in all_rows if x.get("status") != "draft"]
     status = clean(request.args.get("status"))
-    shown = [x for x in everything if x.get("status") == status] if status in COLLEGE_ALL_STATUSES else everything
+    if status == "draft":
+        shown = [x for x in all_rows if x.get("status") == "draft"]
+    else:
+        shown = [x for x in everything if x.get("status") == status] if status in COLLEGE_ALL_STATUSES else everything
     courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
     intakes = _ac_rows("koja_college_intakes", {"college_id": c["id"]}, order="opens_on.asc", limit=100)
     course_names = {k["id"]: k["title"] for k in courses}
@@ -27011,7 +27020,7 @@ def ac_college_admissions(slug):
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
 <p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_evaluations', slug=c.slug) }}">Course evaluations</a> · <a href="{{ url_for('ac_college_staff_timetable', slug=c.slug) }}">Staff timetable</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}">Mattress payments</a> · <a href="{{ url_for('ac_college_desks', slug=c.slug) }}">Staff desks</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
 <p class="small">
-<a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· {{ drafts }} draft(s): students have started but not submitted yet</span>{% endif %}
+<a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· <a href="{{ url_for('ac_college_admissions', slug=c.slug, status='draft') }}">{{ drafts }} draft(s)</a>: students have started but not submitted yet (they are not in the submitted list until the student presses Submit)</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
 </p></div>
 <div class="card"><h3>Applications{% if status %}: {{ status | replace('_', ' ') }}{% endif %}</h3>
@@ -27136,16 +27145,16 @@ ACCOMMODATION_CHARGE_WORDS = ("accommodation", "hostel", "bed")
 
 
 def _accommodation_gate(c, a):
-    """Why this student cannot take a bed yet, or None. Every accommodation fee must be fully paid and verified."""
+    """Why this student cannot take a bed yet, or None. Unlocks once any accommodation payment is verified."""
     charges = [x for x in _ac_rows("koja_college_charges", {"application_id": a["id"], "college_id": c["id"]}, limit=500)
                if any(w in (x.get("description") or "").lower() for w in ACCOMMODATION_CHARGE_WORDS)]
     if not charges:
         return "Accommodation fees have not been set for you yet. Accounts must add the accommodation charge first."
-    for ch in charges:
-        paid = _mattress_paid_total(a["id"], ch["id"])
-        if paid + 0.001 < float(ch.get("amount") or 0):
-            return "Pay your accommodation fee first (%s, K%.2f) and wait for Accounts to verify it." % (ch.get("description"), float(ch.get("amount") or 0))
-    return None
+    # Any verified payment towards the accommodation fees unlocks bed choice; the rest can be paid later.
+    if any(_mattress_paid_total(a["id"], ch["id"]) > 0.001 for ch in charges):
+        return None
+    ch = charges[0]
+    return "Pay your accommodation fee first (%s, K%.2f) and wait for Accounts to verify it." % (ch.get("description"), float(ch.get("amount") or 0))
 
 
 def _college_students(c, statuses=("accepted", "enrolled")):
