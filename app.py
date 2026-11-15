@@ -24525,17 +24525,30 @@ def _svc_student_academic(aid, title, template, extra=None, plain=True):
         g.portal_plain = False
 
 
+def _posted_score(mark, c):
+    """Final percentage for a posted mark. Exam counts half (exam / 2), so CA 40 + exam 60 = 70%.
+    With only the CA posted, it is CA out of the CA total. Returns None when there is no CA mark."""
+    ca = mark.get("ca_mark")
+    if ca is None:
+        return None
+    ex = mark.get("exam_mark")
+    if ex is not None:
+        return round(float(ca) + float(ex) / 2.0, 2)
+    return round(float(ca) / _ca_out_of(c) * 100.0, 2)
+
+
 @app.route("/academic/services/<aid>/grades")
 @login_required
 def ac_svc_grades(aid):
     def build(a, c, course, extra):
         released, pct = _results_released(a, c)
         marks = _ac_rows("koja_college_marks", {"application_id": aid}, order="module.asc", limit=300) if released else []
+        marks = [dict(m, score=_posted_score(m, c)) for m in marks]
         return _ac_page("Grades", r'''
 <div class="card"><h2>Grades</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p>{% if not released %}<p><strong>Your results are held.</strong> Results are released once at least {{ '%g' % pct }}% of your fees are paid. Contact accounts if you have an agreed exception.</p>{% endif %}</div>
-<div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>CA</th><th>Exam</th><th>Grade</th></tr>
-{% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ m.ca_mark if m.ca_mark is not none else '-' }}</td><td align="center">{{ m.exam_mark if m.exam_mark is not none else '-' }}</td><td align="center"><strong>{{ m.grade or '-' }}</strong></td></tr>
-{% else %}<tr><td colspan="4" class="small">No grades posted yet.</td></tr>{% endfor %}</table></div>''',
+<div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>Score</th><th>Grade</th></tr>
+{% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ ('%g' | format(m.score)) ~ '%' if m.score is not none else '-' }}</td><td align="center"><strong>{{ m.grade or '-' }}</strong></td></tr>
+{% else %}<tr><td colspan="3" class="small">No grades posted yet.</td></tr>{% endfor %}</table></div>''',
                          back=_svc_back(aid), c=c, course=course, marks=marks, released=released, pct=pct)
     return _svc_student_academic(aid, "Grades", build)
 
@@ -24554,7 +24567,7 @@ def ac_svc_marks(aid):
         if module not in regs:
             flash("Choose one of the modules this student is registered for.", "danger")
         else:
-            values = {"ca_mark": _ac_num(request.form.get("ca"), None, 0, 100) if clean(request.form.get("ca")) else None,
+            values = {"ca_mark": _ac_num(request.form.get("ca"), None, 0, _ca_out_of(c)) if clean(request.form.get("ca")) else None,
                       "exam_mark": _ac_num(request.form.get("exam"), None, 0, 100) if clean(request.form.get("exam")) else None,
                       "grade": grade}
             existing = first_row("koja_college_marks", {"application_id": aid, "module": module})
@@ -24572,14 +24585,14 @@ def ac_svc_marks(aid):
 <div class="card"><h3>Enter a mark</h3>
 <form method="post">{{ csrf }}
 <label>Module<select name="module" required>{% for m in modules %}<option value="{{ m }}">{{ m }}</option>{% else %}<option value="">No registered modules yet</option>{% endfor %}</select></label>
-<label>CA mark (0 to 100)<input name="ca" type="number" min="0" max="100" step="0.5"></label>
+<label>CA mark (0 to {{ ca_max }})<input name="ca" type="number" min="0" max="{{ ca_max }}" step="0.5"></label>
 <label>Exam mark (0 to 100)<input name="exam" type="number" min="0" max="100" step="0.5"></label>
 <label>Grade<input name="grade" maxlength="5" placeholder="e.g. A"></label>
 <button class="btn" type="submit">Save marks</button></form></div>
 <div class="card"><h3>Posted marks</h3><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>CA</th><th>Exam</th><th>Grade</th></tr>
 {% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ m.ca_mark if m.ca_mark is not none else '-' }}</td><td align="center">{{ m.exam_mark if m.exam_mark is not none else '-' }}</td><td align="center">{{ m.grade or '-' }}</td></tr>
 {% else %}<tr><td colspan="4" class="small">No marks yet.</td></tr>{% endfor %}</table></div>''',
-                    a=a, c=c, course=course, marks=marks, modules=regs, csrf_ok=True)
+                    a=a, c=c, course=course, marks=marks, modules=regs, ca_max=int(_ca_out_of(c)), csrf_ok=True)
 
 
 # ---- timetable: programme-based slots, periods, teaching groups, clash checks, auto-placement, publishing ----
@@ -26288,8 +26301,9 @@ def ac_svc_ca(aid):
             comps = _ca_components(a["course_id"], m)
             # A module with no assessment set up shows the CA mark the college posted for it, if any.
             posted = None
-            if not comps and posted_by_mod.get(m, {}).get("ca_mark") is not None:
-                posted = num(posted_by_mod[m]["ca_mark"])
+            if not comps and posted_by_mod.get(m) is not None:
+                sc = _posted_score(posted_by_mod[m], c)
+                posted = num(sc) if sc is not None else None
             published = _ca_is_locked(a["course_id"], m)
             scores = _ca_score_map(comps) if comps else {}
             total, complete = _ca_result(comps, scores, aid) if comps else (0.0, False)
@@ -26321,7 +26335,7 @@ def ac_svc_ca(aid):
 {% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>{{ p.name }}</td><td align="center">{{ p.weight }}%</td><td align="center">{% if p.raw is not none %}{{ p.raw }} / {{ p.max }}{% else %}&mdash; / {{ p.max }}{% endif %}</td><td>{{ p.status }}</td></tr>
 {% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td colspan="4" class="small">No assessment components set up yet.</td></tr>
 {% endfor %}
-<tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{{ r.weight }}%</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% elif r.posted is not none %}{{ r.posted }} / 100{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{% if r.total is none and r.posted is not none %}Posted (no breakdown){% else %}{{ r.status }}{% endif %}</td></tr>
+<tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{% if r.posted is not none %}{{ r.posted }}%{% else %}{{ r.weight }}%{% endif %}</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{% if r.total is none and r.posted is not none %}Posted (no breakdown){% else %}{{ r.status }}{% endif %}</td></tr>
 {% endfor %}
 </table>
 <p class="small" style="margin-top:8px">Exam eligibility needs all of your CA published and complete. Exam entry also depends on your fees.</p>
