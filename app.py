@@ -23524,6 +23524,16 @@ NKUMBI_PROGRAMMES = [
 COLLEGE_SCHOOLS = ["School of Agriculture", "School of Business", "School of Education", "School of Engineering and Trades", "School of Short Courses", "Other programmes"]
 
 
+# Verified institutional profile description for Nkumbi International College.
+NKUMBI_COLLEGE_DESCRIPTION = (
+    "Nkumbi International College is a tertiary education and skills development institution "
+    "located in Kapiri Mposhi, Central Province, Zambia. The college provides academic and "
+    "vocational training, equipping students with practical skills and professional knowledge "
+    "for employment, entrepreneurship and community development. It promotes quality education, "
+    "innovation, professional development and lifelong learning."
+)
+
+
 def _school_for_text(text):
     """Maps a programme's group or description to its school (used for the Nkumbi seed and for programmes with no school set)."""
     t = (text or "").lower()
@@ -23942,12 +23952,14 @@ def ac_college_view(slug):
         mine_ids = {e.get("course_id") for e in mine}
         # once a place is accepted or enrolled here, the student uses college services instead of applying again
         enrolled_app = next((e for e in mine if e.get("status") in ("offered", "accepted", "enrolled")), None)
+    college_about = (NKUMBI_COLLEGE_DESCRIPTION if "nkumbi" in (c.get("name") or "").lower()
+                     else c.get("about") or "")
     return _ac_page(c.get("name") or "College", r'''
 <div class="card">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:120px;display:block;margin:0 auto 10px"> {% endif %}<h2>{{ c.name }}</h2>
 <p class="small">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</p>
-{% if c.about %}<p>{{ c.about }}</p>{% endif %}
+{% if college_about %}<p>{{ college_about }}</p>{% endif %}
 <p><a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled? Register here</a></p>
-{% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}{% if is_owner %}<form method="post" action="{{ url_for('ac_college_details', slug=c.slug) }}" class="small" style="margin-top:10px">{{ csrf }}<label>Description (shown under the name)<textarea name="about" rows="3" maxlength="3000">{{ c.about or '' }}</textarea></label><label>Location<input name="location" maxlength="200" value="{{ c.location or '' }}"></label><label>Phone / contact<input name="contact" maxlength="200" value="{{ c.contact or '' }}"></label><button class="btn secondary" type="submit">Save college details</button></form>{% endif %}
+{% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}{% if is_owner %}<form method="post" action="{{ url_for('ac_college_details', slug=c.slug) }}" class="small" style="margin-top:10px">{{ csrf }}<label>Description (shown under the name)<textarea name="about" rows="5" maxlength="3000">{{ college_about }}</textarea></label><label>Location<input name="location" maxlength="200" value="{{ c.location or '' }}"></label><label>Phone / contact<input name="contact" maxlength="200" value="{{ c.contact or '' }}"></label><button class="btn secondary" type="submit">Save college details</button></form>{% endif %}
 </div>
 {% if enrolled_app and enrolled_app.status == 'offered' %}<div class="card"><h3>You have an offer</h3>
 <p class="small">You have been offered a place here. You do not need to apply again. Open your application to accept or decline the offer.</p>
@@ -23983,7 +23995,7 @@ def ac_college_view(slug):
 <p class="small">{{ enrolments|length }} application(s) so far.</p>
 <p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a> <a class="btn secondary" href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> <a class="btn secondary" href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> <a class="btn secondary" href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p></div>
 {% endif %}''',
-                    c=c, courses=courses, school_groups=school_groups, school_choices=COLLEGE_SCHOOLS, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err)
+                    c=c, courses=courses, school_groups=school_groups, school_choices=COLLEGE_SCHOOLS, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err, college_about=college_about)
 
 
 def _course_code_2(v):
