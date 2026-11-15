@@ -23559,6 +23559,308 @@ def _course_school_choice(value):
     return v if v in COLLEGE_SCHOOLS else "Other programmes"
 
 
+# Teaching subjects a School of Education applicant can choose. Each maps to entries in EDU_CATALOGUE_TITLES.
+EDU_SUBJECT_MODULES = {
+    "Mathematics": ["Mathematics"],
+    "Information and Communication Technology (ICT)": ["Information and Communication Technology (ICT)"],
+    "Biology": ["Biology"],
+    "Chemistry": ["Chemistry"],
+    "Physics": ["Physics"],
+    "Integrated Science": ["Integrated Science"],
+    "Agricultural Science": ["Agricultural Science"],
+    "Geography": ["Geography"],
+    "History": ["History"],
+    "Civic Education": ["Civic Education"],
+    "Religious Education": ["Religious Education"],
+    "Business Studies": ["Business Studies"],
+    "Economics": ["Economics"],
+    "Commerce": ["Commerce"],
+    "Principles of Accounts": ["Principles of Accounts"],
+    "Literature in English": ["Literature in English"],
+    "Zambian Languages": ["Zambian Indigenous Languages"],
+    "Social Studies": ["Social Studies"],
+    "Environmental Science": ["Environmental Science"],
+    "Physical Education": ["Physical Education"],
+    "Home Economics": ["Home Economics"],
+    "Computer Studies": ["Computer Studies"],
+    "Entrepreneurship": ["Entrepreneurship Education"],
+}
+EDU_SUBJECT_CHOICES = list(EDU_SUBJECT_MODULES)
+# School of Education catalogue (proposed, not a verified list). Duplicates removed: 'Economics' appears in two groups.
+EDU_CATALOGUE_TITLES = [
+    "Foundations of Education",
+    "Sociology of Education",
+    "Philosophy of Education",
+    "History of Education",
+    "Comparative Education",
+    "Education and National Development",
+    "Education and Society",
+    "Education and Social Change",
+    "Educational Policy and Planning",
+    "Contemporary Issues in Education",
+    "Gender and Education",
+    "Human Rights Education",
+    "Citizenship Education",
+    "Ethics and Professionalism in Education",
+    "African Education Systems",
+    "Educational Psychology",
+    "General Psychology",
+    "Child Development",
+    "Adolescent Psychology",
+    "Human Growth and Development",
+    "Psychology of Learning",
+    "Cognitive Development",
+    "Behavioural Psychology",
+    "Motivation and Learning",
+    "Individual Differences in Learning",
+    "Personality Development",
+    "Educational Guidance and Counselling",
+    "Psychology of Exceptional Learners",
+    "Social and Emotional Learning",
+    "Mental Health and Well-being in Education",
+    "Curriculum Studies",
+    "Curriculum Development",
+    "Curriculum Design and Implementation",
+    "Curriculum Evaluation",
+    "Principles of Teaching and Learning",
+    "Teaching Methods and Strategies",
+    "Instructional Design",
+    "Lesson Planning and Preparation",
+    "Microteaching",
+    "Classroom Management",
+    "Instructional Materials Development",
+    "Teaching and Learning Resources",
+    "Differentiated Instruction",
+    "Learner-Centred Teaching",
+    "Educational Communication",
+    "Reflective Teaching",
+    "Inclusive Teaching Strategies",
+    "Classroom Organisation",
+    "Competency-Based Education",
+    "Instructional Supervision",
+    "Educational Measurement",
+    "Educational Evaluation",
+    "Educational Assessment",
+    "Assessment for Learning",
+    "Assessment of Learning",
+    "Continuous Assessment",
+    "Test Construction and Administration",
+    "Educational Research Methods",
+    "Quantitative Research Methods",
+    "Qualitative Research Methods",
+    "Action Research",
+    "Research Statistics",
+    "Data Analysis in Education",
+    "Academic Writing and Referencing",
+    "Research Project",
+    "Educational Statistics",
+    "Educational Administration",
+    "Educational Management",
+    "School Organisation and Management",
+    "Educational Leadership",
+    "Human Resource Management in Education",
+    "Financial Management in Schools",
+    "School Governance",
+    "Educational Planning",
+    "Educational Supervision",
+    "Conflict Management in Schools",
+    "School Records Management",
+    "Strategic Management in Education",
+    "Quality Assurance in Education",
+    "Institutional Management",
+    "English Language",
+    "English Grammar",
+    "English Composition",
+    "Communication Skills",
+    "Academic Writing",
+    "Literature in English",
+    "English Language Teaching Methods",
+    "Linguistics",
+    "Phonetics and Phonology",
+    "Syntax and Semantics",
+    "Reading and Literacy Education",
+    "Creative Writing",
+    "Zambian Indigenous Languages",
+    "Language Acquisition",
+    "Literacy Development",
+    "Mathematics",
+    "Pure Mathematics",
+    "Applied Mathematics",
+    "Algebra",
+    "Geometry",
+    "Trigonometry",
+    "Calculus",
+    "Statistics and Probability",
+    "Number Theory",
+    "Mathematical Reasoning",
+    "Mathematics Education",
+    "Mathematics Teaching Methods",
+    "Measurement and Geometry Education",
+    "Financial Mathematics",
+    "Basic Mathematics",
+    "Information and Communication Technology (ICT)",
+    "Computer Studies",
+    "Computer Literacy",
+    "Digital Literacy",
+    "Computer Applications",
+    "Microsoft Office Applications",
+    "Educational Technology",
+    "ICT Integration in Teaching",
+    "E-Learning and Online Teaching",
+    "Digital Content Development",
+    "Computer Programming",
+    "Introduction to Database Management",
+    "Computer Networks",
+    "Internet and Web Technologies",
+    "Cybersecurity Awareness",
+    "Digital Communication",
+    "Computer-Based Assessment",
+    "Learning Management Systems",
+    "Artificial Intelligence in Education",
+    "Digital Classroom Management",
+    "Biology",
+    "Chemistry",
+    "Physics",
+    "Integrated Science",
+    "General Science",
+    "Environmental Science",
+    "Agricultural Science",
+    "Human Biology",
+    "Ecology",
+    "Genetics",
+    "Microbiology",
+    "Cell Biology",
+    "Human Anatomy and Physiology",
+    "Basic Chemistry",
+    "Basic Physics",
+    "Science Education",
+    "Science Teaching Methods",
+    "Laboratory Management and Safety",
+    "Geography",
+    "History",
+    "Civic Education",
+    "Social Studies",
+    "Religious Education",
+    "Development Studies",
+    "Political Science",
+    "Economics",
+    "Sociology",
+    "Anthropology",
+    "African Studies",
+    "Peace and Conflict Education",
+    "Population Education",
+    "Environmental Education",
+    "Human Rights and Democracy",
+    "Global Citizenship Education",
+    "Business Studies",
+    "Commerce",
+    "Principles of Accounts",
+    "Financial Accounting",
+    "Entrepreneurship Education",
+    "Business Management",
+    "Marketing",
+    "Office Administration",
+    "Business Communication",
+    "Financial Literacy",
+    "Introduction to Business Law",
+    "Bookkeeping",
+    "Business Mathematics",
+    "Special Needs Education",
+    "Inclusive Education",
+    "Learning Disabilities",
+    "Intellectual Disabilities",
+    "Visual Impairment Education",
+    "Hearing Impairment Education",
+    "Physical Disabilities and Education",
+    "Autism and Education",
+    "Gifted and Talented Education",
+    "Assistive Technology",
+    "Individualised Education Programmes",
+    "Inclusive Classroom Management",
+    "Sign Language",
+    "Braille Literacy",
+    "Disability Studies",
+    "Guidance and Counselling",
+    "Educational Counselling",
+    "Career Guidance",
+    "Child Protection",
+    "Adolescent Guidance",
+    "School Counselling",
+    "Behavioural Guidance",
+    "Substance Abuse Prevention",
+    "Life Skills Education",
+    "Peer Counselling",
+    "Psychosocial Support",
+    "Conflict Resolution",
+    "Child Rights and Safeguarding",
+    "Physical Education",
+    "Sports Education",
+    "Health Education",
+    "Physical Fitness and Wellness",
+    "Sports Psychology",
+    "Music Education",
+    "Art and Design",
+    "Creative Arts Education",
+    "Drama and Theatre Education",
+    "Dance Education",
+    "Nutrition Education",
+    "Home Economics",
+    "First Aid and School Safety",
+    "Environmental Health Education",
+    "Agricultural Education",
+    "Crop Production",
+    "Animal Production",
+    "Soil Science",
+    "Agricultural Economics",
+    "Farm Management",
+    "Food and Nutrition",
+    "Technical Education",
+    "Design and Technology",
+    "Woodwork",
+    "Metalwork",
+    "Entrepreneurship and Innovation",
+    "Vocational Education",
+    "Skills Development Education",
+    "Teaching Practice I",
+    "Teaching Practice II",
+    "Teaching Practice III",
+    "School-Based Experience",
+    "Microteaching Practice",
+    "Lesson Observation",
+    "Classroom Teaching Practice",
+    "Preparation of Teaching Schemes",
+    "Preparation of Records of Work",
+    "Preparation of Lesson Plans",
+    "Teaching Portfolio Development",
+    "Reflective Practice",
+    "Community Engagement",
+    "Professional Development",
+    "Final Teaching Practice Assessment",
+]
+
+
+def _college_add_education_catalogue(c):
+    """Adds the proposed School of Education entries that the college does not already have.
+    Entries get the next free two-digit code; once codes run out (99), they are stored without a code.
+    Returns (added_count, error_message_or_None). Safe to run again: existing titles are skipped."""
+    rows = _ac_rows_all("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc")
+    existing = {(k.get("title") or "").strip().lower() for k in rows}
+    used = {int(_course_code_2(k.get("course_code"))) for k in rows if _course_code_2(k.get("course_code"))}
+    free = [n for n in range(1, 100) if n not in used]
+    added = 0
+    for title in EDU_CATALOGUE_TITLES:
+        if title.lower() in existing:
+            continue
+        code = "%02d" % free.pop(0) if free else None
+        _, err = db_insert("koja_college_courses", {"id": str(uuid.uuid4()), "college_id": c["id"], "title": title[:150], "course_code": code,
+                           "school": "School of Education", "description": "Proposed catalogue entry. Fee to be confirmed with the college.",
+                           "fee": 0, "currency": "ZMW", "created_at": utc_now()})
+        if err:
+            return added, str(err)[:300]
+        added += 1
+    return added, None
+
+
 def _college_seed_programmes(c):
     """Loads the Nkumbi programme list once, when the college has no courses yet. Returns an error message or None."""
     if "nkumbi" not in (c.get("name") or "").lower():
@@ -23665,6 +23967,8 @@ def ac_college_view(slug):
 </div>
 {% endfor %}{% else %}<p>No courses listed yet.</p>{% endfor %}</div>
 {% if is_owner %}
+<div class="card"><h3>School of Education catalogue</h3><p class="small">Adds the proposed School of Education entries (248 titles, not a verified list). Entries already listed are skipped. Fees are set to 0 and shown as to be confirmed.</p>
+<form method="post" action="{{ url_for('ac_college_education_catalogue', slug=c.slug) }}">{{ csrf }}<button class="btn" type="submit">Add School of Education catalogue</button></form></div>
 <div class="card"><h3>Add a course</h3>
 <form method="post" action="{{ url_for('ac_college_course_add', slug=c.slug) }}">{{ csrf }}
 <label>Course title<input name="title" required maxlength="150"></label>
@@ -23755,6 +24059,20 @@ def ac_college_course_add(slug):
                       "fee": _ac_num(request.form.get("fee"), 0), "currency": (re.sub(r"[^A-Z]", "", clean(request.form.get("currency")).upper())[:3] or "ZMW"),
                       "created_at": utc_now()})
     flash("Course added." if not err else "Could not add the course.", "success" if not err else "danger")
+    return redirect(url_for("ac_college_view", slug=slug))
+
+
+@app.route("/academic/college/<slug>/courses/education-catalogue", methods=["POST"])
+@login_required
+def ac_college_education_catalogue(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    added, err = _college_add_education_catalogue(c)
+    if err:
+        flash("Some School of Education entries could not be added: " + err, "danger")
+    else:
+        flash("Added %d School of Education entries. Entries already listed were skipped." % added, "success")
     return redirect(url_for("ac_college_view", slug=slug))
 
 
@@ -23895,6 +24213,10 @@ def ac_college_apply(slug, cid):
     if request.method == "POST":
         back = url_for("ac_college_apply", slug=slug, cid=cid)
         v = _college_form_values(request.form, {i["id"] for i in intakes})
+        if course.get("school") == "School of Education":
+            subj = clean(request.form.get("teaching_subject"))
+            if subj in EDU_SUBJECT_CHOICES:
+                v["teaching_subject"] = subj
         problem = _college_save_problem(v)
         if problem:
             flash(problem, "danger")
@@ -23943,11 +24265,12 @@ def ac_college_apply(slug, cid):
 <h3>Next of kin</h3>
 <label>Name<input name="next_of_kin" value="{{ vals.next_of_kin or '' }}" maxlength="150"></label>
 <label>Phone<input name="next_of_kin_phone" value="{{ vals.next_of_kin_phone or '' }}" maxlength="40"></label>
+{% if course.school == 'School of Education' %}<label>Teaching subject you want to study<select name="teaching_subject"><option value="">Choose a subject</option>{% for s in subject_choices %}<option value="{{ s }}" {% if vals.teaching_subject == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>{% endif %}
 {% if intakes %}<label>Intake<select name="intake_id"><option value="">Any intake</option>
 {% for i in intakes %}<option value="{{ i.id }}" {% if vals.intake_id == i.id %}selected{% endif %}>{{ i.name }}{% if i.closes_on %} (closes {{ i.closes_on }}){% endif %}</option>{% endfor %}</select></label>{% endif %}
 <button class="btn secondary" type="submit" name="action" value="save">Save draft</button>
 <button class="btn" type="submit" name="action" value="submit">Save and continue to documents</button>
-</form></div>''', c=c, course=course, intakes=intakes, vals=vals)
+</form></div>''', c=c, course=course, intakes=intakes, vals=vals, subject_choices=EDU_SUBJECT_CHOICES)
 
 
 @app.route("/academic/application/<aid>")
