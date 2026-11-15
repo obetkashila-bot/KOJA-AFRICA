@@ -26319,9 +26319,9 @@ def ac_svc_ca(aid):
 <tr style="background:#1d4e89;color:#fff"><th align="left">Course code</th><th align="left">Course name</th><th align="left">Assessment component</th><th>Weight</th><th>Marks obtained</th><th align="left">Status</th></tr>
 {% for r in rows %}
 {% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>{{ p.name }}</td><td align="center">{{ p.weight }}%</td><td align="center">{% if p.raw is not none %}{{ p.raw }} / {{ p.max }}{% else %}&mdash; / {{ p.max }}{% endif %}</td><td>{{ p.status }}</td></tr>
-{% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td>{% if r.posted is not none %}<td colspan="4" class="small">CA {{ r.posted }} / 100 · Posted (no breakdown)</td></tr>{% else %}<td colspan="4" class="small">No assessment components set up yet.</td></tr>{% endif %}
+{% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td colspan="4" class="small">No assessment components set up yet.</td></tr>
 {% endfor %}
-<tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{{ r.weight }}%</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{{ r.status }}</td></tr>
+<tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{{ r.weight }}%</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% elif r.posted is not none %}{{ r.posted }} / 100{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{% if r.total is none and r.posted is not none %}Posted (no breakdown){% else %}{{ r.status }}{% endif %}</td></tr>
 {% endfor %}
 </table>
 <p class="small" style="margin-top:8px">Exam eligibility needs all of your CA published and complete. Exam entry also depends on your fees.</p>
