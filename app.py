@@ -27224,9 +27224,21 @@ def ac_college_finance(slug):
     students = _college_students(c)
     fm = _college_fin_map(c)
     rows = []
+    charge_names = {}
+    for ch in _ac_rows_all("koja_college_charges", {"college_id": c["id"]}):
+        charge_names.setdefault(ch.get("application_id"), []).append("%s %.2f" % (ch.get("description") or "Charge", float(ch.get("amount") or 0)))
     for a in students:
         f = fm.get(a["id"], _ZERO_FIN)
-        rows.append({"a": a, "total": f["total"], "paid": f["paid"], "bal": f["bal"]})
+        names_txt = ", ".join(charge_names.get(a["id"], [])) or "no charges"
+        if f["total"] <= 0:
+            why = "No charges yet, so nothing is owed. Add a charge to start."
+        elif f["bal"] > 0.001:
+            why = "Owed %.2f: charged %.2f (%s) minus paid %.2f." % (f["bal"], f["total"], names_txt, f["paid"])
+        elif f["bal"] < -0.001:
+            why = "Overpaid %.2f: paid %.2f is more than charged %.2f (%s). Kept as credit." % (-f["bal"], f["paid"], f["total"], names_txt)
+        else:
+            why = "Fully paid: charged %.2f (%s) and paid %.2f." % (f["total"], names_txt, f["paid"])
+        rows.append({"a": a, "total": f["total"], "paid": f["paid"], "bal": f["bal"], "why": why})
     names = {a["id"]: a.get("full_name") for a in students}
     pending = _ac_rows("koja_college_payments", {"college_id": c["id"], "status": "pending"}, order="created_at.asc", limit=500)
     return _ac_page("Fees and payments", r'''
@@ -27243,7 +27255,8 @@ def ac_college_finance(slug):
 {% else %}<p class="small">No payments waiting.</p>{% endfor %}
 </div>
 <div class="card"><h3>Student balances</h3>
-{% for r in rows %}<p>{% if r.total > 0 and r.bal <= 0 %}<strong>[PAID]</strong> {% endif %}<a href="{{ url_for('ac_application_money', aid=r.a.id) }}">{{ r.a.full_name }}</a>{% if r.a.student_number %} · {{ r.a.student_number }}{% endif %} · charged {{ '%.2f' % r.total }} · paid {{ '%.2f' % r.paid }} · <strong>balance {{ '%.2f' % r.bal }}</strong></p>
+<p class="small">Balance = charged minus paid. Charged is every fee added for the student. Paid counts only verified payments, less refunds. Owed means the balance is above zero. Overpaid means below zero, kept as credit. [PAID] means paid in full.</p>
+{% for r in rows %}<p>{% if r.total > 0 and r.bal <= 0 %}<strong>[PAID]</strong> {% endif %}<a href="{{ url_for('ac_application_money', aid=r.a.id) }}">{{ r.a.full_name }}</a>{% if r.a.student_number %} · {{ r.a.student_number }}{% endif %} · charged {{ '%.2f' % r.total }} · paid {{ '%.2f' % r.paid }} · <strong>balance {{ '%.2f' % r.bal }}</strong><br><span class="small">{{ r.why }}</span></p>
 {% else %}<p class="small">No accepted or enrolled students yet.</p>{% endfor %}
 </div>
 <div class="card"><h3>Add a charge</h3>
@@ -27259,6 +27272,15 @@ def ac_college_finance(slug):
 <label>Amount<input name="amount" type="number" min="0.01" step="0.01" required></label>
 <label>Reason<input name="reason" required maxlength="200" placeholder="e.g. Overpayment returned"></label>
 <button class="btn" type="submit">Record refund</button></form></div>''', c=c, rows=rows, students=students, names=names, pending=pending, csrf_ok=True)
+
+
+def _accommodation_paid_in_full(c, application_id):
+    """True once any accommodation charge for this student is paid in full (verified payments linked to it).
+    After that, no new accommodation charge and no refund can be recorded for the student."""
+    charges = [x for x in _ac_rows("koja_college_charges", {"application_id": application_id, "college_id": c["id"]}, limit=500)
+               if any(w in (x.get("description") or "").lower() for w in ACCOMMODATION_CHARGE_WORDS)]
+    return any(float(ch.get("amount") or 0) > 0 and _mattress_paid_total(application_id, ch["id"]) + 0.001 >= float(ch.get("amount") or 0)
+               for ch in charges)
 
 
 @app.route("/academic/college/<slug>/charge", methods=["POST"])
@@ -27277,13 +27299,24 @@ def ac_college_charge_add(slug):
     if not desc or amount <= 0:
         flash("Add a description and an amount.", "danger")
         return redirect(back)
-    _, err = db_insert("koja_college_charges", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": a["id"],
-                       "description": desc, "amount": round(amount, 2), "currency": "ZMW", "created_at": utc_now()})
+    if any(w in desc.lower() for w in ACCOMMODATION_CHARGE_WORDS) and _accommodation_paid_in_full(c, a["id"]):
+        flash("The accommodation fee is already paid in full, so no new accommodation charge can be added.", "danger")
+        return redirect(back)
+    charge_id = str(uuid.uuid4())
+    charge_row = {"id": charge_id, "college_id": c["id"], "application_id": a["id"],
+                  "description": desc, "amount": round(amount, 2), "currency": "ZMW", "created_at": utc_now()}
+    _, err = db_insert("koja_college_charges", charge_row)
+    note = ""
     if not err:
         _college_audit(c, "charge.added", "%s K%.2f to %s" % (desc, amount, a.get("student_number") or a["id"]))
         if "mattress" in desc.lower():
             _sync_mattress_allocations(c, only_app_id=a["id"])
-    flash("Charge added." if not err else "Could not add the charge.", "success" if not err else "danger")
+        if any(w in desc.lower() for w in ACCOMMODATION_CHARGE_WORDS + ("mattress",)):
+            applied = _apply_credit_to_charge(c, a["id"], charge_row)
+            if applied > 0:
+                note = " K%.2f of money already received was applied to it." % applied
+                _college_audit(c, "payment.applied_to_charge", "K%.2f to %s" % (applied, charge_id))
+    flash(("Charge added." + note) if not err else "Could not add the charge.", "success" if not err else "danger")
     return redirect(back)
 
 
@@ -27316,6 +27349,48 @@ def _auto_apply_mattress(c, p):
     return dict(p, amount=portion, charge_id=ch["id"]), ch, rest
 
 
+def _apply_credit_to_charge(c, application_id, charge):
+    """Money already received but not linked to any charge (for example, paid before the accommodation charge existed)
+    is applied to this charge, oldest first, up to the charge's unpaid amount. A payment larger than what is needed
+    is split: the part used is linked, and the rest stays as a general verified payment. Returns the amount applied."""
+    pays = [x for x in _ac_rows_all("koja_college_payments", {"application_id": application_id, "college_id": c["id"]})
+            if x.get("status") == "verified" and not x.get("charge_id")]
+    pays.sort(key=lambda x: str(x.get("created_at") or ""))
+    balance = round(float(charge.get("amount") or 0) - _mattress_paid_total(application_id, charge["id"]), 2)
+    applied = 0.0
+    for p in pays:
+        if balance <= 0.001:
+            break
+        amount = round(float(p.get("amount") or 0), 2)
+        portion = round(min(amount, balance), 2)
+        if portion <= 0:
+            continue
+        if portion >= amount:
+            db_update("koja_college_payments", {"id": p["id"]}, {"charge_id": charge["id"]})
+        else:
+            db_update("koja_college_payments", {"id": p["id"]}, {"amount": portion, "charge_id": charge["id"]})
+            rest = {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": application_id,
+                    "amount": round(amount - portion, 2), "charge_id": None, "method": p.get("method"),
+                    "reference": (p.get("reference") or "") + " (after accommodation)", "status": "verified",
+                    "verified_at": utc_now(), "verified_by": _ac_uid(), "created_at": utc_now()}
+            _, err = db_insert("koja_college_payments", rest, returning="minimal")
+            if err:
+                db_update("koja_college_payments", {"id": p["id"]}, {"amount": amount, "charge_id": None})
+                continue
+        balance = round(balance - portion, 2)
+        applied = round(applied + portion, 2)
+    return applied
+
+
+def _apply_existing_money(c, application_id):
+    """Uses money the student has already paid (verified, not yet linked to a charge, e.g. school fees) to pay
+    their unpaid accommodation and mattress charges. No new payment is needed."""
+    charges = [x for x in _ac_rows("koja_college_charges", {"application_id": application_id, "college_id": c["id"]}, order="created_at.asc", limit=500)
+               if any(w in (x.get("description") or "").lower() for w in ACCOMMODATION_CHARGE_WORDS + ("mattress",))]
+    for ch in charges:
+        _apply_credit_to_charge(c, application_id, ch)
+
+
 def _unlock_after_payment(c, application_id):
     """After a verified payment: if the mattress charge is now paid in full, record the hostel clearance,
     so the student can collect the mattress. Beds open on any verified accommodation payment (see _accommodation_gate).
@@ -27323,6 +27398,7 @@ def _unlock_after_payment(c, application_id):
     a = first_row("koja_college_applications", {"id": application_id, "college_id": c["id"]}) if application_id else None
     if not a:
         return ""
+    _apply_existing_money(c, a["id"])
     ctx = _mattress_verify_ctx(c, {"application_id": a["id"]})
     if not ctx.get("eligible"):
         return " Room booking is open. The mattress opens when its charge is paid in full."
@@ -35975,6 +36051,9 @@ def ac_college_refund(slug):
     _, _, total, paid, _ = _fin_totals(a["id"])
     if amount <= 0 or not reason:
         flash("Enter the amount and the reason for the refund.", "danger")
+        return redirect(back)
+    if _accommodation_paid_in_full(c, a["id"]):
+        flash("The accommodation fee is paid in full, so refunds are locked for this student.", "danger")
         return redirect(back)
     if amount > paid:
         flash("The refund (K%.2f) is more than the student has paid (K%.2f)." % (amount, paid), "danger")
