@@ -24076,6 +24076,122 @@ def ac_college_education_catalogue(slug):
     return redirect(url_for("ac_college_view", slug=slug))
 
 
+CONTINUING_YEARS = ("1", "2", "3")
+CONTINUING_FUNDING = {"self": "Self-sponsored", "sponsored": "Sponsored"}
+
+
+@app.route("/academic/college/<slug>/continuing", methods=["GET", "POST"])
+@login_required
+def ac_college_continuing(slug):
+    """Continuing students (year 1, 2 or 3) register themselves. They are enrolled straight away and their portal opens."""
+    c = _college_by_slug(slug)
+    if not c or c.get("status") != "verified":
+        abort(404)
+    uid = _ac_uid()
+    if c.get("owner_user_id") == uid:
+        flash("You manage this college. Continuing students are listed on the admissions page.", "info")
+        return redirect(url_for("ac_college_admissions", slug=slug))
+    courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    mine = first_row("koja_college_applications", {"college_id": c["id"], "student_user_id": uid, "registration_type": "continuing"})
+    if request.method == "GET":
+        if mine:
+            return redirect(url_for("ac_application_view", aid=mine["id"]))
+        return _ac_page("Continuing student registration", r'''
+<div class="card"><h2>Continuing student registration</h2>
+<p class="small">For students already studying at {{ c.name }} (year 1, 2 or 3). Your details go to the college office.</p>
+<form method="post" action="{{ url_for('ac_college_continuing', slug=c.slug) }}">{{ csrf }}
+<label>Full name<input name="full_name" required maxlength="150"></label>
+<label>Phone number<input name="phone" required maxlength="40"></label>
+<label>Your student number (as it is on your student card)<input name="existing_student_number" required maxlength="40"></label>
+<label>NRC or passport number<input name="nrc_or_passport" required maxlength="40"></label>
+<label>School<select name="study_school" required><option value="">Choose</option>{% for s in schools %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></label>
+<label>Programme<select name="course_id" required><option value="">Choose</option>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
+<label>Year of study<select name="year_of_study" required><option value="">Choose</option>{% for y in years %}<option value="{{ y }}">Year {{ y }}</option>{% endfor %}</select></label>
+<label>Funding<select name="funding" required><option value="">Choose</option><option value="self">Self-sponsored</option><option value="sponsored">Sponsored</option></select></label>
+<label>Sponsor name (if sponsored)<input name="sponsor_name" maxlength="150"></label>
+<label>Sponsor phone number (if sponsored)<input name="sponsor_phone" maxlength="40"></label>
+<label>Expected year of completion<input name="expected_completion_year" required inputmode="numeric" maxlength="4" placeholder="e.g. 2027"></label>
+<button class="btn" type="submit">Register</button></form></div>''', c=c, courses=courses, schools=COLLEGE_SCHOOLS, years=CONTINUING_YEARS)
+    if mine:
+        flash("You have already registered.", "info")
+        return redirect(url_for("ac_application_view", aid=mine["id"]))
+    f = request.form
+    full_name = clean(f.get("full_name"))[:150]
+    phone = clean(f.get("phone"))[:40]
+    nrc = clean(f.get("nrc_or_passport"))[:40]
+    existing_no = clean(f.get("existing_student_number")).replace(" ", "")[:40]
+    course = next((k for k in courses if k.get("id") == clean(f.get("course_id"))), None)
+    year = clean(f.get("year_of_study"))
+    funding = clean(f.get("funding"))
+    sponsor_name = clean(f.get("sponsor_name"))[:150]
+    sponsor_phone = clean(f.get("sponsor_phone"))[:40]
+    completion = clean(f.get("expected_completion_year"))
+    school = clean(f.get("study_school"))
+    back = url_for("ac_college_continuing", slug=slug)
+    problems = []
+    if not full_name: problems.append("full name")
+    if not phone: problems.append("phone number")
+    if not nrc: problems.append("NRC or passport number")
+    if not existing_no: problems.append("student number")
+    if not school or school not in COLLEGE_SCHOOLS: problems.append("school")
+    if not course: problems.append("programme")
+    if year not in CONTINUING_YEARS: problems.append("year of study")
+    if funding not in CONTINUING_FUNDING: problems.append("funding")
+    if funding == "sponsored" and not (sponsor_name and sponsor_phone): problems.append("sponsor name and sponsor phone")
+    if not (completion.isdigit() and 2000 <= int(completion) <= 2100): problems.append("expected year of completion")
+    if problems:
+        flash("Please add: " + ", ".join(problems) + ".", "danger")
+        return redirect(back)
+    n = _college_norm_id(nrc)
+    for o in _ac_rows_all("koja_college_applications", {"college_id": c["id"]}):
+        if _college_norm_id(o.get("nrc_or_passport")) == n and o.get("status") not in ("draft", "rejected", "declined"):
+            flash("This NRC or passport is already registered at this college. Please contact the college office.", "danger")
+            return redirect(back)
+    for o in _ac_rows_all("koja_college_applications", {"college_id": c["id"]}):
+        if (o.get("student_number") or "").replace(" ", "").lower() == existing_no.lower() and o.get("status") not in ("draft", "rejected", "declined"):
+            flash("This student number is already in use at this college. Please contact the college office.", "danger")
+            return redirect(back)
+    aid = str(uuid.uuid4())
+    row = {"id": aid, "college_id": c["id"], "course_id": course["id"], "student_user_id": uid, "status": "enrolled",
+           "student_number": existing_no, "registration_type": "continuing",
+           "full_name": full_name, "phone": phone, "nrc_or_passport": nrc, "study_school": school,
+           "year_of_study": int(year), "funding": funding,
+           "sponsor_name": sponsor_name if funding == "sponsored" else None,
+           "sponsor_phone": sponsor_phone if funding == "sponsored" else None,
+           "expected_completion_year": int(completion), "portal_override": "on",
+           "created_at": utc_now(), "updated_at": utc_now()}
+    _, err = db_insert("koja_college_applications", row)
+    if err:
+        flash("Could not save your registration: " + str(err)[:300], "danger")
+        return redirect(back)
+    _college_audit(c, "continuing.registered", "%s (%s)" % (full_name, row["student_number"]))
+    flash("Registered as %s. Your student services are open." % row["student_number"], "success")
+    return redirect(url_for("ac_application_view", aid=aid))
+
+
+@app.route("/academic/college/<slug>/continuing.csv")
+@login_required
+def ac_college_continuing_csv(slug):
+    c = _college_by_slug(slug)
+    if not c or not _college_can(c, "accounts"):
+        abort(404)
+    courses = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
+    rows = [x for x in _ac_rows_all("koja_college_applications", {"college_id": c["id"]}, order="created_at.asc")
+            if x.get("registration_type") == "continuing"]
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Student number", "Full name", "Phone", "NRC or passport", "Programme", "School", "Year", "Funding",
+                "Sponsor name", "Sponsor phone", "Expected year of completion", "Registered"])
+    for a in rows:
+        w.writerow([_college_csv_cell(v) for v in [a.get("student_number"), a.get("full_name"), a.get("phone"), a.get("nrc_or_passport"),
+                    courses.get(a.get("course_id"), ""), a.get("study_school") or "", a.get("year_of_study") or "",
+                    CONTINUING_FUNDING.get(a.get("funding") or "", ""), a.get("sponsor_name") or "", a.get("sponsor_phone") or "",
+                    a.get("expected_completion_year") or "", (a.get("created_at") or "")[:10]]])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="%s-continuing-students.csv"' % (secure_filename(c.get("slug") or "college") or "college"),
+                             "Cache-Control": "private, no-store"})
+
+
 import csv
 
 # ---- college admissions: applications, documents, decisions -----------------------
@@ -27021,7 +27137,7 @@ def ac_college_admissions(slug):
         exempt_kinds.setdefault(e.get("application_id"), []).append("exam docket" if e.get("kind") == "exam" else "results")
     return _ac_page("Admissions", r'''
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_evaluations', slug=c.slug) }}">Course evaluations</a> · <a href="{{ url_for('ac_college_staff_timetable', slug=c.slug) }}">Staff timetable</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}">Mattress payments</a> · <a href="{{ url_for('ac_college_desks', slug=c.slug) }}">Staff desks</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
+<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_continuing_csv', slug=c.slug) }}">Continuing students (spreadsheet)</a> · <a href="{{ url_for('ac_college_evaluations', slug=c.slug) }}">Course evaluations</a> · <a href="{{ url_for('ac_college_staff_timetable', slug=c.slug) }}">Staff timetable</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}">Mattress payments</a> · <a href="{{ url_for('ac_college_desks', slug=c.slug) }}">Staff desks</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
 <p class="small">
 <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· <a href="{{ url_for('ac_college_admissions', slug=c.slug, status='draft') }}">{{ drafts }} draft(s)</a>: students have started but not submitted yet (they are not in the submitted list until the student presses Submit)</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
