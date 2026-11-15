@@ -24546,11 +24546,13 @@ def ac_svc_marks(aid):
     a, c, course, is_student, is_manager = _svc_app(aid, allow_manager=True)
     if not is_manager:
         abort(403)
+    # Only the modules this student is registered for can be given marks.
+    regs = sorted({r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)})
     if request.method == "POST":
         module = clean(request.form.get("module"))[:120]
         grade = clean(request.form.get("grade")).upper()[:5] or None
-        if not module:
-            flash("Enter the module name.", "danger")
+        if module not in regs:
+            flash("Choose one of the modules this student is registered for.", "danger")
         else:
             values = {"ca_mark": _ac_num(request.form.get("ca"), None, 0, 100) if clean(request.form.get("ca")) else None,
                       "exam_mark": _ac_num(request.form.get("exam"), None, 0, 100) if clean(request.form.get("exam")) else None,
@@ -24569,7 +24571,7 @@ def ac_svc_marks(aid):
 <p><a class="btn secondary" href="{{ url_for('ac_application_view', aid=a.id) }}">Back to application</a></p></div>
 <div class="card"><h3>Enter a mark</h3>
 <form method="post">{{ csrf }}
-<label>Module<input name="module" required maxlength="120"></label>
+<label>Module<select name="module" required>{% for m in modules %}<option value="{{ m }}">{{ m }}</option>{% else %}<option value="">No registered modules yet</option>{% endfor %}</select></label>
 <label>CA mark (0 to 100)<input name="ca" type="number" min="0" max="100" step="0.5"></label>
 <label>Exam mark (0 to 100)<input name="exam" type="number" min="0" max="100" step="0.5"></label>
 <label>Grade<input name="grade" maxlength="5" placeholder="e.g. A"></label>
@@ -24577,7 +24579,7 @@ def ac_svc_marks(aid):
 <div class="card"><h3>Posted marks</h3><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>CA</th><th>Exam</th><th>Grade</th></tr>
 {% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ m.ca_mark if m.ca_mark is not none else '-' }}</td><td align="center">{{ m.exam_mark if m.exam_mark is not none else '-' }}</td><td align="center">{{ m.grade or '-' }}</td></tr>
 {% else %}<tr><td colspan="4" class="small">No marks yet.</td></tr>{% endfor %}</table></div>''',
-                    a=a, c=c, course=course, marks=marks, csrf_ok=True)
+                    a=a, c=c, course=course, marks=marks, modules=regs, csrf_ok=True)
 
 
 # ---- timetable: programme-based slots, periods, teaching groups, clash checks, auto-placement, publishing ----
