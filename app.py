@@ -26283,8 +26283,13 @@ def ac_svc_ca(aid):
             f = float(v or 0)
             return int(f) if f.is_integer() else round(f, 2)
         rows = []
+        posted_by_mod = {x["module"]: x for x in _ac_rows("koja_college_marks", {"application_id": aid}, limit=300)}
         for m in sorted(regs | comp_mods):
             comps = _ca_components(a["course_id"], m)
+            # A module with no assessment set up shows the CA mark the college posted for it, if any.
+            posted = None
+            if not comps and posted_by_mod.get(m, {}).get("ca_mark") is not None:
+                posted = num(posted_by_mod[m]["ca_mark"])
             published = _ca_is_locked(a["course_id"], m)
             scores = _ca_score_map(comps) if comps else {}
             total, complete = _ca_result(comps, scores, aid) if comps else (0.0, False)
@@ -26303,7 +26308,7 @@ def ac_svc_ca(aid):
                 total_status = "Eligible for Exam"
             else:
                 total_status = "Incomplete"
-            rows.append({"module": m, "parts": parts,
+            rows.append({"module": m, "parts": parts, "posted": posted,
                          "weight": num(sum(float(x.get("weight") or 0) for x in comps)),
                          "total": num(total) if (published and complete) else None,
                          "status": total_status})
@@ -26314,7 +26319,7 @@ def ac_svc_ca(aid):
 <tr style="background:#1d4e89;color:#fff"><th align="left">Course code</th><th align="left">Course name</th><th align="left">Assessment component</th><th>Weight</th><th>Marks obtained</th><th align="left">Status</th></tr>
 {% for r in rows %}
 {% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>{{ p.name }}</td><td align="center">{{ p.weight }}%</td><td align="center">{% if p.raw is not none %}{{ p.raw }} / {{ p.max }}{% else %}&mdash; / {{ p.max }}{% endif %}</td><td>{{ p.status }}</td></tr>
-{% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td colspan="4" class="small">No assessment components set up yet.</td></tr>
+{% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td>{% if r.posted is not none %}<td colspan="4" class="small">CA {{ r.posted }} / 100 · Posted (no breakdown)</td></tr>{% else %}<td colspan="4" class="small">No assessment components set up yet.</td></tr>{% endif %}
 {% endfor %}
 <tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{{ r.weight }}%</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{{ r.status }}</td></tr>
 {% endfor %}
