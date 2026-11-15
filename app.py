@@ -26659,7 +26659,7 @@ def ac_college_admissions(slug):
         exempt_kinds.setdefault(e.get("application_id"), []).append("exam docket" if e.get("kind") == "exam" else "results")
     return _ac_page("Admissions", r'''
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_evaluations', slug=c.slug) }}">Course evaluations</a> · <a href="{{ url_for('ac_college_staff_timetable', slug=c.slug) }}">Staff timetable</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}">Mattress payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
+<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_evaluations', slug=c.slug) }}">Course evaluations</a> · <a href="{{ url_for('ac_college_staff_timetable', slug=c.slug) }}">Staff timetable</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}">Mattress payments</a> · <a href="{{ url_for('ac_college_desks', slug=c.slug) }}">Staff desks</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
 <p class="small">
 <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· {{ drafts }} draft(s): students have started but not submitted yet</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
@@ -27321,20 +27321,15 @@ def ac_application_room(aid):
 <div class="card"><h2>Accommodation booking</h2><p class="small">{{ c.name }}</p>
 {% if not status_ok %}<p>Room booking opens once you accept your place.</p>
 {% else %}
-<div class="card" style="background:#fff;color:#111"><h3>Current allocation</h3>
-<p><strong>Institution:</strong> {{ c.name }}<br>
-<strong>Your allocated space:</strong> {{ current_label or 'Not allocated yet' }}<br>
-<strong>Status:</strong> {{ status_text }}</p></div>
+<div class="card" style="background:#fff;color:#111"><p><strong>Your bed:</strong> {{ current_label or 'Not allocated yet' }} · {{ status_text }}</p></div>
 
 {% if billing_notice %}<div class="card" style="background:#fff8ec;color:#111"><h3>Billing hold</h3><p>{{ billing_notice }}</p></div>{% endif %}
 
 <div class="card" style="background:#fff;color:#111"><h3>Room change</h3>
 {% if choices %}
-<form method="get" style="margin-bottom:10px"><label>Hostel<select name="hostel">{% for h in choices %}<option value="{{ h.hostel.id }}" {{ 'selected' if sel and h.hostel.id == sel.hostel.id }}>{{ h.hostel.name }}</option>{% endfor %}</select></label>
-<button class="btn secondary" type="submit">Show rooms</button></form>
-<p class="small">Only hostels and rooms you are allowed to take are shown.</p>
+<form method="get" style="margin-bottom:10px"><label>Hostel<select name="hostel" onchange="this.form.submit()">{% for h in choices %}<option value="{{ h.hostel.id }}" {{ 'selected' if sel and h.hostel.id == sel.hostel.id }}>{{ h.hostel.name }}</option>{% endfor %}</select></label></form>
 <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
-<tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Room no.</th><th style="border:1px solid #888;padding:6px">Total beds</th><th style="border:1px solid #888;padding:6px">Available</th><th align="left" style="border:1px solid #888;padding:6px">Special designation / choose</th></tr>
+<tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Room no.</th><th style="border:1px solid #888;padding:6px">Total beds</th><th style="border:1px solid #888;padding:6px">Available</th><th align="left" style="border:1px solid #888;padding:6px">Choose a bed</th></tr>
 {% for row in rows %}<tr>
 <td style="border:1px solid #888;padding:6px;font-weight:bold">Room {{ row.code }}</td>
 <td style="border:1px solid #888;padding:6px" align="center">{{ row.total }}</td>
@@ -27348,7 +27343,7 @@ def ac_application_room(aid):
 </table></div>
 {% else %}<p class="small">No hostel has a room you can take right now.</p>{% endif %}
 </div>
-{% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>&#10060; Action unavailable.</strong> Choosing or changing a bed is locked until your accommodation fees are paid in full. Bed buttons are greyed out until then.</p></div>{% endif %}
+{% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>Locked.</strong> Pay your accommodation fees in full to choose a bed.</p></div>{% endif %}
 {% endif %}
 <p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
                     a=a, c=c, status_ok=status_ok, current_label=current_label, status_text=status_text, billing_notice=billing_notice,
@@ -35103,6 +35098,26 @@ def _mattress_qr_token(allocation):
         db_update("koja_mattress_allocations", {"id": allocation["id"]}, {"qr_token": token})
     return token
 
+@app.route("/academic/college/<slug>/desks")
+@login_required
+def ac_college_desks(slug):
+    """Staff only. Students never see this page or its links: anyone without a staff role gets a 404."""
+    c = _college_by_slug(slug)
+    if not c or not any(_college_can(c, d) for d in ("accounts", "stores", "rooms")):
+        abort(404)
+    desks = []
+    if _college_can(c, "accounts"):
+        desks += [("Fees and payments", url_for("ac_college_finance", slug=slug)),
+                  ("Mattress payments (read only)", url_for("ac_college_mattress_payments", slug=slug))]
+    if _college_can(c, "stores"):
+        desks.append(("Mattresses and handover", url_for("ac_college_mattresses", slug=slug)))
+    if _college_can(c, "rooms"):
+        desks.append(("Hostels and rooms", url_for("ac_college_accommodation", slug=slug)))
+    return _ac_page("Staff desks", r'''
+<div class="card"><h2>Staff desks</h2><p class="small">{{ c.name }} · staff only</p></div>
+<div class="card">{% for label, href in desks %}<p><a class="btn secondary" href="{{ href }}">{{ label }}</a></p>{% endfor %}</div>''', c=c, desks=desks, csrf_ok=True)
+
+
 @app.route("/academic/college/<slug>/mattress-payments")
 @login_required
 def ac_college_mattress_payments(slug):
@@ -35283,8 +35298,8 @@ def ac_college_mattress_student_qr(slug,allocation_id):
     ch=_mattress_charge(a["id"],c["id"]); paid=_mattress_paid_total(a["id"],ch["id"]) if ch else 0
     amount=float(ch.get("amount") or 0) if ch else 0; eligible=bool(ch and amount>0 and paid>=amount)
     scan_url=url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "",_external=True)
-    return _ac_page("Mattress collection QR",r'''<div class="card"><h2>Mattress collection pass</h2><p><strong>{{ a.full_name }}</strong></p><p>Student number: <strong>{{ a.student_number }}</strong></p><p>Payment K{{ '%.2f' % paid }} / K{{ '%.2f' % amount }}</p>
-{% if eligible %}<p><strong>Payment verified — ready for Stores collection.</strong></p><img alt="Mattress collection QR" style="width:260px;max-width:100%" src="{{ url_for('ac_college_mattress_qr_image',slug=c.slug,allocation_id=al.id) }}"><p class="small">If the QR image does not load, use this secure link: <input readonly value="{{ scan_url }}" style="width:100%"></p>{% else %}<p><strong>Collection locked.</strong> Accounts must verify the mattress charge payment.</p>{% endif %}</div>''',a=a,c=c,al=al,paid=paid,amount=amount,eligible=eligible,scan_url=scan_url)
+    return _ac_page("Mattress collection QR",r'''<div class="card"><h2>Mattress collection</h2><p><strong>{{ a.full_name }}</strong> · {{ a.student_number }} · Paid K{{ '%.2f' % paid }} of K{{ '%.2f' % amount }}</p>
+{% if eligible %}<p><strong>Ready.</strong> Show this QR code at the stores desk.</p><img alt="Mattress collection QR" style="width:260px;max-width:100%" src="{{ url_for('ac_college_mattress_qr_image',slug=c.slug,allocation_id=al.id) }}"><p class="small"><a href="{{ scan_url }}">Open QR link</a></p>{% else %}<p><strong>Locked.</strong> Pay the mattress charge to unlock collection.</p>{% endif %}</div>''',a=a,c=c,al=al,paid=paid,amount=amount,eligible=eligible,scan_url=scan_url)
 
 @app.route("/academic/college/<slug>/mattresses/qr/<allocation_id>/image")
 @login_required
