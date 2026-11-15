@@ -35149,12 +35149,36 @@ def ac_college_mattress_payments(slug):
 </table></div>''', c=c, rows=rows, csrf_ok=True)
 
 
+def _mattress_verify_ctx(c, al):
+    a = first_row("koja_college_applications", {"id": al["application_id"], "college_id": c["id"]}) or {}
+    ch = _mattress_charge(a.get("id"), c["id"]) if a else None
+    paid = _mattress_paid_total(a["id"], ch["id"]) if ch else 0
+    amount = float(ch.get("amount") or 0) if ch else 0
+    eligible = bool(ch and amount > 0 and paid >= amount)
+    stock = int((_mattress_inventory(c["id"]) or {}).get("quantity") or 0)
+    cleared = _hostel_cleared(a.get("id"), c["id"]) if a else False
+    return {"a": a, "al": al, "paid": paid, "amount": amount, "eligible": eligible, "stock": stock,
+            "cleared": cleared, "ready": bool(eligible and cleared)}
+
+
 @app.route("/academic/college/<slug>/mattresses")
 @login_required
 def ac_college_mattresses(slug):
     c = _college_by_slug(slug)
     if not _college_can(c, 'stores'): abort(404)
     _sync_mattress_allocations(c)
+    verify = None
+    q = clean(request.args.get("q"))[:200]
+    tok = clean(request.args.get("token"))[:200]
+    if q or tok:
+        if q:
+            found = first_row("koja_mattress_allocations", {"student_number": q, "college_id": c["id"]}) or first_row("koja_mattress_allocations", {"qr_token": q, "college_id": c["id"]})
+        else:
+            found = first_row("koja_mattress_allocations", {"qr_token": tok, "college_id": c["id"]})
+        if found:
+            verify = _mattress_verify_ctx(c, found)
+        else:
+            flash("No mattress allocation matched that student number or QR code.", "warning")
     inventory = _mattress_inventory(c["id"])
     allocations = _ac_rows("koja_mattress_allocations", {"college_id": c["id"]}, order="created_at.desc", limit=1000)
     apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
@@ -35211,8 +35235,60 @@ def ac_college_mattresses(slug):
 </table></div>
 <div class="card"><h3>Allocate mattress and create QR</h3><p class="small">Add a charge with “mattress” in its description in Fees and Payments first.</p>
 <form method="post" action="{{ url_for('ac_college_mattress_allocate',slug=c.slug) }}">{{ csrf }}<label>Student<select name="application_id" required><option value="">Select student</option>{% for a in students %}<option value="{{ a.id }}">{{ a.student_number or 'NO STUDENT NUMBER' }} — {{ a.full_name }}</option>{% endfor %}</select></label><button class="btn">Allocate / generate QR</button></form></div>
-<div class="card"><h3>Stores scanning desk</h3><a class="btn" href="{{ url_for('ac_college_mattress_scan',slug=c.slug) }}">Open QR scanning desk</a></div>
-<div class="card"><h3>Allocations</h3>{% for x in rows %}<p><strong>{{ x.student.get('student_number') or 'No student number' }} — {{ x.student.get('full_name') or 'Student unavailable' }}</strong><br>Payment K{{ '%.2f' % x.paid }} / K{{ '%.2f' % (x.charge.amount if x.charge else 0) }} · {{ x.allocation.status }}{% if x.eligible and x.allocation.status != 'collected' %} · <a href="{{ url_for('ac_college_mattress_student_qr',slug=c.slug,allocation_id=x.allocation.id) }}">Student QR</a>{% endif %}{% if x.allocation.status=='collected' %} · Collected {{ x.allocation.collected_at }}{% endif %}<br><span class="small">Room: {{ x.room or 'No room yet' }} · Hostel clearance: {{ 'Approved' if x.cleared else 'Not approved' }}</span></p>{% if x.issuable %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=x.allocation.id) }}" style="margin:4px 0 8px">{{ csrf }}<button class="btn" type="submit">Issue mattress</button></form>{% endif %}{% if can_clear and x.student.id %}<form method="post" action="{{ url_for('ac_college_mattress_clearance',slug=c.slug,application_id=x.student.id) }}" style="margin:4px 0 12px">{{ csrf }}<input type="hidden" name="action" value="{{ 'unclear' if x.cleared else 'clear' }}"><button class="btn secondary" type="submit">{{ 'Remove hostel clearance' if x.cleared else 'Approve hostel clearance' }}</button></form>{% endif %}{% else %}<p>No allocations yet.</p>{% endfor %}</div>''', c=c, inventory=inventory, students=students, rows=rows, hostel_summary=hostel_summary, can_clear=can_clear)
+{% if vc %}{% with a=vc.a, al=vc.al, paid=vc.paid, amount=vc.amount, eligible=vc.eligible, stock=vc.stock, cleared=vc.cleared, ready=vc.ready %}<div class="card"><h2>Student verification</h2><p><strong>{{ a.full_name }}</strong></p><p>Student number: <strong>{{ a.student_number }}</strong></p><p>Payment verified K{{ '%.2f' % paid }} / K{{ '%.2f' % amount }}</p><p>Allocation: <strong>{{ al.status }}</strong></p>
+{% if al.status=='allocated' %}<form method="post" action="{{ url_for('ac_college_mattress_cancel',slug=c.slug,allocation_id=al.id) }}" style="margin-bottom:10px">{{ csrf }}<button class="btn secondary" type="submit">Cancel this allocation</button></form>{% endif %}
+{% if eligible and not cleared %}<p class="small" style="color:#b45309"><strong>Hostel clearance not approved.</strong> The mattress cannot be handed over until the hostel approves clearance for this student.</p>{% endif %}
+{% if ready and al.status=='allocated' and stock>0 %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=al.id) }}">{{ csrf }}<button class="btn">Confirm physical handover and issue mattress</button></form>{% elif al.status=='collected' %}<strong>Already collected — duplicate issue blocked.</strong>{% elif not eligible %}<strong>Blocked: mattress charge not fully paid and verified.</strong>{% else %}<strong>Blocked: no mattress stock available.</strong>{% endif %}</div>{% endwith %}{% endif %}<div class="card"><h2>Stores Office — scan mattress QR</h2>
+<p>Hold the student's QR inside the square. The scan opens automatically. You can also search by student number below.</p>
+<div id="qrCam" style="display:none">
+  <div style="position:relative;width:100%;max-width:340px;aspect-ratio:1;margin:0 auto;background:#000;border-radius:12px;overflow:hidden">
+    <video id="qrVideo" playsinline muted style="width:100%;height:100%;object-fit:cover"></video>
+    <div style="position:absolute;left:12.5%;top:12.5%;width:75%;height:75%;border:3px solid #fff;border-radius:10px;box-shadow:0 0 0 999px rgba(0,0,0,.35);pointer-events:none"></div>
+  </div>
+  <p id="qrStatus" class="small" style="text-align:center">Starting camera…</p>
+</div>
+<p><button class="btn" type="button" id="qrStart">Open camera to scan</button></p>
+<p id="qrNoSupport" class="small" style="display:none;color:#b00">This browser cannot read QR codes from the camera. Open the phone camera, tap the QR link, or search by student number.</p>
+<form method="get" action="{{ url_for('ac_college_mattresses',slug=c.slug) }}"><label>Student number<input name="q" required></label><button class="btn secondary">Find student</button></form></div>
+<script>
+(function(){
+  var startBtn=document.getElementById('qrStart'), box=document.getElementById('qrCam'),
+      video=document.getElementById('qrVideo'), status=document.getElementById('qrStatus'),
+      noSupport=document.getElementById('qrNoSupport'), stream=null, timer=null, found=false;
+  var scanPath='/mattresses/scan/';
+  function stop(){ if(timer){clearInterval(timer);timer=null;} if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;} }
+  function onFound(value){
+    if(found) return;
+    try{
+      var u=new URL(value, location.href);
+      if(u.origin!==location.origin || u.pathname.indexOf(scanPath)===-1) { status.textContent='That QR is not a KOJA mattress pass.'; return; }
+      found=true; stop(); status.textContent='Found. Opening…'; location.href=u.href;
+    }catch(e){ status.textContent='That QR could not be read. Try again.'; }
+  }
+  if(!('BarcodeDetector' in window) || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)){
+    startBtn.style.display='none'; noSupport.style.display='block'; return;
+  }
+  startBtn.addEventListener('click', async function(){
+    startBtn.disabled=true; box.style.display='block'; status.textContent='Starting camera…';
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+      video.srcObject=stream; await video.play();
+      var detector=new BarcodeDetector({formats:['qr_code']});
+      status.textContent='Hold the QR inside the square.';
+      timer=setInterval(async function(){
+        if(found||video.readyState<2) return;
+        try{ var codes=await detector.detect(video); if(codes.length){ onFound(codes[0].rawValue); } }catch(e){}
+      }, 300);
+    }catch(e){
+      stop(); startBtn.disabled=false; box.style.display='none';
+      status.textContent=''; noSupport.style.display='block';
+      noSupport.textContent='The camera could not start. Allow camera access for this site, or search by student number.';
+    }
+  });
+  window.addEventListener('pagehide', stop);
+})();
+</script>
+<div class="card"><h3>Allocations</h3>{% for x in rows %}<p><strong>{{ x.student.get('student_number') or 'No student number' }} — {{ x.student.get('full_name') or 'Student unavailable' }}</strong><br>Payment K{{ '%.2f' % x.paid }} / K{{ '%.2f' % (x.charge.amount if x.charge else 0) }} · {{ x.allocation.status }}{% if x.eligible and x.allocation.status != 'collected' %} · {% endif %}{% if x.allocation.status=='collected' %} · Collected {{ x.allocation.collected_at }}{% endif %}<br><span class="small">Room: {{ x.room or 'No room yet' }} · Hostel clearance: {{ 'Approved' if x.cleared else 'Not approved' }}</span></p>{% if x.issuable %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=x.allocation.id) }}" style="margin:4px 0 8px">{{ csrf }}<button class="btn" type="submit">Issue mattress</button></form>{% endif %}{% if can_clear and x.student.id %}<form method="post" action="{{ url_for('ac_college_mattress_clearance',slug=c.slug,application_id=x.student.id) }}" style="margin:4px 0 12px">{{ csrf }}<input type="hidden" name="action" value="{{ 'unclear' if x.cleared else 'clear' }}"><button class="btn secondary" type="submit">{{ 'Remove hostel clearance' if x.cleared else 'Approve hostel clearance' }}</button></form>{% endif %}{% else %}<p>No allocations yet.</p>{% endfor %}</div>''', c=c, inventory=inventory, students=students, rows=rows, hostel_summary=hostel_summary, can_clear=can_clear, vc=verify)
 
 def _hostel_cleared(application_id, college_id):
     return first_row("koja_hostel_clearances", {"application_id": application_id, "college_id": college_id}) is not None
@@ -35327,6 +35403,8 @@ def ac_college_mattress_qr_image(slug,allocation_id):
 def ac_college_mattress_scan(slug):
     c=_college_by_slug(slug)
     if not _college_can(c, 'stores'): abort(404)
+    return redirect(url_for("ac_college_mattresses", slug=slug))
+    # (old scanning page below is no longer served)
     return _ac_page("Stores scanning desk",r'''<div class="card"><h2>Stores Office — scan mattress QR</h2>
 <p>Hold the student's QR inside the square. The scan opens automatically. You can also search by student number below.</p>
 <div id="qrCam" style="display:none">
@@ -35384,18 +35462,14 @@ def ac_college_mattress_scan_lookup(slug):
     c=_college_by_slug(slug)
     if not _college_can(c, 'stores'): abort(404)
     q=clean(request.args.get("q"))[:200]
-    al=first_row("koja_mattress_allocations",{"student_number":q,"college_id":c["id"]})
-    if not al:
-        al=first_row("koja_mattress_allocations",{"qr_token":q,"college_id":c["id"]}) if q else None
-    if not al:
-        flash("No allocation matched that student number or QR token.","warning"); return redirect(url_for("ac_college_mattress_scan",slug=slug))
-    return redirect(url_for("ac_college_mattress_scan_token",slug=slug,token=al.get("qr_token") or "invalid"))
+    return redirect(url_for("ac_college_mattresses", slug=slug, q=q) if q else url_for("ac_college_mattresses", slug=slug))
 
 @app.route("/academic/college/<slug>/mattresses/scan/<token>")
 @login_required
 def ac_college_mattress_scan_token(slug,token):
     c=_college_by_slug(slug)
     if not _college_can(c, 'stores'): abort(404)
+    return redirect(url_for("ac_college_mattresses", slug=slug, token=token))
     al=first_row("koja_mattress_allocations",{"qr_token":str(token),"college_id":c["id"]})
     if not al: abort(404)
     a=first_row("koja_college_applications",{"id":al["application_id"],"college_id":c["id"]})
