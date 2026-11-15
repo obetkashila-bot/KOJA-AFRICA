@@ -27128,6 +27128,11 @@ def _college_can(c, dept):
     return bool(_ac_rows("koja_college_staff", {"college_id": c["id"], "user_id": _ac_uid(), "department": dept}, limit=1))
 
 
+def _college_can_ops(c, dept):
+    """Stores and rooms pages: their own staff, and accounts staff (who need to see and act on payments and beds)."""
+    return _college_can(c, dept) or _college_can(c, "accounts")
+
+
 def _college_any_staff(c):
     return any(_college_can(c, d) for d in ("accounts", "rooms", "stores"))
 
@@ -27225,13 +27230,15 @@ def ac_college_finance(slug):
     names = {a["id"]: a.get("full_name") for a in students}
     pending = _ac_rows("koja_college_payments", {"college_id": c["id"], "status": "pending"}, order="created_at.asc", limit=500)
     return _ac_page("Fees and payments", r'''
+<div class="card"><h3>Open here</h3><p class="small">These open inside this page, so you can stay on Fees while you work.</p><p><a class="btn" href="{{ url_for('ac_college_accommodation', slug=c.slug) }}" data-acct-src="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> <a class="btn" href="{{ url_for('ac_college_mattresses', slug=c.slug) }}" data-acct-src="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattresses and allocations</a> <a class="btn secondary" href="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}" data-acct-src="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}">Mattress payments</a></p><div id="acct-panel" style="display:none;margin-top:10px"><iframe id="acct-frame" title="Accounts panel" style="width:100%;height:80vh;border:1px solid #ccc;border-radius:8px;background:#fff"></iframe><p class="small"><a href="#" id="acct-close">Close panel</a></p></div></div>
+<script>(function(){var panel=document.getElementById("acct-panel"),frame=document.getElementById("acct-frame");document.querySelectorAll("[data-acct-src]").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();frame.src=b.getAttribute("data-acct-src");panel.style.display="block";panel.scrollIntoView({behavior:"smooth"});});});document.getElementById("acct-close").addEventListener("click",function(e){e.preventDefault();panel.style.display="none";frame.src="about:blank";});})();</script>
 <div class="card"><h2>Fees and payments: {{ c.name }}</h2>
 <p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a></p>
 <h3>Payments waiting to be confirmed</h3>
 {% for p in pending %}<div class="card" style="margin:8px 0"><strong>{{ names.get(p.application_id, 'Student') }}</strong>
 <p class="small">{{ p.method }} · reference {{ p.reference }} · {{ p.amount }}</p>
 {% if p.slip_path %}<p class="small"><a href="{{ url_for('ac_payment_slip', pid=p.id) }}" target="_blank" rel="noopener">View bank slip</a></p>{% endif %}
-<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<input type="hidden" name="decision" value="verified"><button class="btn" type="submit">Confirm payment</button></form>
+<form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<input type="hidden" name="decision" value="verified"><button class="btn" type="submit">Confirm payment and unlock room and mattress</button></form>
 <form method="post" action="{{ url_for('ac_college_payment_decide', slug=c.slug, pid=p.id) }}" style="display:inline">{{ csrf }}<input type="hidden" name="decision" value="rejected"><button class="btn secondary" type="submit">Reject</button></form></div>
 {% else %}<p class="small">No payments waiting.</p>{% endfor %}
 </div>
@@ -27309,6 +27316,25 @@ def _auto_apply_mattress(c, p):
     return dict(p, amount=portion, charge_id=ch["id"]), ch, rest
 
 
+def _unlock_after_payment(c, application_id):
+    """After a verified payment: if the mattress charge is now paid in full, record the hostel clearance,
+    so the student can collect the mattress. Beds open on any verified accommodation payment (see _accommodation_gate).
+    Returns a short note for the flash message."""
+    a = first_row("koja_college_applications", {"id": application_id, "college_id": c["id"]}) if application_id else None
+    if not a:
+        return ""
+    ctx = _mattress_verify_ctx(c, {"application_id": a["id"]})
+    if not ctx.get("eligible"):
+        return " Room booking is open. The mattress opens when its charge is paid in full."
+    if not ctx.get("cleared"):
+        _, err = db_insert("koja_hostel_clearances", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": a["id"],
+                           "cleared_by": _ac_uid() or None, "cleared_at": utc_now()}, returning="minimal")
+        if err:
+            return " Room booking is open, but the mattress could not be unlocked: " + str(err)[:200]
+        _college_audit(c, "hostel.cleared", "application %s (on payment)" % a["id"])
+    return " Room booking and mattress are unlocked for this student."
+
+
 @app.route("/academic/college/<slug>/payment/<pid>/decide", methods=["POST"])
 @login_required
 def ac_college_payment_decide(slug, pid):
@@ -27337,6 +27363,7 @@ def ac_college_payment_decide(slug, pid):
         if ch:
             _college_audit(c, "payment.mattress_applied", "payment %s: K%.2f to mattress charge" % (pid, p2.get("amount") or 0))
             mattress_note = " K%.2f went to the mattress charge first." % float(p2.get("amount") or 0)
+        mattress_note += _unlock_after_payment(c, p.get("application_id"))
     flash(("Payment confirmed. The balance is updated and a receipt was issued." + mattress_note) if decision == "verified" else "Payment rejected.", "success")
     return redirect(url_for("ac_college_finance", slug=slug))
 
@@ -27434,7 +27461,7 @@ def ac_payment_slip(pid):
 @login_required
 def ac_college_accommodation(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, 'rooms'):
+    if not _college_can_ops(c, 'rooms'):
         abort(404)
     tree = _college_beds(c)
     students = [a for a in _college_students(c, ("enrolled",))]
@@ -27475,7 +27502,7 @@ def ac_college_accommodation(slug):
 @login_required
 def ac_college_hostel_add(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, 'rooms'):
+    if not _college_can_ops(c, 'rooms'):
         abort(403)
     name = clean(request.form.get("name"))[:100]
     if not name:
@@ -27490,7 +27517,7 @@ def ac_college_hostel_add(slug):
 @login_required
 def ac_college_room_add(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, 'rooms'):
+    if not _college_can_ops(c, 'rooms'):
         abort(403)
     hostel = first_row("koja_accommodation_hostels", {"id": request.form.get("hostel_id"), "college_id": c["id"]})
     code = clean(request.form.get("room_code"))[:20]
@@ -27525,7 +27552,7 @@ STANDARD_SMALL_CAPACITY = 2
 @login_required
 def ac_college_standard_block(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, 'rooms'):
+    if not _college_can_ops(c, 'rooms'):
         abort(403)
     back = url_for("ac_college_accommodation", slug=slug)
     have = {h["name"]: h["id"] for h in _ac_rows("koja_accommodation_hostels", {"college_id": c["id"]}, limit=500)}
@@ -27586,7 +27613,7 @@ def _release_beds(aid):
 @login_required
 def ac_college_allocate(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, 'rooms'):
+    if not _college_can_ops(c, 'rooms'):
         abort(403)
     back = url_for("ac_college_accommodation", slug=slug)
     a = first_row("koja_college_applications", {"id": request.form.get("application_id"), "college_id": c["id"]})
@@ -27613,7 +27640,7 @@ def ac_college_allocate(slug):
 @login_required
 def ac_college_release(slug, alloc_id):
     c = _college_by_slug(slug)
-    if not _college_can(c, 'rooms'):
+    if not _college_can_ops(c, 'rooms'):
         abort(403)
     al = first_row("koja_accommodation_allocations", {"id": alloc_id, "college_id": c["id"]})
     if not al:
@@ -27702,7 +27729,7 @@ def ac_application_room(aid):
 </table></div>
 {% else %}<p class="small">No hostel has a room you can take right now.</p>{% endif %}
 </div>
-{% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>Locked.</strong> Pay your accommodation fees in full to choose a bed.</p></div>{% endif %}
+{% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>Locked.</strong> Pay any accommodation fee and wait for Accounts to verify it to choose a bed.</p></div>{% endif %}
 {% endif %}
 <p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
                     a=a, c=c, status_ok=status_ok, current_label=current_label, status_text=status_text, billing_notice=billing_notice,
@@ -35468,9 +35495,9 @@ def ac_college_desks(slug):
     if _college_can(c, "accounts"):
         desks += [("Fees and payments", url_for("ac_college_finance", slug=slug)),
                   ("Mattress payments (read only)", url_for("ac_college_mattress_payments", slug=slug))]
-    if _college_can(c, "stores"):
+    if _college_can_ops(c, 'stores'):
         desks.append(("Mattresses and handover", url_for("ac_college_mattresses", slug=slug)))
-    if _college_can(c, "rooms"):
+    if _college_can_ops(c, 'rooms'):
         desks.append(("Hostels and rooms", url_for("ac_college_accommodation", slug=slug)))
     return _ac_page("Staff desks", r'''
 <div class="card"><h2>Staff desks</h2><p class="small">{{ c.name }} · staff only</p></div>
@@ -35482,7 +35509,7 @@ def ac_college_desks(slug):
 def ac_college_mattress_payments(slug):
     """Read-only for accounts: mattress charge, verified payments and collection status per student. Does not change anything."""
     c = _college_by_slug(slug)
-    if not (_college_can(c, 'accounts') or _college_can(c, 'stores')):
+    if not (_college_can(c, 'accounts') or _college_can_ops(c, 'stores')):
         abort(404)
     allocations = _ac_rows("koja_mattress_allocations", {"college_id": c["id"]}, order="created_at.desc", limit=1000)
     apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
@@ -35524,7 +35551,7 @@ def _mattress_verify_ctx(c, al):
 @login_required
 def ac_college_mattresses(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, 'stores'): abort(404)
+    if not _college_can_ops(c, 'stores'): abort(404)
     _sync_mattress_allocations(c)
     verify = None
     q = clean(request.args.get("q"))[:200]
@@ -35574,9 +35601,9 @@ def ac_college_mattresses(slug):
             if al.get("status") in ("collected", "returned"):
                 summary[hid]["issued"] += 1
     hostel_summary = list(summary.values())
-    can_clear = _college_can(c, "rooms")
+    can_clear = _college_can_ops(c, 'rooms')
     stock_left = int((_mattress_inventory(c["id"]) or {}).get("quantity") or 0)
-    can_stores = _college_can(c, "stores")
+    can_stores = _college_can_ops(c, 'stores')
     for x in rows:
         sid = (x.get("student") or {}).get("id")
         x["room"] = room_by_app.get(sid)
@@ -35657,7 +35684,7 @@ def _hostel_cleared(application_id, college_id):
 @login_required
 def ac_college_mattress_clearance(slug, application_id):
     c = _college_by_slug(slug)
-    if not c or not _college_can(c, "rooms"):
+    if not c or not _college_can_ops(c, 'rooms'):
         abort(404)
     a = first_row("koja_college_applications", {"id": application_id, "college_id": c["id"]})
     if not a:
@@ -35684,7 +35711,7 @@ def ac_college_mattress_clearance(slug, application_id):
 @login_required
 def ac_college_mattress_stock(slug):
     c=_college_by_slug(slug)
-    if not _college_can(c, 'stores'): abort(404)
+    if not _college_can_ops(c, 'stores'): abort(404)
     qty=int(_ac_num(request.form.get("quantity"),0,0,100000)); cur=_mattress_inventory(c["id"])
     if cur: _,err=db_update("koja_mattress_inventory",{"id":cur["id"]},{"quantity":qty,"updated_at":utc_now(),"updated_by":_ac_uid()})
     else: _,err=db_insert("koja_mattress_inventory",{"id":str(uuid.uuid4()),"college_id":c["id"],"quantity":qty,"issued_quantity":0,"updated_at":utc_now(),"updated_by":_ac_uid()})
@@ -35698,7 +35725,7 @@ def ac_college_mattress_stock(slug):
 @login_required
 def ac_college_mattress_allocate(slug):
     c=_college_by_slug(slug)
-    if not _college_can(c, 'stores'): abort(404)
+    if not _college_can_ops(c, 'stores'): abort(404)
     a=first_row("koja_college_applications",{"id":request.form.get("application_id"),"college_id":c["id"]})
     if not _fin_student_ok(a) or not a.get("student_number"):
         flash("Select an accepted/enrolled student with a student number.","danger"); return redirect(url_for("ac_college_mattresses",slug=slug))
@@ -35761,7 +35788,7 @@ def ac_college_mattress_qr_image(slug,allocation_id):
 @login_required
 def ac_college_mattress_scan(slug):
     c=_college_by_slug(slug)
-    if not _college_can(c, 'stores'): abort(404)
+    if not _college_can_ops(c, 'stores'): abort(404)
     return redirect(url_for("ac_college_mattresses", slug=slug))
     # (old scanning page below is no longer served)
     return _ac_page("Stores scanning desk",r'''<div class="card"><h2>Stores Office — scan mattress QR</h2>
@@ -35819,7 +35846,7 @@ def ac_college_mattress_scan(slug):
 @login_required
 def ac_college_mattress_scan_lookup(slug):
     c=_college_by_slug(slug)
-    if not _college_can(c, 'stores'): abort(404)
+    if not _college_can_ops(c, 'stores'): abort(404)
     q=clean(request.args.get("q"))[:200]
     return redirect(url_for("ac_college_mattresses", slug=slug, q=q) if q else url_for("ac_college_mattresses", slug=slug))
 
@@ -35827,7 +35854,7 @@ def ac_college_mattress_scan_lookup(slug):
 @login_required
 def ac_college_mattress_scan_token(slug,token):
     c=_college_by_slug(slug)
-    if not _college_can(c, 'stores'): abort(404)
+    if not _college_can_ops(c, 'stores'): abort(404)
     return redirect(url_for("ac_college_mattresses", slug=slug, token=token))
     al=first_row("koja_mattress_allocations",{"qr_token":str(token),"college_id":c["id"]})
     if not al: abort(404)
@@ -35846,7 +35873,7 @@ def ac_college_mattress_scan_token(slug,token):
 @login_required
 def ac_college_mattress_issue(slug,allocation_id):
     c=_college_by_slug(slug)
-    if not _college_can(c, 'stores'): abort(404)
+    if not _college_can_ops(c, 'stores'): abort(404)
     al=first_row("koja_mattress_allocations",{"id":allocation_id,"college_id":(c or {}).get("id")})
     if not c or not al: abort(404)
     if al.get("status")=="collected":
@@ -36087,7 +36114,7 @@ def ac_college_audit_log(slug):
 @login_required
 def ac_college_mattress_returns(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, "stores"):
+    if not _college_can_ops(c, 'stores'):
         abort(404)
     allocs = _ac_rows("koja_mattress_allocations", {"college_id": c["id"], "status": "collected"}, order="collected_at.desc", limit=1000)
     apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
@@ -36106,7 +36133,7 @@ def ac_college_mattress_returns(slug):
 @login_required
 def ac_college_mattress_return(slug, allocation_id):
     c = _college_by_slug(slug)
-    if not _college_can(c, "stores"):
+    if not _college_can_ops(c, 'stores'):
         abort(403)
     al = first_row("koja_mattress_allocations", {"id": allocation_id, "college_id": (c or {}).get("id")})
     if not al:
@@ -36125,7 +36152,7 @@ def ac_college_mattress_return(slug, allocation_id):
 @login_required
 def ac_college_mattress_cancel(slug, allocation_id):
     c = _college_by_slug(slug)
-    if not _college_can(c, "stores"):
+    if not _college_can_ops(c, 'stores'):
         abort(403)
     al = first_row("koja_mattress_allocations", {"id": allocation_id, "college_id": (c or {}).get("id")})
     if not al:
@@ -36168,7 +36195,7 @@ def ac_college_finance_csv(slug):
 @login_required
 def ac_college_occupancy_csv(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, "rooms"):
+    if not _college_can_ops(c, 'rooms'):
         abort(404)
     out = io.StringIO()
     w = csv.writer(out)
@@ -36189,7 +36216,7 @@ def ac_college_occupancy_csv(slug):
 @login_required
 def ac_college_stores_csv(slug):
     c = _college_by_slug(slug)
-    if not _college_can(c, "stores"):
+    if not _college_can_ops(c, 'stores'):
         abort(404)
     rows = _ac_rows_all("koja_stores_transactions", {"college_id": c["id"]}, order="created_at.desc")
     out = io.StringIO()
