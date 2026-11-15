@@ -22397,7 +22397,7 @@ def _ac_page(title, tpl, **ctx):
     ctx.setdefault("csrf", Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
     ctx.setdefault("money", market_money)
     portal_app = g.get("portal_app")
-    if portal_app is not None:
+    if portal_app is not None and not g.get("portal_plain"):
         ctx.setdefault("portal_menu", _portal_menu_html(portal_app))
         tpl = PORTAL_SHELL_CSS + '<div class="portal"><nav class="portal-menu">{{ portal_menu }}</nav><div>' + tpl + '</div></div>'
     return render_page(title, tpl, **ctx)
@@ -24509,11 +24509,12 @@ def _portal_menu_html(a):
     return Markup("".join(out))
 
 
-def _svc_student_academic(aid, title, template, extra=None):
+def _svc_student_academic(aid, title, template, extra=None, plain=False):
     a, c, course, is_student, is_manager = _svc_app(aid)
     if not is_student:
         abort(404)
     g.portal_app = a
+    g.portal_plain = plain
     try:
         if not _svc_can_use(a):
             return _ac_page(title, r'''<div class="card"><h2>%s</h2><p>This opens once you accept your place.</p>
@@ -24521,6 +24522,7 @@ def _svc_student_academic(aid, title, template, extra=None):
         return template(a, c, course, extra or {})
     finally:
         g.portal_app = None
+        g.portal_plain = False
 
 
 @app.route("/academic/services/<aid>/grades")
@@ -26318,7 +26320,7 @@ def ac_svc_ca(aid):
 <p class="small" style="margin-top:8px">Exam eligibility needs all of your CA published and complete. Exam entry also depends on your fees.</p>
 </div>{% else %}<div class="card"><p class="small">You have no registered modules yet.</p></div>{% endif %}''',
                          back=_svc_back(aid), c=c, course=course, rows=rows, out_of=num(_ca_out_of(c)), course_code=course.get("course_code"))
-    return _svc_student_academic(aid, "View CA", build)
+    return _svc_student_academic(aid, "View CA", build, plain=True)
 
 
 @app.route("/academic/services/<aid>/docket")
