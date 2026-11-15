@@ -23966,6 +23966,7 @@ def ac_application_view(aid):
     course = first_row("koja_college_courses", {"id": a["course_id"]}) or {}
     intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
     docs = _ac_rows("koja_college_application_documents", {"application_id": aid}, order="created_at.asc", limit=20)
+    room_letter = _room_letter_data(a, c) if is_student else None
     docs_by_kind = {d.get("kind"): d for d in docs}
     checklist = _college_missing_items({k: a.get(k) for k in COLLEGE_APP_FIELDS}, docs) if a.get("status") == "draft" else []
     return _ac_page("Application", r'''
@@ -23977,6 +23978,7 @@ def ac_application_view(aid):
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
 {% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if is_owner and not is_student %}<form method="post" action="{{ url_for('ac_application_union', aid=a.id) }}" class="small" style="margin:6px 0">{{ csrf }}<label><input type="checkbox" name="union_member" value="1" {{ 'checked' if a.union_member }}> Union member (verified by the college)</label> <button class="btn secondary" type="submit">Save</button></form>
 <p><a class="btn secondary" href="{{ url_for('ac_svc_marks', aid=a.id) }}">Enter marks</a> <a class="btn secondary" href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk</a></p>{% endif %}
+{% if is_student and room_letter %}<p><a class="btn secondary" href="{{ url_for('ac_application_room_letter', aid=a.id) }}">Download room letter (PDF)</a> <span class="small">{{ room_letter.hostel }} · Room {{ room_letter.room }} · Bed {{ room_letter.bed }}</span></p>{% endif %}
 {% if a.decision_note %}<p class="small"><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
 {% if a.status in ('offered', 'accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_letter', aid=a.id) }}">Acceptance letter</a></p>{% endif %}
 {% if not is_owner and a.status == 'offered' %}
@@ -24049,7 +24051,7 @@ def ac_application_view(aid):
 <button class="btn" type="submit">Save decision</button></form>
 <p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p></div>
 {% endif %}''',
-                    a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind, checklist=checklist,
+                    a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind, checklist=checklist, room_letter=room_letter,
                     doc_labels=COLLEGE_DOC_LABELS, is_owner=is_owner, is_student=is_student,
                     staff_statuses=COLLEGE_STAFF_STATUSES, bg_url=url_for("static", filename="college-library-bg.jpg"))
 
@@ -24279,6 +24281,21 @@ def ac_application_decide(aid):
     return redirect(url_for("ac_application_view", aid=aid))
 
 
+def _portal_open(a):
+    """The student portal opens when admission is confirmed (accepted or enrolled) and the initial deposit is paid.
+    An admin can force it on or off for one student; 'automatic' follows the rule."""
+    ov = (a.get("portal_override") or "")
+    if ov == "on":
+        return True
+    if ov == "off":
+        return False
+    if a.get("status") not in ("accepted", "enrolled"):
+        return False
+    deposit = float((_ca_settings({"id": a.get("college_id")}) or {}).get("portal_deposit") or 0)
+    _, _, _, paid, _ = _fin_totals(a["id"])
+    return paid > 0 and paid >= deposit
+
+
 @app.route("/academic/services/<aid>")
 @login_required
 def ac_student_portal(aid):
@@ -24289,7 +24306,7 @@ def ac_student_portal(aid):
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
     course = first_row("koja_college_courses", {"id": a["course_id"]}) or {}
     intake = first_row("koja_college_intakes", {"id": a["intake_id"]}) if a.get("intake_id") else None
-    can_use = a.get("status") in ("accepted", "enrolled")
+    can_use = _portal_open(a)
     _, _, p_total, p_paid, p_bal = _fin_totals(aid)
     account_status = ("PAID" if p_total > 0 and p_bal <= 0 else ("Balance K%.2f" % p_bal if p_total > 0 else "No fees charged yet"))
     receipts = _ac_rows("koja_college_receipts", {"application_id": aid}, order="issued_at.desc", limit=50)
@@ -24357,7 +24374,7 @@ def ac_student_portal(aid):
       <p><strong>Next classes:</strong></p>
       {% for s in next_classes %}<p class="small">{{ s.module }} · {{ s.day }} {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}</p>
       {% else %}<p class="small">No published classes for your group and modules yet. <a href="{{ url_for('ac_svc_timetable', aid=a.id) }}">Timetable</a></p>{% endfor %}
-      <p><strong>Accommodation:</strong> {% if room_label %}{{ room_label }} ({{ room_status }}){% else %}not allocated yet{% endif %} · <a href="{{ url_for('ac_application_room', aid=a.id) }}">{{ 'Change room' if room_label else 'Choose a room' }}</a></p>
+      <p><strong>Accommodation:</strong> {% if room_label %}{{ room_label }} ({{ room_status }}) · <a href="{{ url_for('ac_application_room_letter', aid=a.id) }}">Download room letter (PDF)</a>{% else %}not allocated yet{% endif %} · <a href="{{ url_for('ac_application_room', aid=a.id) }}">{{ 'Change room' if room_label else 'Choose a room' }}</a></p>
       <p><strong>Balance:</strong> {{ account_status }} · <a href="{{ url_for('ac_application_money', aid=a.id) }}">Payments</a></p>
       <p><strong>Mattress:</strong> {% if mattress %}allocated. <a href="{{ url_for('ac_application_mattress', aid=a.id) }}">Show collection pass</a>{% else %}not allocated yet{% endif %}</p>
     </div>{% endif %}
@@ -24464,10 +24481,10 @@ PORTAL_SHELL_CSS = """
 def _portal_menu_html(a):
     """The student services menu, the same one the portal Home page shows."""
     aid = a["id"]
-    can_use = a.get("status") in ("accepted", "enrolled")
+    can_use = _portal_open(a)
     items = [
         ("Home", url_for("ac_student_portal", aid=aid), True, ""),
-        ("Apply for Accommodation", url_for("ac_application_room", aid=aid), can_use, "Opens once you accept your place"),
+        ("Apply for Accommodation", url_for("ac_application_room", aid=aid), can_use, "Opens once admission is confirmed and the deposit is paid"),
         ("Helpdesk Inbox", url_for("ac_svc_helpdesk", aid=aid) + "#inbox", True, ""),
         ("Helpdesk Support", url_for("ac_svc_helpdesk", aid=aid) + "#support", True, ""),
         ("Personal Information", url_for("ac_application_view", aid=aid), True, ""),
@@ -24510,13 +24527,14 @@ def _svc_student_academic(aid, title, template, extra=None):
 @login_required
 def ac_svc_grades(aid):
     def build(a, c, course, extra):
-        marks = _ac_rows("koja_college_marks", {"application_id": aid}, order="module.asc", limit=300)
+        released, pct = _results_released(a, c)
+        marks = _ac_rows("koja_college_marks", {"application_id": aid}, order="module.asc", limit=300) if released else []
         return _ac_page("Grades", r'''
-<div class="card"><h2>Grades</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h2>Grades</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p>{% if not released %}<p><strong>Your results are held.</strong> Results are released once at least {{ '%g' % pct }}% of your fees are paid. Contact accounts if you have an agreed exception.</p>{% endif %}</div>
 <div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>CA</th><th>Exam</th><th>Grade</th></tr>
 {% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ m.ca_mark if m.ca_mark is not none else '-' }}</td><td align="center">{{ m.exam_mark if m.exam_mark is not none else '-' }}</td><td align="center"><strong>{{ m.grade or '-' }}</strong></td></tr>
 {% else %}<tr><td colspan="4" class="small">No grades posted yet.</td></tr>{% endfor %}</table></div>''',
-                         back=_svc_back(aid), c=c, course=course, marks=marks)
+                         back=_svc_back(aid), c=c, course=course, marks=marks, released=released, pct=pct)
     return _svc_student_academic(aid, "Grades", build)
 
 
@@ -26217,11 +26235,25 @@ def _svc_registration_ok(a, c):
     return ok, total, paid
 
 
+def _exempt(application_id, college_id, kind):
+    """True when accounts has granted this student an exception for 'exam' or 'results'."""
+    return first_row("koja_college_exemptions", {"application_id": application_id, "college_id": college_id, "kind": kind}) is not None
+
+
+def _results_released(a, c):
+    """Results are released when the student has paid the college's results percentage of fees, or has an exemption."""
+    _, _, total, paid, _ = _fin_totals(a["id"])
+    raw = _ca_settings(c).get("results_fee_percent")
+    pct = float(raw) if raw is not None else 100.0
+    ok = total <= 0 or paid + 0.005 >= total * pct / 100.0 or _exempt(a["id"], c["id"], "results")
+    return ok, pct
+
+
 def _svc_clearances(a, c):
     """Exam clearance: fees paid enough (financial) and every registered module published with complete CA (academic)."""
     _, _, total, paid, balance = _fin_totals(a["id"])
     pct = float(_ca_settings(c).get("exam_fee_percent") if _ca_settings(c).get("exam_fee_percent") is not None else CA_EXAM_FEE_PERCENT_DEFAULT)
-    fees_ok = total <= 0 or paid + 0.005 >= total * pct / 100.0
+    fees_ok = total <= 0 or paid + 0.005 >= total * pct / 100.0 or _exempt(a["id"], c["id"], "exam")
     reasons = []
     if not fees_ok:
         reasons.append("Fees: at least %s%% of your fees must be paid. Paid %.2f of %.2f." % (int(pct) if pct == int(pct) else pct, paid, total))
@@ -26395,6 +26427,214 @@ def ac_application_letter(aid):
 """, c=c, a=a, course=course, intake=intake, today=today)
 
 
+@app.route("/academic/college/<slug>/portal-deposit", methods=["POST"])
+@login_required
+def ac_college_portal_deposit(slug):
+    c = _college_by_slug(slug)
+    if not c or not _college_is_owner(c):
+        abort(404)
+    amount = round(_ac_num(request.form.get("deposit"), 0, 0, 1000000000), 2)
+    payload = {"college_id": c["id"], "portal_deposit": amount, "updated_at": utc_now()}
+    if _ca_settings(c):
+        _, err = db_update("koja_college_settings", {"college_id": c["id"]}, payload)
+    else:
+        _, err = db_insert("koja_college_settings", payload)
+    flash("Could not save the deposit." if err else "Portal deposit saved: K%.2f." % amount, "danger" if err else "success")
+    return redirect(url_for("ac_college_admissions", slug=slug))
+
+
+@app.route("/academic/college/<slug>/application/<aid>/portal", methods=["POST"])
+@login_required
+def ac_college_portal_override(slug, aid):
+    c = _college_by_slug(slug)
+    if not c or not _college_can(c, "accounts"):
+        abort(404)
+    a = first_row("koja_college_applications", {"id": aid, "college_id": c["id"]})
+    if not a:
+        abort(404)
+    choice = clean(request.form.get("choice"))
+    if choice not in ("on", "off"):
+        choice = ""
+    _, err = db_update("koja_college_applications", {"id": aid}, {"portal_override": choice})
+    if err:
+        flash("Could not change the portal setting.", "danger")
+    else:
+        _college_audit(c, "portal.override", "application %s: %s" % (aid, choice or "automatic"))
+        flash("Portal for %s: %s." % (a.get("full_name") or "student", {"on": "forced on", "off": "forced off", "": "automatic"}[choice]), "success")
+    return redirect(url_for("ac_college_admissions", slug=slug))
+
+
+@app.route("/academic/college/<slug>/staff-timetable")
+@login_required
+def ac_college_staff_timetable(slug):
+    # Staff timetable as a grid: day against time slot, with module, cohort, room and lecturer.
+    # The owner sees every lecturer and can filter by lecturer. A lecturer sees only the modules assigned to them.
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    owner = _college_is_owner(c)
+    mine = _ca_my_assignments(c) if not owner else []
+    if not owner and not mine:
+        abort(403)
+    assigned = {(x["course_id"], x["module"]) for x in mine}
+    slots = [x for x in _ac_rows_all("koja_college_timetable", {"college_id": c["id"]}, order="created_at.asc") if x.get("published")]
+    if not owner:
+        slots = [x for x in slots if (x.get("course_id"), x.get("module")) in assigned]
+    lecturers = sorted({(x.get("lecturer") or "").strip() for x in slots if (x.get("lecturer") or "").strip()})
+    pick = clean(request.args.get("lecturer")) if owner else ""
+    if pick:
+        slots = [x for x in slots if (x.get("lecturer") or "").strip() == pick]
+    periods, grid, other = _tt_grid(slots)
+    courses = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
+    return _ac_page("Staff timetable", r'''
+<div class="card"><h2>Staff timetable</h2><p class="small">{{ c.name }} · {{ 'All lecturers' if owner else 'Your modules' }}{% if pick %} · {{ pick }}{% endif %}</p>
+<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a></p>
+{% if owner %}<form method="get"><label>Lecturer<select name="lecturer" onchange="this.form.submit()"><option value="">Everyone</option>{% for name in lecturers %}<option value="{{ name }}" {{ 'selected' if name == pick }}>{{ name }}</option>{% endfor %}</select></label> <noscript><button class="btn secondary" type="submit">Show</button></noscript></form>{% endif %}
+</div>
+<div class="card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:520px"><tr><th align="left" style="padding:6px">Day</th>{% for p, times in periods %}<th style="padding:6px;font-size:13px">{{ times[0] }}–{{ times[1] }}</th>{% endfor %}</tr>
+{% for row in grid %}<tr><td style="padding:6px;border-top:1px solid #ddd"><strong>{{ row.day }}</strong></td>{% for cell in row.cells %}<td style="vertical-align:top;border:1px solid #ddd;padding:4px">{% for s in cell %}<div class="small" style="margin-bottom:4px"><strong>{{ s.module }}</strong><br>{{ courses.get(s.course_id, '') }} · Cohort {{ s.grp or 'A' }}<br>{{ s.venue or 'Room to be confirmed' }} · {{ s.lecturer or 'Lecturer to be confirmed' }}</div>{% endfor %}</td>{% endfor %}</tr>{% endfor %}</table>
+{% if not grid %}<p class="small">No published sessions to show.</p>{% endif %}</div>
+{% if other %}<div class="card"><h3>Sessions at other times</h3>{% for s in other %}<p class="small">{{ s.day }} {{ s.starts }} · <strong>{{ s.module }}</strong> · Cohort {{ s.grp or 'A' }} · {{ s.venue or 'Room to be confirmed' }} · {{ s.lecturer or 'Lecturer to be confirmed' }}</p>{% endfor %}</div>{% endif %}''',
+                    c=c, owner=owner, pick=pick, lecturers=lecturers, periods=periods, grid=grid, other=other, courses=courses)
+
+
+@app.route("/academic/college/<slug>/evaluations")
+@login_required
+def ac_college_evaluations(slug):
+    # Course evaluations from students: average scores and comments, with course and intake (term) filters. Anonymous.
+    c = _college_by_slug(slug)
+    if not c or not _college_is_owner(c):
+        abort(404)
+    course_pick = clean(request.args.get("course"))
+    intake_pick = clean(request.args.get("intake"))
+    apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
+    courses = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
+    intakes = {i["id"]: i["name"] for i in _ac_rows("koja_college_intakes", {"college_id": c["id"]}, limit=100)}
+    evals = []
+    for e in _ac_rows_all("koja_college_evaluations", {"college_id": c["id"]}, order="created_at.desc"):
+        a = apps.get(e.get("application_id")) or {}
+        if course_pick and str(a.get("course_id")) != course_pick:
+            continue
+        if intake_pick and str(a.get("intake_id")) != intake_pick:
+            continue
+        evals.append({"rating": int(e.get("rating") or 0), "comment": (e.get("comment") or "").strip(),
+                      "course": courses.get(a.get("course_id"), "Course"), "course_id": a.get("course_id"),
+                      "term": intakes.get(a.get("intake_id"), "No intake")})
+    total = len(evals)
+    avg = round(sum(x["rating"] for x in evals) / total, 2) if total else None
+    by_course = {}
+    for x in evals:
+        by_course.setdefault(x["course"], []).append(x["rating"])
+    summary = sorted([{"course": k, "count": len(v), "avg": round(sum(v) / len(v), 2)} for k, v in by_course.items()], key=lambda r: r["course"])
+    return _ac_page("Course evaluations", r'''
+<div class="card"><h2>Course evaluations</h2><p class="small">{{ c.name }} · anonymous, from students</p>
+<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a></p>
+<form method="get"><label>Course<select name="course"><option value="">All courses</option>{% for cid, title in courses.items() %}<option value="{{ cid }}" {{ 'selected' if cid == course_pick }}>{{ title }}</option>{% endfor %}</select></label>
+<label>Term (intake)<select name="intake"><option value="">All terms</option>{% for iid, name in intakes.items() %}<option value="{{ iid }}" {{ 'selected' if iid == intake_pick }}>{{ name }}</option>{% endfor %}</select></label>
+<button class="btn" type="submit">Apply</button></form></div>
+<div class="card"><h3>Average score</h3>{% if avg is not none %}<p><strong>{{ '%.2f' % avg }} / 5</strong> from {{ total }} evaluation{{ '' if total == 1 else 's' }}</p>
+<table style="width:100%;border-collapse:collapse">{% for r in summary %}<tr style="border-top:1px solid #ddd"><td style="padding:6px">{{ r.course }}</td><td align="center">{{ '%.2f' % r.avg }}</td><td align="center">{{ r.count }}</td></tr>{% endfor %}</table>
+{% else %}<p class="small">No evaluations match these filters yet.</p>{% endif %}</div>
+<div class="card"><h3>Comments</h3>{% for x in evals if x.comment %}<p style="border-top:1px solid #ddd;padding-top:8px"><strong>{{ x.rating }}/5</strong> · {{ x.course }} · {{ x.term }}<br><span class="small">{{ x.comment }}</span></p>{% else %}<p class="small">No comments yet.</p>{% endfor %}</div>''',
+                    c=c, courses=courses, intakes=intakes, course_pick=course_pick, intake_pick=intake_pick, avg=avg, total=total, summary=summary, evals=evals)
+
+
+def _room_letter_data(a, c):
+    """The student's active room and bed space, for the room letter. None if no room is allocated."""
+    alloc = first_row("koja_accommodation_allocations", {"application_id": a["id"], "status": "active"})
+    if not alloc:
+        return None
+    rinfo = _bed_in_college(c, alloc["bedspace_id"])
+    if not rinfo:
+        return None
+    return {"hostel": rinfo["hostel"]["name"], "room": rinfo["room"]["room_code"], "bed": rinfo["bed"]["number"],
+            "status": "Provisional reservation" if _accommodation_gate(c, a) else "Confirmed"}
+
+
+@app.route("/academic/application/<aid>/room-letter")
+@login_required
+def ac_application_room_letter(aid):
+    a = first_row("koja_college_applications", {"id": aid})
+    if not a:
+        abort(404)
+    c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
+    is_student = a.get("student_user_id") == _ac_uid()
+    if not is_student and not _college_is_owner(c):
+        abort(404)
+    info = _room_letter_data(a, c)
+    if not info:
+        flash("No room has been allocated yet.", "warning")
+        return redirect(url_for("ac_application_view", aid=aid))
+    from reportlab.pdfgen import canvas as _pdf_canvas
+    buf = io.BytesIO()
+    pdf = _pdf_canvas.Canvas(buf, pagesize=(595, 842))
+    pdf.setTitle("Room allocation letter")
+    y = 780
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(60, y, "Room allocation letter")
+    y -= 26
+    pdf.setFont("Helvetica", 12)
+    pdf.drawString(60, y, c.get("name") or "")
+    y -= 40
+    rows = [("Student", a.get("full_name") or ""),
+            ("Student number", a.get("student_number") or "not yet issued"),
+            ("Hostel", info["hostel"]),
+            ("Room", str(info["room"])),
+            ("Bed space", str(info["bed"])),
+            ("Status", info["status"]),
+            ("Issued", str(utc_now())[:10])]
+    for label, value in rows:
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(60, y, label + ":")
+        pdf.setFont("Helvetica", 12)
+        pdf.drawString(190, y, str(value)[:90])
+        y -= 24
+    y -= 16
+    pdf.setFont("Helvetica", 11)
+    pdf.drawString(60, y, "Keep this letter. Show it at the hostel office when you need to.")
+    pdf.showPage()
+    pdf.save()
+    buf.seek(0)
+    return send_file(buf, download_name="room-letter-%s.pdf" % (a.get("student_number") or aid), as_attachment=True,
+                     mimetype="application/pdf", max_age=0)
+
+
+@app.route("/academic/college/<slug>/application/<aid>/exemption", methods=["POST"])
+@login_required
+def ac_college_exemption(slug, aid):
+    c = _college_by_slug(slug)
+    if not c or not _college_can(c, "accounts"):
+        abort(404)
+    a = first_row("koja_college_applications", {"id": aid, "college_id": c["id"]})
+    if not a:
+        abort(404)
+    kind = clean(request.form.get("kind"))
+    action = clean(request.form.get("action"))
+    if kind not in ("exam", "results") or action not in ("grant", "revoke"):
+        flash("Choose an exemption type.", "danger")
+        return redirect(url_for("ac_college_admissions", slug=slug))
+    label = "exam docket" if kind == "exam" else "results"
+    if action == "grant":
+        reason = clean(request.form.get("reason"))[:300]
+        if not reason:
+            flash("Give a reason for the exemption.", "danger")
+        elif _exempt(aid, c["id"], kind):
+            flash("This student already has a %s exemption." % label, "warning")
+        else:
+            _, err = db_insert("koja_college_exemptions", {"id": str(uuid.uuid4()), "college_id": c["id"], "application_id": aid,
+                               "kind": kind, "reason": reason, "granted_by": _ac_uid(), "created_at": utc_now()})
+            if err:
+                flash("Could not save the exemption.", "danger")
+            else:
+                _college_audit(c, "exemption.granted", "application %s: %s (%s)" % (aid, label, reason))
+                flash("Exemption granted for the %s." % label, "success")
+    else:
+        db_delete("koja_college_exemptions", {"application_id": aid, "college_id": c["id"], "kind": kind})
+        _college_audit(c, "exemption.removed", "application %s: %s" % (aid, label))
+        flash("Exemption removed for the %s." % label, "success")
+    return redirect(url_for("ac_college_admissions", slug=slug))
+
+
 @app.route("/academic/college/<slug>/admissions")
 @login_required
 def ac_college_admissions(slug):
@@ -26412,16 +26652,22 @@ def ac_college_admissions(slug):
     intake_names = {i["id"]: i["name"] for i in intakes}
     counts = {s: sum(1 for x in everything if x.get("status") == s) for s in COLLEGE_ALL_STATUSES}
     seats_used = {i["id"]: sum(1 for x in everything if x.get("intake_id") == i["id"] and x.get("status") in ("accepted", "enrolled")) for i in intakes}
+    exempt_kinds = {}
+    for e in _ac_rows_all("koja_college_exemptions", {"college_id": c["id"]}):
+        exempt_kinds.setdefault(e.get("application_id"), []).append("exam docket" if e.get("kind") == "exam" else "results")
     return _ac_page("Admissions", r'''
 <div class="card"><h2>Admissions: {{ c.name }}</h2>
-<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
+<p class="small"><a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a> · <a href="{{ url_for('ac_college_admissions_csv', slug=c.slug) }}">Download list (spreadsheet)</a> · <a href="{{ url_for('ac_college_evaluations', slug=c.slug) }}">Course evaluations</a> · <a href="{{ url_for('ac_college_staff_timetable', slug=c.slug) }}">Staff timetable</a> · <a href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> · <a href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> · <a href="{{ url_for('ac_college_view', slug=c.slug) }}">College page</a> · <a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_finance_csv', slug=c.slug) }}">Balances (CSV)</a> · <a href="{{ url_for('ac_college_mattress_payments', slug=c.slug) }}">Mattress payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_occupancy_csv', slug=c.slug) }}">Bed occupancy (CSV)</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_mattress_returns', slug=c.slug) }}">Mattress returns</a> · <a href="{{ url_for('ac_college_mattress_scan', slug=c.slug) }}">QR scanning desk</a> · <a href="{{ url_for('ac_college_stores_csv', slug=c.slug) }}">Stores ledger (CSV)</a> · <a href="{{ url_for('ac_college_audit_log', slug=c.slug) }}">Audit log</a></p>
 <p class="small">
 <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">All ({{ everything|length }})</a>{% if drafts %} <span class="small">· {{ drafts }} draft(s): students have started but not submitted yet</span>{% endif %}
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
 </p></div>
 <div class="card"><h3>Applications{% if status %}: {{ status | replace('_', ' ') }}{% endif %}</h3>
 {% for a in shown %}<p><a href="{{ url_for('ac_application_view', aid=a.id) }}">{{ a.full_name }}</a> · {{ course_names.get(a.course_id, 'Course') }}{% if a.intake_id %} · {{ intake_names.get(a.intake_id, '') }}{% endif %} · <strong>{{ a.status | replace('_', ' ') }}</strong></p>
+<form method="post" action="{{ url_for('ac_college_portal_override', slug=c.slug, aid=a.id) }}" style="margin:0 0 10px">{{ csrf }}<label class="small">Student portal <select name="choice"><option value="" {{ 'selected' if not a.portal_override }}>Automatic (admission confirmed and deposit paid)</option><option value="on" {{ 'selected' if a.portal_override=='on' }}>Force on</option><option value="off" {{ 'selected' if a.portal_override=='off' }}>Force off</option></select></label> <button class="btn secondary" type="submit">Save</button></form>
+<form method="post" action="{{ url_for('ac_college_exemption', slug=c.slug, aid=a.id) }}" style="margin:0 0 12px">{{ csrf }}<p class="small" style="margin:0 0 4px">Exemptions: {% if exempt_kinds.get(a.id) %}{{ exempt_kinds[a.id]|join(', ') }}{% else %}none{% endif %}</p><label class="small">Type <select name="kind"><option value="exam">Exam docket</option><option value="results">Results</option></select></label> <label class="small">Reason <input name="reason" maxlength="300" placeholder="e.g. sponsor pays on 30 Nov"></label> <button class="btn secondary" name="action" value="grant" type="submit">Grant exemption</button> <button class="btn secondary" name="action" value="revoke" type="submit">Remove exemption</button></form>
 {% else %}<p>No applications here yet.</p>{% endfor %}</div>
+<div class="card"><h3>Student portal</h3><p class="small">The portal opens once admission is confirmed and the deposit below is paid. Set the amount here; you can also force the portal on or off for one student in the list above.</p><form method="post" action="{{ url_for('ac_college_portal_deposit', slug=c.slug) }}">{{ csrf }}<label>Deposit (K)<input name="deposit" type="number" min="0" step="0.01" value="{{ portal_deposit }}"></label><button class="btn" type="submit">Save deposit</button></form></div>
 <div class="card"><h3>Intakes</h3>
 {% for i in intakes %}<p class="small">{{ i.name }}{% if i.opens_on %} · opens {{ i.opens_on }}{% endif %}{% if i.closes_on %} · closes {{ i.closes_on }}{% endif %}{% if i.seats %} · seats {{ seats_used[i.id] }}/{{ i.seats }}{% endif %}</p>
 {% else %}<p class="small">No intakes yet. Applications go to "any intake" until you add one.</p>{% endfor %}
@@ -26433,7 +26679,7 @@ def ac_college_admissions(slug):
 <button class="btn" type="submit">Add intake</button></form></div>''',
                     c=c, everything=everything, shown=shown, status=status, statuses=COLLEGE_ALL_STATUSES,
                     counts=counts, course_names=course_names, intake_names=intake_names, intakes=intakes,
-                    seats_used=seats_used, drafts=drafts, csrf_ok=True)
+                    seats_used=seats_used, drafts=drafts, csrf_ok=True, portal_deposit=float((_ca_settings(c) or {}).get('portal_deposit') or 0), exempt_kinds=exempt_kinds)
 
 
 @app.route("/academic/college/<slug>/intake", methods=["POST"])
@@ -26673,6 +26919,35 @@ def ac_college_charge_add(slug):
     return redirect(back)
 
 
+def _auto_apply_mattress(c, p):
+    """When accounts confirm a payment that has no charge chosen, pay the student's unpaid mattress charge first from it.
+    Any amount left over stays as a general verified payment. Returns (payment, mattress_charge_or_None, rest_row_or_None)."""
+    if p.get("charge_id") or not p.get("application_id"):
+        return p, None, None
+    ch = _mattress_charge(p["application_id"], c["id"])
+    if not ch:
+        return p, None, None
+    balance = round(float(ch.get("amount") or 0) - _mattress_paid_total(p["application_id"], ch["id"]), 2)
+    amount = round(float(p.get("amount") or 0), 2)
+    portion = round(min(amount, balance), 2)
+    if portion <= 0:
+        return p, None, None
+    if portion >= amount:
+        db_update("koja_college_payments", {"id": p["id"]}, {"charge_id": ch["id"]})
+        return dict(p, charge_id=ch["id"]), ch, None
+    db_update("koja_college_payments", {"id": p["id"]}, {"amount": portion, "charge_id": ch["id"]})
+    rest = {"id": str(uuid.uuid4()), "college_id": p["college_id"], "application_id": p["application_id"],
+            "amount": round(amount - portion, 2), "charge_id": None, "method": p.get("method"),
+            "reference": (p.get("reference") or "") + " (after mattress)", "status": "verified",
+            "verified_at": utc_now(), "verified_by": _ac_uid(), "created_at": utc_now()}
+    _, err = db_insert("koja_college_payments", rest, returning="minimal")
+    if err:
+        # Put the payment back exactly as it was, so no money is lost from the record.
+        db_update("koja_college_payments", {"id": p["id"]}, {"amount": amount, "charge_id": None})
+        return p, None, None
+    return dict(p, amount=portion, charge_id=ch["id"]), ch, rest
+
+
 @app.route("/academic/college/<slug>/payment/<pid>/decide", methods=["POST"])
 @login_required
 def ac_college_payment_decide(slug, pid):
@@ -26692,9 +26967,16 @@ def ac_college_payment_decide(slug, pid):
         return redirect(back)
     db_update("koja_college_payments", {"id": pid}, {"status": decision, "verified_at": utc_now(), "verified_by": _ac_uid()})
     _college_audit(c, "payment." + decision, "payment %s amount %s" % (pid, p.get("amount")))
+    mattress_note = ""
     if decision == "verified":
-        _issue_receipt(c, dict(p, status="verified"))
-    flash("Payment confirmed. The balance is updated and a receipt was issued." if decision == "verified" else "Payment rejected.", "success")
+        p2, ch, rest = _auto_apply_mattress(c, dict(p, status="verified"))
+        _issue_receipt(c, p2)
+        if rest:
+            _issue_receipt(c, rest)
+        if ch:
+            _college_audit(c, "payment.mattress_applied", "payment %s: K%.2f to mattress charge" % (pid, p2.get("amount") or 0))
+            mattress_note = " K%.2f went to the mattress charge first." % float(p2.get("amount") or 0)
+    flash(("Payment confirmed. The balance is updated and a receipt was issued." + mattress_note) if decision == "verified" else "Payment rejected.", "success")
     return redirect(url_for("ac_college_finance", slug=slug))
 
 
@@ -26808,7 +27090,7 @@ def ac_college_accommodation(slug):
 {% else %}<p>No hostels yet.</p>{% endfor %}
 </div>
 <div class="card"><h3>Standard layout (hostels A to M)</h3>
-<p class="small">Creates Hostels A to M, each with rooms 1 to 17. Hostels A to G are for women, H to M for men. Rooms 6, 7 and 16 take 2 students and are for union members; the other rooms take 6. Running it again adds only what is missing and updates the gender and union rules on existing hostels and rooms.</p>
+<p class="small">Creates Hostels A to M. Hostels A to G are for women: 12 rooms each, 4 places per room. Hostels H to M are for men: 17 rooms each, 5 places per room. Rooms 6, 7 and 16 take 2 students and are for union members. Running it again adds only what is missing and updates the gender and union rules on existing hostels and rooms. It does not change the capacity of rooms that already exist.</p>
 <form method="post" action="{{ url_for('ac_college_standard_block', slug=c.slug) }}">{{ csrf }}<button class="btn" type="submit">Set up standard layout</button></form></div>
 <div class="card"><h3>Add a hostel</h3>
 <form method="post" action="{{ url_for('ac_college_hostel_add', slug=c.slug) }}">{{ csrf }}<label>Hostel name<input name="name" required maxlength="100"></label><button class="btn" type="submit">Add hostel</button></form></div>
@@ -26870,11 +27152,12 @@ def ac_college_room_add(slug):
 # Standard boys' accommodation layout: hostels A to M, each with rooms 1 to 17.
 # Rooms 6, 7 and 16 take 2 students; every other room takes 6.
 STANDARD_HOSTEL_LETTERS = [chr(code) for code in range(ord("A"), ord("M") + 1)]
-STANDARD_ROOM_COUNT = 17
+STANDARD_HOSTEL_GENDER = {letter: ("female" if letter <= "G" else "male") for letter in STANDARD_HOSTEL_LETTERS}
+# Rooms per hostel and places per room, by gender. Women: 12 rooms of 4. Men: 17 rooms of 5.
+STANDARD_ROOM_LAYOUT = {"female": {"rooms": 12, "capacity": 4}, "male": {"rooms": 17, "capacity": 5}}
+# Union-only rooms (2 places) keep the same rule as before; only room numbers that exist for that gender are used.
 STANDARD_SMALL_ROOMS = {6, 7, 16}
 STANDARD_SMALL_CAPACITY = 2
-STANDARD_CAPACITY = 6
-STANDARD_HOSTEL_GENDER = {letter: ("female" if letter <= "G" else "male") for letter in STANDARD_HOSTEL_LETTERS}
 
 
 @app.route("/academic/college/<slug>/accommodation/standard", methods=["POST"])
@@ -26904,14 +27187,15 @@ def ac_college_standard_block(slug):
     new_rooms, new_beds = [], []
     for name, hid in hostel_ids.items():
         existing_rooms = {r["room_code"]: r for r in _ac_rows("koja_accommodation_rooms", {"hostel_id": hid}, limit=500)}
-        for number in range(1, STANDARD_ROOM_COUNT + 1):
+        layout = STANDARD_ROOM_LAYOUT[STANDARD_HOSTEL_GENDER[name[-1]]]
+        for number in range(1, layout["rooms"] + 1):
             code = str(number)
             union = number in STANDARD_SMALL_ROOMS
             if code in existing_rooms:
                 if existing_rooms[code].get("union_only") != union:
                     db_update("koja_accommodation_rooms", {"id": existing_rooms[code]["id"]}, {"union_only": union})
                 continue
-            places = STANDARD_SMALL_CAPACITY if union else STANDARD_CAPACITY
+            places = STANDARD_SMALL_CAPACITY if union else layout["capacity"]
             rid = str(uuid.uuid4())
             new_rooms.append({"id": rid, "hostel_id": hid, "room_code": code, "capacity": places, "union_only": union, "created_at": utc_now()})
             for bed in range(1, places + 1):
@@ -34817,6 +35101,37 @@ def _mattress_qr_token(allocation):
         db_update("koja_mattress_allocations", {"id": allocation["id"]}, {"qr_token": token})
     return token
 
+@app.route("/academic/college/<slug>/mattress-payments")
+@login_required
+def ac_college_mattress_payments(slug):
+    """Read-only for accounts: mattress charge, verified payments and collection status per student. Does not change anything."""
+    c = _college_by_slug(slug)
+    if not (_college_can(c, 'accounts') or _college_can(c, 'stores')):
+        abort(404)
+    allocations = _ac_rows("koja_mattress_allocations", {"college_id": c["id"]}, order="created_at.desc", limit=1000)
+    apps = {a["id"]: a for a in _ac_rows_all("koja_college_applications", {"college_id": c["id"]})}
+    rows = []
+    for al in allocations:
+        if al.get("status") == "cancelled":
+            continue
+        a = apps.get(al.get("application_id")) or {}
+        ch = _mattress_charge(a.get("id"), c["id"]) if a else None
+        due = float(ch.get("amount") or 0) if ch else 0.0
+        paid = _mattress_paid_total(a.get("id"), ch.get("id")) if ch else 0.0
+        rows.append({"name": a.get("full_name") or "Student", "number": a.get("student_number") or "",
+                     "charge": ch.get("description") if ch else "No mattress charge", "due": due, "paid": paid,
+                     "balance": round(max(due - paid, 0), 2), "status": al.get("status") or "",
+                     "ready": bool(ch and paid >= due and due > 0 and al.get("status") == "allocated")})
+    return _ac_page("Mattress payments", r'''
+<div class="card"><h2>Mattress payments: {{ c.name }}</h2>
+<p class="small"><a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Back to fees and payments</a> · Read only. Payments are confirmed on the Fees and payments page.</p></div>
+<div class="card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+<tr><th align="left">Student</th><th align="left">Number</th><th align="left">Charge</th><th align="right">Due</th><th align="right">Verified paid</th><th align="right">Balance</th><th align="left">Allocation</th><th align="left">Collection</th></tr>
+{% for r in rows %}<tr style="border-top:1px solid #ddd"><td>{{ r.name }}</td><td>{{ r.number or '-' }}</td><td>{{ r.charge }}</td><td align="right">{{ '%.2f' % r.due }}</td><td align="right">{{ '%.2f' % r.paid }}</td><td align="right">{{ '%.2f' % r.balance }}</td><td>{{ r.status | replace('_', ' ') }}</td><td>{% if r.status == 'collected' %}Collected{% elif r.ready %}<strong>Ready for stores</strong>{% else %}Waiting for payment{% endif %}</td></tr>
+{% else %}<tr><td colspan="8" class="small">No mattress allocations yet.</td></tr>{% endfor %}
+</table></div>''', c=c, rows=rows, csrf_ok=True)
+
+
 @app.route("/academic/college/<slug>/mattresses")
 @login_required
 def ac_college_mattresses(slug):
@@ -34860,10 +35175,13 @@ def ac_college_mattresses(slug):
                 summary[hid]["issued"] += 1
     hostel_summary = list(summary.values())
     can_clear = _college_can(c, "rooms")
+    stock_left = int((_mattress_inventory(c["id"]) or {}).get("quantity") or 0)
+    can_stores = _college_can(c, "stores")
     for x in rows:
         sid = (x.get("student") or {}).get("id")
         x["room"] = room_by_app.get(sid)
         x["cleared"] = sid in cleared
+        x["issuable"] = bool(can_stores and x["allocation"].get("status") == "allocated" and x.get("eligible") and x["cleared"] and stock_left > 0)
     return _ac_page("Mattress stores", r'''<div class="card"><h2>Mattress stores — {{ c.name }}</h2>
 <p class="small">Student number is the lookup key. Only verified payments linked to the specific mattress charge unlock collection.</p>
 <p><strong>Available stock:</strong> {{ inventory.get('quantity',0) }} · <strong>Issued:</strong> {{ inventory.get('issued_quantity',0) }}</p>
@@ -34877,7 +35195,7 @@ def ac_college_mattresses(slug):
 <div class="card"><h3>Allocate mattress and create QR</h3><p class="small">Add a charge with “mattress” in its description in Fees and Payments first.</p>
 <form method="post" action="{{ url_for('ac_college_mattress_allocate',slug=c.slug) }}">{{ csrf }}<label>Student<select name="application_id" required><option value="">Select student</option>{% for a in students %}<option value="{{ a.id }}">{{ a.student_number or 'NO STUDENT NUMBER' }} — {{ a.full_name }}</option>{% endfor %}</select></label><button class="btn">Allocate / generate QR</button></form></div>
 <div class="card"><h3>Stores scanning desk</h3><a class="btn" href="{{ url_for('ac_college_mattress_scan',slug=c.slug) }}">Open QR scanning desk</a></div>
-<div class="card"><h3>Allocations</h3>{% for x in rows %}<p><strong>{{ x.student.get('student_number') or 'No student number' }} — {{ x.student.get('full_name') or 'Student unavailable' }}</strong><br>Payment K{{ '%.2f' % x.paid }} / K{{ '%.2f' % (x.charge.amount if x.charge else 0) }} · {{ x.allocation.status }}{% if x.eligible and x.allocation.status != 'collected' %} · <a href="{{ url_for('ac_college_mattress_student_qr',slug=c.slug,allocation_id=x.allocation.id) }}">Student QR</a>{% endif %}{% if x.allocation.status=='collected' %} · Collected {{ x.allocation.collected_at }}{% endif %}<br><span class="small">Room: {{ x.room or 'No room yet' }} · Hostel clearance: {{ 'Approved' if x.cleared else 'Not approved' }}</span></p>{% if can_clear and x.student.id %}<form method="post" action="{{ url_for('ac_college_mattress_clearance',slug=c.slug,application_id=x.student.id) }}" style="margin:4px 0 12px">{{ csrf }}<input type="hidden" name="action" value="{{ 'unclear' if x.cleared else 'clear' }}"><button class="btn secondary" type="submit">{{ 'Remove hostel clearance' if x.cleared else 'Approve hostel clearance' }}</button></form>{% endif %}{% else %}<p>No allocations yet.</p>{% endfor %}</div>''', c=c, inventory=inventory, students=students, rows=rows, hostel_summary=hostel_summary, can_clear=can_clear)
+<div class="card"><h3>Allocations</h3>{% for x in rows %}<p><strong>{{ x.student.get('student_number') or 'No student number' }} — {{ x.student.get('full_name') or 'Student unavailable' }}</strong><br>Payment K{{ '%.2f' % x.paid }} / K{{ '%.2f' % (x.charge.amount if x.charge else 0) }} · {{ x.allocation.status }}{% if x.eligible and x.allocation.status != 'collected' %} · <a href="{{ url_for('ac_college_mattress_student_qr',slug=c.slug,allocation_id=x.allocation.id) }}">Student QR</a>{% endif %}{% if x.allocation.status=='collected' %} · Collected {{ x.allocation.collected_at }}{% endif %}<br><span class="small">Room: {{ x.room or 'No room yet' }} · Hostel clearance: {{ 'Approved' if x.cleared else 'Not approved' }}</span></p>{% if x.issuable %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=x.allocation.id) }}" style="margin:4px 0 8px">{{ csrf }}<button class="btn" type="submit">Issue mattress</button></form>{% endif %}{% if can_clear and x.student.id %}<form method="post" action="{{ url_for('ac_college_mattress_clearance',slug=c.slug,application_id=x.student.id) }}" style="margin:4px 0 12px">{{ csrf }}<input type="hidden" name="action" value="{{ 'unclear' if x.cleared else 'clear' }}"><button class="btn secondary" type="submit">{{ 'Remove hostel clearance' if x.cleared else 'Approve hostel clearance' }}</button></form>{% endif %}{% else %}<p>No allocations yet.</p>{% endfor %}</div>''', c=c, inventory=inventory, students=students, rows=rows, hostel_summary=hostel_summary, can_clear=can_clear)
 
 def _hostel_cleared(application_id, college_id):
     return first_row("koja_hostel_clearances", {"application_id": application_id, "college_id": college_id}) is not None
@@ -35068,9 +35386,11 @@ def ac_college_mattress_scan_token(slug,token):
     ch=_mattress_charge(a["id"],c["id"]); paid=_mattress_paid_total(a["id"],ch["id"]) if ch else 0
     amount=float(ch.get("amount") or 0) if ch else 0; eligible=bool(ch and amount>0 and paid>=amount)
     stock=int((_mattress_inventory(c["id"]) or {}).get("quantity") or 0)
+    cleared=_hostel_cleared(a["id"],c["id"]); ready=bool(eligible and cleared)
     return _ac_page("Verify mattress collection",r'''<div class="card"><h2>Student verification</h2><p><strong>{{ a.full_name }}</strong></p><p>Student number: <strong>{{ a.student_number }}</strong></p><p>Payment verified K{{ '%.2f' % paid }} / K{{ '%.2f' % amount }}</p><p>Allocation: <strong>{{ al.status }}</strong></p>
 {% if al.status=='allocated' %}<form method="post" action="{{ url_for('ac_college_mattress_cancel',slug=c.slug,allocation_id=al.id) }}" style="margin-bottom:10px">{{ csrf }}<button class="btn secondary" type="submit">Cancel this allocation</button></form>{% endif %}
-{% if eligible and al.status=='allocated' and stock>0 %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=al.id) }}">{{ csrf }}<button class="btn">Confirm physical handover and issue mattress</button></form>{% elif al.status=='collected' %}<strong>Already collected — duplicate issue blocked.</strong>{% elif not eligible %}<strong>Blocked: mattress charge not fully paid and verified.</strong>{% else %}<strong>Blocked: no mattress stock available.</strong>{% endif %}</div>''',c=c,a=a,al=al,paid=paid,amount=amount,eligible=eligible,stock=stock)
+{% if eligible and not cleared %}<p class="small" style="color:#b45309"><strong>Hostel clearance not approved.</strong> The mattress cannot be handed over until the hostel approves clearance for this student.</p>{% endif %}
+{% if ready and al.status=='allocated' and stock>0 %}<form method="post" action="{{ url_for('ac_college_mattress_issue',slug=c.slug,allocation_id=al.id) }}">{{ csrf }}<button class="btn">Confirm physical handover and issue mattress</button></form>{% elif al.status=='collected' %}<strong>Already collected — duplicate issue blocked.</strong>{% elif not eligible %}<strong>Blocked: mattress charge not fully paid and verified.</strong>{% else %}<strong>Blocked: no mattress stock available.</strong>{% endif %}</div>''',c=c,a=a,al=al,paid=paid,amount=amount,eligible=eligible,stock=stock,cleared=cleared,ready=ready)
 
 @app.route("/academic/college/<slug>/mattresses/issue/<allocation_id>",methods=["POST"])
 @login_required
