@@ -24509,7 +24509,7 @@ def _portal_menu_html(a):
     return Markup("".join(out))
 
 
-def _svc_student_academic(aid, title, template, extra=None, plain=False):
+def _svc_student_academic(aid, title, template, extra=None, plain=True):
     a, c, course, is_student, is_manager = _svc_app(aid)
     if not is_student:
         abort(404)
