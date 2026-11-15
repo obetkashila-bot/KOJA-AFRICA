@@ -27147,10 +27147,14 @@ def _college_audit(c, action, detail=""):
 
 
 ACCOMMODATION_CHARGE_WORDS = ("accommodation", "hostel", "bed")
+# True: every student can choose a bed now, without a payment check. Set False to bring back the payment rule.
+BEDS_OPEN_TO_ALL = True
 
 
 def _accommodation_gate(c, a):
     """Why this student cannot take a bed yet, or None. Unlocks once any accommodation payment is verified."""
+    if BEDS_OPEN_TO_ALL:
+        return None
     charges = [x for x in _ac_rows("koja_college_charges", {"application_id": a["id"], "college_id": c["id"]}, limit=500)
                if any(w in (x.get("description") or "").lower() for w in ACCOMMODATION_CHARGE_WORDS)]
     if not charges:
@@ -27823,7 +27827,7 @@ def ac_application_room(aid):
 </table></div>
 {% else %}<p class="small">No hostel has a room you can take right now.</p>{% endif %}
 </div>
-{% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>Locked.</strong> Pay any accommodation fee and wait for Accounts to verify it to choose a bed.</p></div>{% endif %}
+{% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>Locked.</strong> {{ gate }}</p></div>{% endif %}
 {% endif %}
 <p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
                     a=a, c=c, status_ok=status_ok, current_label=current_label, status_text=status_text, billing_notice=billing_notice,
