@@ -23946,7 +23946,8 @@ def ac_college_view(slug):
 <div class="card">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:120px;display:block;margin:0 auto 10px"> {% endif %}<h2>{{ c.name }}</h2>
 <p class="small">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</p>
 {% if c.about %}<p>{{ c.about }}</p>{% endif %}
-{% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}
+<p><a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled? Register here</a></p>
+{% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}{% if is_owner %}<form method="post" action="{{ url_for('ac_college_details', slug=c.slug) }}" class="small" style="margin-top:10px">{{ csrf }}<label>Description (shown under the name)<textarea name="about" rows="3" maxlength="3000">{{ c.about or '' }}</textarea></label><label>Location<input name="location" maxlength="200" value="{{ c.location or '' }}"></label><label>Phone / contact<input name="contact" maxlength="200" value="{{ c.contact or '' }}"></label><button class="btn secondary" type="submit">Save college details</button></form>{% endif %}
 </div>
 {% if enrolled_app and enrolled_app.status == 'offered' %}<div class="card"><h3>You have an offer</h3>
 <p class="small">You have been offered a place here. You do not need to apply again. Open your application to accept or decline the offer.</p>
@@ -24038,6 +24039,26 @@ def ac_course_set_code(cid):
         _, err = db_update("koja_college_courses", {"id": cid}, {"course_code": code})
         flash(("Course code set to %s." % code) if not err else "Could not change the course code.", "success" if not err else "danger")
     return redirect(url_for("ac_college_view", slug=c.get("slug")))
+
+
+@app.route("/academic/college/<slug>/details", methods=["POST"])
+@login_required
+def ac_college_details(slug):
+    """The college's own details shown on its page: description (about), location and contact. Owner or KOJA admin."""
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    _, err = db_update("koja_colleges", {"id": c["id"]}, {
+        "about": clean(request.form.get("about"))[:3000],
+        "location": clean(request.form.get("location"))[:200],
+        "contact": clean(request.form.get("contact"))[:200],
+        "updated_at": utc_now()})
+    if err:
+        flash("Could not save the college details: " + str(err)[:300], "danger")
+    else:
+        _college_audit(c, "college.details", "about, location and contact updated")
+        flash("College details saved.", "success")
+    return redirect(url_for("ac_college_view", slug=slug))
 
 
 @app.route("/academic/college/<slug>/course", methods=["POST"])
