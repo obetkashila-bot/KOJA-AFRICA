@@ -23954,7 +23954,7 @@ def ac_college_view(slug):
 {% elif enrolled_app %}<div class="card"><h3>You have been admitted</h3>
 <p class="small">You have an accepted place{% if enrolled_app.student_number %} · student number <strong>{{ enrolled_app.student_number }}</strong>{% endif %}. You do not need to apply again. Use college services for fees, rooms and your application.</p>
 <p><a class="btn" href="{{ url_for('ac_student_portal', aid=enrolled_app.id) }}">College services</a> <a class="btn secondary" href="{{ url_for('ac_application_money', aid=enrolled_app.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=enrolled_app.id) }}">Room</a></p></div>{% endif %}
-<div class="card"><h3>Courses</h3>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
+<div class="card"><h3>Courses</h3><p class="small"><strong>Already enrolled?</strong> <a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Register here</a> (for students in year 1, 2 or 3 who were admitted before)</p>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
 {% for g in school_groups %}<h3 style="margin:18px 0 4px">{{ g.name }}</h3>{% for k in g.courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
 {% if k.description %}<p class="small">{{ k.description }}</p>{% endif %}
@@ -24080,6 +24080,40 @@ CONTINUING_YEARS = ("1", "2", "3")
 CONTINUING_FUNDING = {"self": "Self-sponsored", "sponsored": "Sponsored"}
 
 
+def _ac_update_returning(c, mine, courses, f):
+    """A registered continuing student updates their year, programme, school, funding and expected completion.
+    Their student number and NRC stay the same. Nothing is duplicated."""
+    back = url_for("ac_college_continuing", slug=c["slug"])
+    course = next((k for k in courses if k.get("id") == clean(f.get("course_id"))), None)
+    school = clean(f.get("study_school"))
+    year = clean(f.get("year_of_study"))
+    funding = clean(f.get("funding"))
+    sponsor_name = clean(f.get("sponsor_name"))[:150]
+    sponsor_phone = clean(f.get("sponsor_phone"))[:40]
+    completion = clean(f.get("expected_completion_year"))
+    problems = []
+    if not course: problems.append("programme")
+    if school not in COLLEGE_SCHOOLS: problems.append("school")
+    if year not in CONTINUING_YEARS: problems.append("year of study")
+    if funding not in CONTINUING_FUNDING: problems.append("funding")
+    if funding == "sponsored" and not (sponsor_name and sponsor_phone): problems.append("sponsor name and sponsor phone")
+    if not (completion.isdigit() and 2000 <= int(completion) <= 2100): problems.append("expected year of completion")
+    if problems:
+        flash("Please add: " + ", ".join(problems) + ".", "danger")
+        return redirect(back)
+    _, err = db_update("koja_college_applications", {"id": mine["id"]},
+                       {"course_id": course["id"], "study_school": school, "year_of_study": int(year), "funding": funding,
+                        "sponsor_name": sponsor_name if funding == "sponsored" else None,
+                        "sponsor_phone": sponsor_phone if funding == "sponsored" else None,
+                        "expected_completion_year": int(completion), "updated_at": utc_now()})
+    if err:
+        flash("Could not update your details: " + str(err)[:300], "danger")
+        return redirect(back)
+    _college_audit(c, "continuing.updated", "%s year %s" % (mine.get("student_number"), year))
+    flash("Your details are updated for year %s." % year, "success")
+    return redirect(url_for("ac_application_view", aid=mine["id"]))
+
+
 @app.route("/academic/college/<slug>/continuing", methods=["GET", "POST"])
 @login_required
 def ac_college_continuing(slug):
@@ -24095,7 +24129,17 @@ def ac_college_continuing(slug):
     mine = first_row("koja_college_applications", {"college_id": c["id"], "student_user_id": uid, "registration_type": "continuing"})
     if request.method == "GET":
         if mine:
-            return redirect(url_for("ac_application_view", aid=mine["id"]))
+            return _ac_page("Returning student", r'''<div class="card"><h2>Returning student</h2>
+<p class="small">You are registered as student number {{ mine.student_number }}. Update your details here when you move up a year.</p>
+<form method="post" action="{{ url_for('ac_college_continuing', slug=c.slug) }}">{{ csrf }}
+<label>Programme<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}" {% if k.id == mine.course_id %}selected{% endif %}>{{ k.title }}</option>{% endfor %}</select></label>
+<label>School<select name="study_school" required>{% for s in schools %}<option value="{{ s }}" {% if s == mine.study_school %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+<label>Year of study<select name="year_of_study" required>{% for y in years %}<option value="{{ y }}" {% if y|string == (mine.year_of_study or '')|string %}selected{% endif %}>Year {{ y }}</option>{% endfor %}</select></label>
+<label>Funding<select name="funding" required><option value="self" {% if mine.funding == 'self' %}selected{% endif %}>Self-sponsored</option><option value="sponsored" {% if mine.funding == 'sponsored' %}selected{% endif %}>Sponsored</option></select></label>
+<label>Sponsor name (if sponsored)<input name="sponsor_name" maxlength="150" value="{{ mine.sponsor_name or '' }}"></label>
+<label>Sponsor phone number (if sponsored)<input name="sponsor_phone" maxlength="40" value="{{ mine.sponsor_phone or '' }}"></label>
+<label>Expected year of completion<input name="expected_completion_year" required inputmode="numeric" maxlength="4" value="{{ mine.expected_completion_year or '' }}"></label>
+<button class="btn" type="submit">Save my details</button></form></div>''', c=c, mine=mine, courses=courses, schools=COLLEGE_SCHOOLS, years=CONTINUING_YEARS)
         return _ac_page("Continuing student registration", r'''
 <div class="card"><h2>Continuing student registration</h2>
 <p class="small">For students already studying at {{ c.name }} (year 1, 2 or 3). Your details go to the college office.</p>
@@ -24113,8 +24157,7 @@ def ac_college_continuing(slug):
 <label>Expected year of completion<input name="expected_completion_year" required inputmode="numeric" maxlength="4" placeholder="e.g. 2027"></label>
 <button class="btn" type="submit">Register</button></form></div>''', c=c, courses=courses, schools=COLLEGE_SCHOOLS, years=CONTINUING_YEARS)
     if mine:
-        flash("You have already registered.", "info")
-        return redirect(url_for("ac_application_view", aid=mine["id"]))
+        return _ac_update_returning(c, mine, courses, request.form)
     f = request.form
     full_name = clean(f.get("full_name"))[:150]
     phone = clean(f.get("phone"))[:40]
@@ -24363,7 +24406,7 @@ def ac_college_apply(slug, cid):
         return redirect(url_for("ac_application_view", aid=aid))
     vals = existing or {}
     return _ac_page("Apply", r'''
-<div class="card"><h2>Apply for {{ course.title }}</h2><p class="small">{{ c.name }}. You can save a draft and come back later.</p>
+<div class="card"><h2>Apply for {{ course.title }}</h2><p class="small">{{ c.name }}. You can save a draft and come back later.</p><p class="small"><strong>Already enrolled?</strong> <a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Register here</a> (for students in year 1, 2 or 3 who were admitted before)</p>
 <form method="post">{{ csrf }}
 <h3>About you</h3>
 <label>Full name<input name="full_name" value="{{ vals.full_name or '' }}" maxlength="150"></label>
