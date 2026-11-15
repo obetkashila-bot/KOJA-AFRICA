@@ -26301,9 +26301,15 @@ def ac_svc_ca(aid):
             comps = _ca_components(a["course_id"], m)
             # A module with no assessment set up shows the CA mark the college posted for it, if any.
             posted = None
+            posted_raw = None
+            pm_row = posted_by_mod.get(m) or {}
+            ca_raw = num(pm_row["ca_mark"]) if pm_row.get("ca_mark") is not None else None
+            exam_raw = num(pm_row["exam_mark"]) if pm_row.get("exam_mark") is not None else None
             if not comps and posted_by_mod.get(m) is not None:
                 sc = _posted_score(posted_by_mod[m], c)
                 posted = num(sc) if sc is not None else None
+                # Marks obtained shows the total out of 100 (CA + exam / 2), as posted.
+                posted_raw = num(sc) if sc is not None else None
             published = _ca_is_locked(a["course_id"], m)
             scores = _ca_score_map(comps) if comps else {}
             total, complete = _ca_result(comps, scores, aid) if comps else (0.0, False)
@@ -26322,7 +26328,7 @@ def ac_svc_ca(aid):
                 total_status = "Eligible for Exam"
             else:
                 total_status = "Incomplete"
-            rows.append({"module": m, "parts": parts, "posted": posted,
+            rows.append({"module": m, "parts": parts, "posted": posted, "posted_raw": posted_raw, "ca_raw": ca_raw, "exam_raw": exam_raw,
                          "weight": num(sum(float(x.get("weight") or 0) for x in comps)),
                          "total": num(total) if (published and complete) else None,
                          "status": total_status})
@@ -26330,15 +26336,15 @@ def ac_svc_ca(aid):
 <div class="card"><h2>View CA</h2><p class="small">{{ c.name }} · {{ course.title }} · continuous assessment</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
 {% if rows %}<div class="card" style="overflow-x:auto;background:#fff;color:#111">
 <table style="width:100%;border-collapse:collapse;font-size:14px">
-<tr style="background:#1d4e89;color:#fff"><th align="left">Course code</th><th align="left">Course name</th><th align="left">Assessment component</th><th>Weight</th><th>Marks obtained</th><th align="left">Status</th></tr>
+<tr style="background:#1d4e89;color:#fff"><th align="left">Course code</th><th align="left">Course name</th><th align="left">Assessment component</th><th>Weight</th><th>CA</th><th>Exam</th><th>Marks obtained</th><th align="left">Status</th></tr>
 {% for r in rows %}
-{% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>{{ p.name }}</td><td align="center">{{ p.weight }}%</td><td align="center">{% if p.raw is not none %}{{ p.raw }} / {{ p.max }}{% else %}&mdash; / {{ p.max }}{% endif %}</td><td>{{ p.status }}</td></tr>
-{% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td colspan="4" class="small">No assessment components set up yet.</td></tr>
+{% for p in r.parts %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>{{ p.name }}</td><td align="center">{{ p.weight }}%</td><td align="center">&mdash;</td><td align="center">&mdash;</td><td align="center">{% if p.raw is not none %}{{ p.raw }} / {{ p.max }}{% else %}&mdash; / {{ p.max }}{% endif %}</td><td>{{ p.status }}</td></tr>
+{% else %}<tr style="border-top:1px solid #eee"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td colspan="6" class="small">No assessment components set up yet.</td></tr>
 {% endfor %}
-<tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{% if r.posted is not none %}{{ r.posted }}%{% else %}{{ r.weight }}%{% endif %}</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{% if r.total is none and r.posted is not none %}Posted (no breakdown){% else %}{{ r.status }}{% endif %}</td></tr>
+<tr style="border-top:2px solid #888;font-weight:bold"><td>{{ course_code or '-' }}</td><td>{{ r.module }}</td><td>Total cumulative CA</td><td align="center">{% if r.posted is not none %}{{ r.posted }}%{% else %}{{ r.weight }}%{% endif %}</td><td align="center">{% if r.ca_raw is not none %}{{ r.ca_raw }} / {{ out_of }}{% else %}&mdash;{% endif %}</td><td align="center">{% if r.exam_raw is not none %}{{ r.exam_raw }} / 100{% else %}&mdash;{% endif %}</td><td align="center">{% if r.total is not none %}{{ r.total }} / {{ out_of }}{% elif r.posted_raw is not none %}{{ r.posted_raw }} / 100{% else %}&mdash; / {{ out_of }}{% endif %}</td><td>{% if r.total is none and r.posted is not none %}Posted (no breakdown){% else %}{{ r.status }}{% endif %}</td></tr>
 {% endfor %}
 </table>
-<p class="small" style="margin-top:8px">Exam eligibility needs all of your CA published and complete. Exam entry also depends on your fees.</p>
+<p class="small" style="margin-top:8px">Exam eligibility needs all of your CA published and complete. Exam entry also depends on your fees.</p><p class="small">How Marks obtained is worked out: CA (out of 50) + Exam ÷ 2 (exam out of 100), so the total is out of 100. The Weight column shows the same total as a percentage.</p>
 </div>{% else %}<div class="card"><p class="small">You have no registered modules yet.</p></div>{% endif %}''',
                          back=_svc_back(aid), c=c, course=course, rows=rows, out_of=num(_ca_out_of(c)), course_code=course.get("course_code"))
     return _svc_student_academic(aid, "View CA", build, plain=True)
