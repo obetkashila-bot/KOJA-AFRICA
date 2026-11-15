@@ -27256,6 +27256,7 @@ def ac_college_finance(slug):
 </div>
 <div class="card"><h3>Student balances</h3>
 <p class="small">Balance = charged minus paid. Charged is every fee added for the student. Paid counts only verified payments, less refunds. Owed means the balance is above zero. Overpaid means below zero, kept as credit. [PAID] means paid in full.</p>
+<form method="post" action="{{ url_for('ac_college_use_existing_money', slug=c.slug) }}" style="margin:8px 0">{{ csrf }}<button class="btn" type="submit">Use school fees already paid for room and mattress</button></form>
 {% for r in rows %}<p>{% if r.total > 0 and r.bal <= 0 %}<strong>[PAID]</strong> {% endif %}<a href="{{ url_for('ac_application_money', aid=r.a.id) }}">{{ r.a.full_name }}</a>{% if r.a.student_number %} · {{ r.a.student_number }}{% endif %} · charged {{ '%.2f' % r.total }} · paid {{ '%.2f' % r.paid }} · <strong>balance {{ '%.2f' % r.bal }}</strong><br><span class="small">{{ r.why }}</span></p>
 {% else %}<p class="small">No accepted or enrolled students yet.</p>{% endfor %}
 </div>
@@ -27281,6 +27282,23 @@ def _accommodation_paid_in_full(c, application_id):
                if any(w in (x.get("description") or "").lower() for w in ACCOMMODATION_CHARGE_WORDS)]
     return any(float(ch.get("amount") or 0) > 0 and _mattress_paid_total(application_id, ch["id"]) + 0.001 >= float(ch.get("amount") or 0)
                for ch in charges)
+
+
+@app.route("/academic/college/<slug>/use-existing-money", methods=["POST"])
+@login_required
+def ac_college_use_existing_money(slug):
+    """Accounts: for every student, use school fees already paid (not yet linked to a charge) for their unpaid
+    room and mattress charges, then open the mattress if the charge is paid in full. No new payment is entered."""
+    c = _college_by_slug(slug)
+    if not _college_can(c, 'accounts'):
+        abort(403)
+    students = _college_students(c)
+    for a in students:
+        _apply_existing_money(c, a["id"])
+        _unlock_after_payment(c, a["id"])
+    _college_audit(c, "payment.existing_money_applied", "checked %d student(s)" % len(students))
+    flash("Checked %d student(s). Existing school fees were used for unpaid room and mattress charges where there was money." % len(students), "success")
+    return redirect(url_for("ac_college_finance", slug=slug))
 
 
 @app.route("/academic/college/<slug>/charge", methods=["POST"])
