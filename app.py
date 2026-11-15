@@ -24112,6 +24112,7 @@ def _ac_update_returning(c, mine, courses, f):
     sponsor_name = clean(f.get("sponsor_name"))[:150]
     sponsor_phone = clean(f.get("sponsor_phone"))[:40]
     completion = clean(f.get("expected_completion_year"))
+    gender = clean(f.get("gender")).lower()
     problems = []
     if not course: problems.append("programme")
     if school not in COLLEGE_SCHOOLS: problems.append("school")
@@ -24126,7 +24127,8 @@ def _ac_update_returning(c, mine, courses, f):
                        {"course_id": course["id"], "study_school": school, "year_of_study": int(year), "funding": funding,
                         "sponsor_name": sponsor_name if funding == "sponsored" else None,
                         "sponsor_phone": sponsor_phone if funding == "sponsored" else None,
-                        "expected_completion_year": int(completion), "updated_at": utc_now()})
+                        "expected_completion_year": int(completion), "updated_at": utc_now(),
+                        **({"gender": gender} if gender in ("male", "female") else {})})
     if err:
         flash("Could not update your details: " + str(err)[:300], "danger")
         return redirect(back)
@@ -24153,6 +24155,7 @@ def ac_college_continuing(slug):
             return _ac_page("Returning student", r'''<div class="card"><h2>Returning student</h2>
 <p class="small">You are registered as student number {{ mine.student_number }}. Update your details here when you move up a year.</p>
 <form method="post" action="{{ url_for('ac_college_continuing', slug=c.slug) }}">{{ csrf }}
+<label>Gender<select name="gender" required><option value="female" {% if mine.gender == 'female' %}selected{% endif %}>Female</option><option value="male" {% if mine.gender == 'male' %}selected{% endif %}>Male</option></select></label>
 <label>Programme<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}" {% if k.id == mine.course_id %}selected{% endif %}>{{ k.title }}</option>{% endfor %}</select></label>
 <label>School<select name="study_school" required>{% for s in schools %}<option value="{{ s }}" {% if s == mine.study_school %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
 <label>Year of study<select name="year_of_study" required>{% for y in years %}<option value="{{ y }}" {% if y|string == (mine.year_of_study or '')|string %}selected{% endif %}>Year {{ y }}</option>{% endfor %}</select></label>
@@ -24168,6 +24171,7 @@ def ac_college_continuing(slug):
 <label>Full name<input name="full_name" required maxlength="150"></label>
 <label>Phone number<input name="phone" required maxlength="40"></label>
 <label>Your student number (as it is on your student card)<input name="existing_student_number" required maxlength="40"></label>
+<label>Gender<select name="gender" required><option value="">Choose</option><option value="female">Female</option><option value="male">Male</option></select></label>
 <label>NRC or passport number<input name="nrc_or_passport" required maxlength="40"></label>
 <label>School<select name="study_school" required><option value="">Choose</option>{% for s in schools %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></label>
 <label>Programme<select name="course_id" required><option value="">Choose</option>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
@@ -24184,6 +24188,7 @@ def ac_college_continuing(slug):
     phone = clean(f.get("phone"))[:40]
     nrc = clean(f.get("nrc_or_passport"))[:40]
     existing_no = clean(f.get("existing_student_number")).replace(" ", "")[:40]
+    gender = clean(f.get("gender")).lower()
     course = next((k for k in courses if k.get("id") == clean(f.get("course_id"))), None)
     year = clean(f.get("year_of_study"))
     funding = clean(f.get("funding"))
@@ -24197,6 +24202,7 @@ def ac_college_continuing(slug):
     if not phone: problems.append("phone number")
     if not nrc: problems.append("NRC or passport number")
     if not existing_no: problems.append("student number")
+    if gender not in ("male", "female"): problems.append("gender")
     if not school or school not in COLLEGE_SCHOOLS: problems.append("school")
     if not course: problems.append("programme")
     if year not in CONTINUING_YEARS: problems.append("year of study")
@@ -24218,7 +24224,7 @@ def ac_college_continuing(slug):
     aid = str(uuid.uuid4())
     row = {"id": aid, "college_id": c["id"], "course_id": course["id"], "student_user_id": uid, "status": "enrolled",
            "student_number": existing_no, "registration_type": "continuing",
-           "full_name": full_name, "phone": phone, "nrc_or_passport": nrc, "study_school": school,
+           "full_name": full_name, "phone": phone, "nrc_or_passport": nrc, "study_school": school, "gender": gender,
            "year_of_study": int(year), "funding": funding,
            "sponsor_name": sponsor_name if funding == "sponsored" else None,
            "sponsor_phone": sponsor_phone if funding == "sponsored" else None,
