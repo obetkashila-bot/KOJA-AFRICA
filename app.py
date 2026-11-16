@@ -82,6 +82,31 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
+
+_CREST_CACHE = {}
+
+
+def _nkumbi_crest_src():
+    """The Nkumbi crest as an embedded image, so it shows even when the static file is not deployed.
+    Falls back to the static file URL if the file cannot be read."""
+    if "src" not in _CREST_CACHE:
+        src = "/static/nkumbi-crest.jpg"
+        try:
+            import base64
+            path = os.path.join(app.static_folder or "static", "nkumbi-crest.jpg")
+            with open(path, "rb") as fh:
+                src = "data:image/jpeg;base64," + base64.b64encode(fh.read()).decode("ascii")
+        except Exception:
+            pass
+        _CREST_CACHE["src"] = src
+    return _CREST_CACHE["src"]
+
+
+def crest_src():
+    return _nkumbi_crest_src()
+
+
+app.jinja_env.globals["crest_src"] = crest_src
 # Render terminates HTTPS at the proxy; trust forwarded host/proto headers.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY")
@@ -22767,7 +22792,7 @@ def _ac_page(title, tpl, **ctx):
         ctx.setdefault("portal_college", college.get("name") or "College")
         ctx.setdefault("portal_crest", bool("nkumbi" in str(college.get("name") or "").lower()))
         tpl = (PORTAL_SHELL_CSS + '<div class="svc-outer">'
-               '<div class="svc-top">{% if portal_crest %}<img src="{{ url_for(\'static\', filename=\'nkumbi-crest.jpg\') }}" alt="Nkumbi International College crest">{% endif %}'
+               '<div class="svc-top">{% if portal_crest %}<img src="{{ crest_src() }}" alt="Nkumbi International College crest">{% endif %}'
                '<div><h2>{{ portal_college }}</h2><p>College information system</p></div></div>'
                '<div class="svc-nav"><a href="{{ url_for(\'ac_student_portal\', aid=portal_aid) }}">Home</a>'
                '<a href="{{ url_for(\'ac_svc_timetable\', aid=portal_aid) }}">Timetable</a>'
@@ -24351,7 +24376,7 @@ def ac_college_view(slug):
   .ent-foot{background:#f3f3f3;color:#555;font-size:11px;padding:8px 14px;border-top:1px solid #d9dde3}
 </style>
 <div class="ent-outer">
-  <div class="ent-top">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest">{% endif %}<div><h2>{{ c.name }}</h2><p class="small">College information system</p></div></div>
+  <div class="ent-top">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ crest_src() }}" alt="Nkumbi International College crest">{% endif %}<div><h2>{{ c.name }}</h2><p class="small">College information system</p></div></div>
   <div class="ent-nav"><a href="{{ request.path }}">Home</a><a href="#courses">Courses</a><a href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled?</a>{% if user %}<a href="{{ url_for('ac_my_applications') }}">My services</a>{% else %}<a href="{{ url_for('login', next=request.path) }}">Log in</a>{% endif %}</div>
   <div class="ent-hero"><div class="ent-wrap">
     <div class="ent-panel">
@@ -27426,7 +27451,7 @@ def ac_application_letter(aid):
  <a class="btn secondary" href="{{ url_for('ac_application_view', aid=a.id) }}">Back to application</a></p>
 <div class="letter">
   <div class="head">
-    {% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:110px;display:block;margin:0 auto 10px">{% endif %}
+    {% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ crest_src() }}" alt="Nkumbi International College crest" style="max-height:110px;display:block;margin:0 auto 10px">{% endif %}
     <h1>{{ c.name }}</h1>
     <div class="meta">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</div>
   </div>
@@ -36727,7 +36752,7 @@ def ac_payment_receipt(pid):
     return _ac_page("Receipt", r'''
 <div class="card" style="max-width:640px;margin:0 auto">
 {% if r %}
-  <div style="display:flex;gap:12px;align-items:center">{% if c.name and 'nkumbi' in c.name|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="" style="width:64px;height:64px;object-fit:contain">{% endif %}
+  <div style="display:flex;gap:12px;align-items:center">{% if c.name and 'nkumbi' in c.name|lower %}<img src="{{ crest_src() }}" alt="" style="width:64px;height:64px;object-fit:contain">{% endif %}
   <div><h2 style="margin:0">{{ c.name }}</h2><p class="small" style="margin:0">Official receipt</p></div></div>
   <table style="width:100%;border-collapse:collapse;margin-top:12px">
     <tr><td style="padding:6px 0"><strong>Receipt number</strong></td><td>{{ r.receipt_number }}</td></tr>
