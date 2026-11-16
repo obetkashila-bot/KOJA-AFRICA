@@ -2637,6 +2637,230 @@ def ac_college_head_remove(slug, hid):
     return redirect(url_for("ac_college_dashboard", slug=c["slug"]))
 
 
+@app.route("/academic/college/<slug>/materials", methods=["GET", "POST"])
+@login_required
+def ac_college_materials_manage(slug):
+    """Lecturer: course materials and live class links for their own modules."""
+    c = _college_by_slug(slug)
+    mine = _ca_my_assignments(c) if c else []
+    if not mine and not _college_is_owner(c):
+        abort(403)
+    if request.method == "POST":
+        module = clean(request.form.get("module"))
+        kind = clean(request.form.get("kind"))
+        title = clean(request.form.get("title"))[:200]
+        url_value = clean(request.form.get("url"))[:500]
+        upload = request.files.get("file")
+        has_file = bool(upload and upload.filename)
+        allowed = {(r["course_id"], r["module"]) for r in mine} if not _college_is_owner(c) else None
+        match = next((r for r in mine if r["module"] == module), None) if allowed is not None else None
+        if allowed is not None and match is None:
+            flash("Choose one of your modules.", "danger")
+        elif kind not in ("material", "live"):
+            flash("Choose material or live class.", "danger")
+        elif not title:
+            flash("Give the item a title.", "danger")
+        elif not has_file and not re.match(r"^https?://", url_value):
+            flash("Upload a file, or give a link that starts with http:// or https://", "danger")
+        else:
+            course_id = match["course_id"] if match else clean(request.form.get("course_id"))
+            row = {"id": str(uuid.uuid4()), "college_id": c["id"], "course_id": course_id,
+                   "module": module, "kind": kind, "title": title, "url": url_value or "uploaded file",
+                   "added_by": _ca_user_email(), "created_at": utc_now()}
+            if has_file:
+                info, uerr = upload_storage(upload, folder="college-materials", public=False,
+                                            max_mb=COLLEGE_DOC_MB, allowed=COLLEGE_DOC_TYPES)
+                if uerr:
+                    flash(uerr, "danger")
+                    return redirect(url_for("ac_college_materials_manage", slug=c["slug"]))
+                row.update(file_path=info["path"], file_mime=info.get("mime_type") or "", file_name=info.get("file_name") or upload.filename)
+            _, err = db_insert("koja_college_materials", row)
+            if err:
+                flash("Could not save. Run koja_college_materials.sql first.", "danger")
+            else:
+                flash("Saved for %s." % module, "success")
+        return redirect(url_for("ac_college_materials_manage", slug=c["slug"]))
+    items = []
+    modules = sorted({r["module"] for r in mine})
+    lives = []
+    if modules:
+        rows = _ac_rows("koja_college_materials", {"college_id": c["id"]}, order="created_at.desc", limit=500)
+        items = [x for x in rows if x.get("module") in modules]
+        lives = [x for x in _ac_rows("koja_college_live_classes", {"college_id": c["id"]}, order="created_at.desc", limit=100) if x.get("module") in modules]
+    return _ac_page("Course materials", r'''
+<h2>Course materials and live classes</h2>
+<p class="small">{{ c.name }}. Students in the module see these links. Use a link to Google Drive, Zoom or Google Meet.</p>
+<form method="post" action="{{ url_for('ac_college_materials_manage', slug=c.slug) }}" style="margin:12px 0" enctype="multipart/form-data">{{ csrf }}
+<label>Module<select name="module">{% for m in modules %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select></label>
+<label>Type<select name="kind"><option value="material">Course material</option><option value="live">Live class link</option></select></label>
+<label>Title<input name="title" maxlength="200" required></label>
+<label>Upload a file (PDF or image, up to 10 MB)<input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,.webp"></label>
+<label>Or a link (https://, for live classes or websites)<input name="url" maxlength="500" placeholder="https://"></label>
+<button class="btn" type="submit">Save</button></form>
+<h3 style="margin-top:18px">Start a live class</h3>
+<form method="post" action="{{ url_for('ac_college_live_start', slug=c.slug) }}">{{ csrf }}
+<label>Module<select name="module">{% for m in modules %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select></label>
+<label>Title<input name="title" maxlength="200" placeholder="e.g. Week 3 lecture"></label>
+<button class="btn" type="submit">Start live class</button></form>
+<table style="width:100%;border-collapse:collapse;margin-top:10px">
+{% for lv in lives %}<tr style="border-bottom:1px solid #ddd"><td style="padding:4px">{{ lv.module }}</td><td style="padding:4px">{{ lv.title }}</td><td style="padding:4px">{{ 'Live now' if lv.status == 'live' else 'Ended' }}</td><td style="padding:4px">{% if lv.status == 'live' %}<a href="{{ url_for('ac_college_live_join', slug=c.slug, lid=lv.id) }}">Open</a>{% endif %}</td></tr>{% else %}<tr><td class="small" colspan="4">No live classes yet.</td></tr>{% endfor %}
+</table>
+<h3 style="margin-top:18px">Saved items</h3>
+<table style="width:100%;border-collapse:collapse">
+{% for x in items %}<tr style="border-bottom:1px solid #ddd"><td style="padding:4px">{{ x.module }}</td><td style="padding:4px">{{ 'Live class' if x.kind == 'live' else 'Material' }}</td><td style="padding:4px">{% if x.file_path %}<a href="{{ url_for('ac_college_material_file', slug=c.slug, mid=x.id) }}" target="_blank" rel="noopener">{{ x.title }}</a>{% else %}<a href="{{ x.url }}" target="_blank" rel="noopener">{{ x.title }}</a>{% endif %}</td></tr>{% else %}<tr><td class="small" colspan="3">Nothing saved yet.</td></tr>{% endfor %}
+</table>
+<p class="small"><a href="{{ url_for('ac_college_staff_home', slug=c.slug) }}">Back to Staff services</a></p>
+''', c=c, modules=modules, items=items, lives=lives)
+
+
+def _live_lecturer_module(c, module):
+    """True when the signed-in user may run a class for this module (owner, or the module's lecturer)."""
+    return _college_is_owner(c) or any(r["module"] == module for r in _ca_my_assignments(c))
+
+
+def _live_can_join(c, cl):
+    """Returns (allowed, can_publish). Lecturers publish; registered students watch and listen."""
+    if _live_lecturer_module(c, cl.get("module")):
+        return True, True
+    if not _ac_uid():
+        return False, False
+    for app_row in _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": _ac_uid()}, limit=50):
+        if any(r.get("module") == cl.get("module") for r in _ac_rows("koja_college_registrations", {"application_id": app_row["id"]}, limit=300)):
+            return True, False
+    return False, False
+
+
+@app.route("/academic/college/<slug>/live/start", methods=["POST"])
+@login_required
+def ac_college_live_start(slug):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    module = clean(request.form.get("module"))
+    title = clean(request.form.get("title"))[:200] or ("Live class: " + module)
+    if not _live_lecturer_module(c, module):
+        abort(403)
+    course_id = next((r["course_id"] for r in _ca_my_assignments(c) if r["module"] == module), None) or clean(request.form.get("course_id"))
+    lid = str(uuid.uuid4())
+    row = {"id": lid, "college_id": c["id"], "course_id": course_id, "module": module, "title": title,
+           "room_name": "college-" + lid, "status": "live", "started_by": _ca_user_email(), "created_at": utc_now()}
+    _, err = db_insert("koja_college_live_classes", row)
+    if err:
+        flash("Could not start the class. Run koja_college_live_classes.sql first.", "danger")
+        return redirect(url_for("ac_college_materials_manage", slug=c["slug"]))
+    return redirect(url_for("ac_college_live_join", slug=c["slug"], lid=lid))
+
+
+@app.route("/academic/college/<slug>/live/<lid>/end", methods=["POST"])
+@login_required
+def ac_college_live_end(slug, lid):
+    c = _college_by_slug(slug)
+    cl = first_row("koja_college_live_classes", {"id": lid, "college_id": (c or {}).get("id")})
+    if not c or not cl or not _live_lecturer_module(c, cl.get("module")):
+        abort(403)
+    db_update("koja_college_live_classes", {"id": lid}, {"status": "ended", "ended_at": utc_now()})
+    flash("Class ended.", "success")
+    return redirect(url_for("ac_college_materials_manage", slug=c["slug"]))
+
+
+@app.route("/academic/college/<slug>/live/<lid>")
+@login_required
+def ac_college_live_join(slug, lid):
+    c = _college_by_slug(slug)
+    cl = first_row("koja_college_live_classes", {"id": lid, "college_id": (c or {}).get("id")})
+    if not c or not cl:
+        abort(404)
+    allowed, can_publish = _live_can_join(c, cl)
+    if not allowed:
+        abort(404)
+    if cl.get("status") != "live":
+        return _ac_page("Live class", "<h2>Live class</h2><p>This class has ended.</p><p><a href=\"{{ back }}\">Back</a></p>", back=url_for("ac_college_staff_home", slug=c["slug"]) if can_publish else url_for("ac_college_view", slug=c["slug"]))
+    try:
+        token = _livekit_token(cl["room_name"], _ac_uid(), (current_user() or {}).get("full_name") or (current_user() or {}).get("email") or "Participant", can_publish=can_publish)
+        url_ws = _livekit_server_url()
+        err = None
+    except Exception as exc:
+        token, url_ws, err = None, "", str(exc)
+    return _ac_page(cl.get("title") or "Live class", r'''
+<h2>{{ cl.title }}</h2>
+<p class="small">{{ c.name }} · {{ cl.module }} · {{ 'You are the lecturer: you can speak and show video.' if can_publish else 'Students listen and watch. Ask questions in the class chat or to your lecturer.' }}</p>
+{% if err %}<p>Live classes are not set up on this server yet: {{ err }}</p>{% else %}
+<p id="lk-status" class="small">Connecting…</p>
+<div id="lk-tiles" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px"></div>
+<p style="margin-top:10px">
+<button class="btn secondary" id="lk-mic" type="button">Mute</button>
+{% if can_publish %}<button class="btn secondary" id="lk-cam" type="button">Camera off</button>
+<form method="post" action="{{ url_for('ac_college_live_end', slug=c.slug, lid=cl.id) }}" style="display:inline">{{ csrf }}<button class="btn" type="submit">End class</button></form>{% endif %}
+<a class="btn secondary" href="{{ leave }}">Leave</a></p>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js"></script>
+<script>
+(async function(){
+  var st=document.getElementById('lk-status'), tiles=document.getElementById('lk-tiles');
+  try{
+    var room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
+    var RE=LivekitClient.RoomEvent;
+    function box(id,name){var b=document.getElementById('t-'+id);if(!b){b=document.createElement('div');b.id='t-'+id;b.style.cssText='background:#111;color:#fff;border-radius:6px;min-height:140px;position:relative;overflow:hidden';var l=document.createElement('div');l.textContent=name||'Participant';l.style.cssText='position:absolute;left:6px;bottom:6px;font-size:12px;background:rgba(0,0,0,.5);padding:2px 6px';b.appendChild(l);tiles.appendChild(b)}return b}
+    room.on(RE.TrackSubscribed,function(track,pub,p){var el=track.attach();el.style.width='100%';box(p.identity,p.name).appendChild(el)});
+    room.on(RE.TrackUnsubscribed,function(track){track.detach().forEach(function(e){e.remove()})});
+    room.on(RE.ParticipantDisconnected,function(p){var t=document.getElementById('t-'+p.identity);if(t)t.remove()});
+    room.on(RE.Disconnected,function(){st.textContent='Class ended or disconnected.'});
+    await room.connect({{ url_ws|tojson }}, {{ token|tojson }});
+    await room.localParticipant.setMicrophoneEnabled(true);
+    {% if can_publish %}await room.localParticipant.setCameraEnabled(true);{% endif %}
+    st.textContent='Connected';
+    var mic=true, mb=document.getElementById('lk-mic');
+    mb.onclick=async function(){mic=!mic;await room.localParticipant.setMicrophoneEnabled(mic);mb.textContent=mic?'Mute':'Unmute'};
+    var cb=document.getElementById('lk-cam');
+    if(cb){var cam=true;cb.onclick=async function(){cam=!cam;await room.localParticipant.setCameraEnabled(cam);cb.textContent=cam?'Camera off':'Camera on'}}
+    window.addEventListener('beforeunload',function(){room.disconnect()});
+  }catch(e){st.textContent='Could not join the class: '+(e.message||e)}
+})();
+</script>
+{% endif %}
+''', c=c, cl=cl, can_publish=can_publish, token=token, url_ws=url_ws, err=err,
+    leave=url_for("ac_college_staff_home", slug=c["slug"]) if can_publish else url_for("ac_college_view", slug=c["slug"]))
+
+
+@app.route("/academic/college/<slug>/materials/<mid>/file")
+@login_required
+def ac_college_material_file(slug, mid):
+    """A material file: the lecturer or owner for the module, and students registered for it."""
+    c = _college_by_slug(slug)
+    m = first_row("koja_college_materials", {"id": mid, "college_id": (c or {}).get("id")})
+    if not c or not m or not m.get("file_path"):
+        abort(404)
+    allowed = _college_is_owner(c) or any(r["module"] == m["module"] for r in _ca_my_assignments(c))
+    if not allowed and _ac_uid():
+        for app_row in _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": _ac_uid()}, limit=50):
+            if any(r.get("module") == m["module"] for r in _ac_rows("koja_college_registrations", {"application_id": app_row["id"]}, limit=300)):
+                allowed = True
+                break
+    if not allowed:
+        abort(404)
+    return _stream_private_file(m["file_path"], m.get("file_mime"), m.get("file_name"))
+
+
+@app.route("/academic/services/<aid>/materials")
+@login_required
+def ac_svc_materials(aid):
+    """Student: course materials and live class links for the modules they are registered for."""
+    def build(a, c, course, extra):
+        _, group, registered = _tt_student_slots(a)
+        rows = _ac_rows("koja_college_materials", {"college_id": a["college_id"]}, order="created_at.desc", limit=500)
+        items = [x for x in rows if x.get("module") in registered]
+        lives = [x for x in _ac_rows("koja_college_live_classes", {"college_id": a["college_id"]}, order="created_at.desc", limit=100)
+                 if x.get("module") in registered and x.get("status") == "live"]
+        return _ac_page("Course materials", r'''
+<h2>Course materials and live classes</h2>
+<p class="small">{{ c.name }} · {{ course.title }}</p>
+{% if lives %}<h3 style="margin-top:12px">Live now</h3><ul style="line-height:2">{% for lv in lives %}<li>{{ lv.module }}: <a href="{{ url_for('ac_college_live_join', slug=c.slug, lid=lv.id) }}">{{ lv.title }}</a></li>{% endfor %}</ul>{% endif %}
+<table style="width:100%;border-collapse:collapse">
+{% for x in items %}<tr style="border-bottom:1px solid #ddd"><td style="padding:4px">{{ x.module }}</td><td style="padding:4px">{{ 'Live class' if x.kind == 'live' else 'Material' }}</td><td style="padding:4px">{% if x.file_path %}<a href="{{ url_for('ac_college_material_file', slug=c.slug, mid=x.id) }}" target="_blank" rel="noopener">{{ x.title }}</a>{% else %}<a href="{{ x.url }}" target="_blank" rel="noopener">{{ x.title }}</a>{% endif %}</td></tr>{% else %}<tr><td class="small" colspan="3">{{ 'No materials for your registered modules yet.' if registered else 'Register for your modules first.' }}</td></tr>{% endfor %}
+</table>
+''', c=c, course=course, items=items, registered=registered, lives=lives)
+    return _svc_student_academic(aid, "Course materials", build)
+
+
 @app.route("/academic/college/<slug>/my-classes")
 @login_required
 def ac_college_my_classes(slug):
@@ -2706,6 +2930,7 @@ def ac_college_staff_home(slug):
         entries.insert(0, ("Enter CA marks for my modules", url_for("ac_ca_manage", slug=c["slug"])))
         entries.insert(1, ("My class lists", url_for("ac_college_my_classes", slug=c["slug"])))
         entries.insert(2, ("My teaching timetable", url_for("ac_college_my_timetable", slug=c["slug"])))
+        entries.insert(3, ("Course materials and live class links", url_for("ac_college_materials_manage", slug=c["slug"])))
     my_schools = _college_my_schools(c)
     if my_schools:
         entries.insert(0, ("Head of school: " + ", ".join(my_schools) + " (courses, lecturers and timetable for your school)", url_for("ac_college_view", slug=c["slug"]) + "#courses"))
@@ -22546,9 +22771,9 @@ def _ac_page(title, tpl, **ctx):
                '<div><h2>{{ portal_college }}</h2><p>College information system</p></div></div>'
                '<div class="svc-nav"><a href="{{ url_for(\'ac_student_portal\', aid=portal_aid) }}">Home</a>'
                '<a href="{{ url_for(\'ac_svc_timetable\', aid=portal_aid) }}">Timetable</a>'
-               '<a href="{{ url_for(\'ac_svc_ca\', aid=portal_aid) }}">View CA</a>'
+               '<a href="{{ url_for(\'ac_svc_ca\', aid=portal_aid) }}">Course Marks</a>'
                '<a href="{{ url_for(\'ac_svc_grades\', aid=portal_aid) }}">Grades</a>'
-               '<a href="{{ url_for(\'ac_application_money\', aid=portal_aid) }}">Payments</a>'
+               '<a href="{{ url_for(\'ac_application_money\', aid=portal_aid) }}">Invoices and payments</a>'
                '<a href="{{ url_for(\'logout\') }}">Log out</a></div>'
                '<div class="portal"><nav class="portal-menu">'
                '<div class="portal-id"><small>Current user: <b>{{ portal_sid }}</b></small></div>'
@@ -24104,7 +24329,7 @@ def ac_college_view(slug):
 <style>
   .ent-outer{background:transparent;border:0;border-radius:0;box-shadow:none;padding:0;margin:0 calc(50% - 50vw);width:100vw;max-width:100vw;overflow:hidden}
   .ent-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap;border:0}
-  .ent-top img{width:70px;height:70px;object-fit:contain}
+  .ent-top img{width:96px;height:96px;min-width:96px;flex:0 0 auto;object-fit:contain;display:block;opacity:1;visibility:visible}
   .ent-top h2{margin:0;font-size:19px;font-weight:normal;color:#222;text-transform:uppercase}
   .ent-top .small{margin:2px 0 0;color:#555;font-size:12px}
   .ent-nav{display:flex;background:#0a5bd1}
@@ -24434,21 +24659,42 @@ def ac_college_continuing(slug):
         if (o.get("student_number") or "").replace(" ", "").lower() == existing_no.lower() and o.get("status") not in ("draft", "rejected", "declined"):
             flash("This student number is already in use at this college. Please contact the college office.", "danger")
             return redirect(back)
-    aid = str(uuid.uuid4())
-    row = {"id": aid, "college_id": c["id"], "course_id": course["id"], "student_user_id": uid, "status": "enrolled",
-           "student_number": existing_no, "registration_type": "continuing",
-           "full_name": full_name, "phone": phone, "nrc_or_passport": nrc, "study_school": school, "gender": gender,
-           "year_of_study": int(year), "funding": funding,
-           "sponsor_name": sponsor_name if funding == "sponsored" else None,
-           "sponsor_phone": sponsor_phone if funding == "sponsored" else None,
-           "expected_completion_year": int(completion), "portal_override": "on",
-           "created_at": utc_now(), "updated_at": utc_now()}
-    _, err = db_insert("koja_college_applications", row)
+    # One row per student per programme. If this student already has a row for the chosen programme
+    # (from an earlier application), do not insert a second one.
+    same = first_row("koja_college_applications", {"course_id": course["id"], "student_user_id": uid})
+    if same:
+        if same.get("status") not in ("draft", "rejected", "declined"):
+            flash("You are already registered for this programme (student number %s). Your student services are below."
+                  % (same.get("student_number") or ""), "info")
+            return redirect(url_for("ac_application_view", aid=same["id"]))
+        aid = same["id"]
+        payload = {"status": "enrolled", "student_number": existing_no, "registration_type": "continuing",
+                   "full_name": full_name, "phone": phone, "nrc_or_passport": nrc, "study_school": school, "gender": gender,
+                   "year_of_study": int(year), "funding": funding,
+                   "sponsor_name": sponsor_name if funding == "sponsored" else None,
+                   "sponsor_phone": sponsor_phone if funding == "sponsored" else None,
+                   "expected_completion_year": int(completion), "portal_override": "on", "updated_at": utc_now()}
+        _, err = db_update("koja_college_applications", {"id": aid}, payload)
+    else:
+        aid = str(uuid.uuid4())
+        row = {"id": aid, "college_id": c["id"], "course_id": course["id"], "student_user_id": uid, "status": "enrolled",
+               "student_number": existing_no, "registration_type": "continuing",
+               "full_name": full_name, "phone": phone, "nrc_or_passport": nrc, "study_school": school, "gender": gender,
+               "year_of_study": int(year), "funding": funding,
+               "sponsor_name": sponsor_name if funding == "sponsored" else None,
+               "sponsor_phone": sponsor_phone if funding == "sponsored" else None,
+               "expected_completion_year": int(completion), "portal_override": "on",
+               "created_at": utc_now(), "updated_at": utc_now()}
+        _, err = db_insert("koja_college_applications", row)
     if err:
-        flash("Could not save your registration: " + str(err)[:300], "danger")
+        if "23505" in str(err) or "duplicate key" in str(err).lower():
+            flash("You already have a registration for this programme. Please contact the college office if you need help.", "danger")
+        else:
+            flash("Your registration could not be saved. Please check your details and try again. If it still fails, contact the college office.", "danger")
+        _college_audit(c, "continuing.failed", "%s (%s)" % (full_name, existing_no))
         return redirect(back)
-    _college_audit(c, "continuing.registered", "%s (%s)" % (full_name, row["student_number"]))
-    flash("Registered as %s. Your student services are open." % row["student_number"], "success")
+    _college_audit(c, "continuing.registered", "%s (%s)" % (full_name, existing_no))
+    flash("Registered as %s. Your student services are open." % existing_no, "success")
     return redirect(url_for("ac_application_view", aid=aid))
 
 
@@ -24703,6 +24949,8 @@ def ac_application_view(aid):
 .pi-bg::after{content:"";position:absolute;inset:0;background:rgba(255,255,255,.86)}
 </style><div class="pi-bg" aria-hidden="true"></div>{% endif %}
 <div class="card"><h2>{{ course.title }}</h2><p class="small">{{ c.name }}{% if intake %} · {{ intake.name }}{% endif %}</p>
+{% if is_student %}<p><strong>Registered modules:</strong> {% if reg_modules %}{{ reg_modules|join(', ') }}{% else %}none yet. <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Register for modules</a>{% endif %}</p>
+{% if programme_groups %}<p class="small">Modules for your programme (ticked = registered):</p>{% for g in programme_groups %}<p><strong>{{ g.category }}</strong><br>{% for m in g.modules %}<span>{{ '✓ ' if m in reg_modules else '' }}{{ m }}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</p>{% endfor %}{% endif %}{% endif %}
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
 {% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if is_owner and not is_student %}<form method="post" action="{{ url_for('ac_application_union', aid=a.id) }}" class="small" style="margin:6px 0">{{ csrf }}<label><input type="checkbox" name="union_member" value="1" {{ 'checked' if a.union_member }}> Union member (verified by the college)</label> <button class="btn secondary" type="submit">Save</button></form>
 <p><a class="btn secondary" href="{{ url_for('ac_svc_marks', aid=a.id) }}">Enter marks</a> <a class="btn secondary" href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk</a></p>{% endif %}
@@ -24781,6 +25029,8 @@ def ac_application_view(aid):
 {% endif %}''',
                     a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind, checklist=checklist, room_letter=room_letter,
                     doc_labels=COLLEGE_DOC_LABELS, is_owner=is_owner, is_student=is_student,
+                    reg_modules=sorted({r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}),
+                    programme_groups=(_course_module_groups(a["college_id"], a["course_id"]) if is_student and a.get("course_id") else []),
                     staff_statuses=COLLEGE_STAFF_STATUSES, bg_url=url_for("static", filename="college-library-bg.jpg"))
 
 
@@ -25175,7 +25425,7 @@ PORTAL_SHELL_CSS = """
 <style>
   .svc-outer{margin:0 calc(50% - 50vw);width:100vw;max-width:100vw;overflow:hidden}
   .svc-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap}
-  .svc-top img{width:64px;height:64px;object-fit:contain}
+  .svc-top img{width:88px;height:88px;min-width:88px;flex:0 0 auto;object-fit:contain;display:block;opacity:1;visibility:visible}
   .svc-top h2{margin:0;font-size:18px;font-weight:normal;text-transform:uppercase}
   .svc-top p{margin:2px 0 0;color:#555;font-size:12px}
   .svc-nav{display:flex;flex-wrap:wrap;background:#0a5bd1}
@@ -25207,18 +25457,18 @@ def _portal_menu_html(a):
     can_use = _portal_open(a)
     items = [
         ("Home", url_for("ac_student_portal", aid=aid), True, ""),
-        ("Apply for Accommodation", url_for("ac_application_room", aid=aid), can_use, "Opens once admission is confirmed and the deposit is paid"),
-        ("Helpdesk Inbox", url_for("ac_svc_helpdesk", aid=aid) + "#inbox", True, ""),
-        ("Helpdesk Support", url_for("ac_svc_helpdesk", aid=aid) + "#support", True, ""),
         ("Personal Information", url_for("ac_application_view", aid=aid), True, ""),
-        ("View CA", url_for("ac_svc_ca", aid=aid), True, ""),
+        ("Invoices", url_for("ac_application_money", aid=aid), True, ""),
+        ("Course Marks", url_for("ac_svc_ca", aid=aid), True, ""),
         ("Grades", url_for("ac_svc_grades", aid=aid), True, ""),
         ("Payments", url_for("ac_application_money", aid=aid) + "#payments", True, ""),
-        ("Payment Options", url_for("ac_application_money", aid=aid) + "#payment-options", True, ""),
-        ("Timetable", url_for("ac_svc_timetable", aid=aid), True, ""),
-        ("Course Evaluation", url_for("ac_svc_evaluation", aid=aid), True, ""),
+        ("Report Online", url_for("ac_svc_helpdesk", aid=aid), True, ""),
         ("Course registration", url_for("ac_svc_registration", aid=aid), True, ""),
+        ("Timetable", url_for("ac_svc_timetable", aid=aid), True, ""),
+        ("Course materials", url_for("ac_svc_materials", aid=aid), True, ""),
+        ("Course Evaluation", url_for("ac_svc_evaluation", aid=aid), True, ""),
         ("Print Exam Docket", url_for("ac_svc_docket", aid=aid), True, ""),
+        ("Apply for Accommodation", url_for("ac_application_room", aid=aid), can_use, "Opens once admission is confirmed and the deposit is paid"),
         ("Mattress collection", url_for("ac_application_mattress", aid=aid), True, ""),
         ("Change Password", url_for("ac_change_password"), True, ""),
         ("Logout", url_for("logout"), True, ""),
@@ -25355,6 +25605,26 @@ def _course_module_names(college_id, course_id):
     return out
 
 
+def _course_module_groups(college_id, course_id, only=None):
+    """The programme's modules grouped by category, in list order: [{"category": str, "modules": [names]}].
+    Published timetable modules that are not in the list go under "Other modules". `only` keeps just those names."""
+    catalogue = sorted(_ac_rows_all("koja_college_modules", {"college_id": college_id, "course_id": course_id}),
+                       key=lambda m: (m.get("sort_order") or 0, m.get("name") or ""))
+    by_cat, seen = {}, set()
+    for m in catalogue:
+        name = m["name"]
+        if name in seen or (only is not None and name not in only):
+            continue
+        seen.add(name)
+        by_cat.setdefault((m.get("category") or "").strip() or "Modules", []).append(name)
+    groups = [{"category": k, "modules": v} for k, v in by_cat.items()]
+    timetabled = sorted({s["module"] for s in _ac_rows_all("koja_college_timetable", {"course_id": course_id}) if s.get("published")})
+    extra = [n for n in timetabled if n not in seen and (only is None or n in only)]
+    if extra:
+        groups.append({"category": "Other modules", "modules": extra})
+    return groups
+
+
 def _tt_read_times(form):
     period = clean(form.get("period"))
     if period.isdigit() and int(period) in TT_PERIODS:
@@ -25373,6 +25643,11 @@ def ac_svc_timetable_manage(slug):
     course_ids = {k["id"] for k in courses}
     names = {k["id"]: k["title"] for k in courses}
     module_options = {k["id"]: _course_module_names(c["id"], k["id"]) for k in courses}
+    module_labels = {}
+    for k in courses:
+        for g in _course_module_groups(c["id"], k["id"]):
+            for m in g["modules"]:
+                module_labels["%s|%s" % (k["id"], m)] = m if g["category"] == "Modules" else "%s (%s)" % (m, g["category"])
     if request.method == "POST":
         cid, module = _tt_form_course_module()
         day = clean(request.form.get("day"))
@@ -25399,7 +25674,7 @@ def ac_svc_timetable_manage(slug):
     unpublished = len([s for s in slots if not s.get("published")])
     have = {(s.get("course_id"), s.get("module")) for s in slots}
     catalogue = _ac_rows_all("koja_college_modules", {"college_id": c["id"]}, order="sort_order.asc")
-    missing = [{"course": names.get(m["course_id"], ""), "name": m["name"]} for m in catalogue if (m["course_id"], m["name"]) not in have]
+    missing = [{"course": names.get(m["course_id"], ""), "name": m["name"], "category": m.get("category") or "Modules"} for m in catalogue if (m["course_id"], m["name"]) not in have]
     return _ac_page("Timetable", r'''
 <div class="card"><h2>Timetable: {{ c.name }}</h2>
 <p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a> · <a href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p>
@@ -25409,7 +25684,7 @@ def ac_svc_timetable_manage(slug):
 
 <div class="card"><h3>Modules</h3>
 <p class="small">Students register for these modules. Each one needs at least one timetable slot before it can be published.</p>
-{% for m in missing %}<p class="small">{{ m.course }}: <strong>{{ m.name }}</strong> has no timetable slot yet.</p>
+{% for m in missing %}<p class="small">{{ m.course }} · {{ m.category }}: <strong>{{ m.name }}</strong> has no timetable slot yet.</p>
 {% else %}<p class="small">Every module has at least one timetable slot.</p>{% endfor %}
 <form method="post" action="{{ url_for('ac_svc_module_add', slug=c.slug) }}">{{ csrf }}
 <label>Programme<select name="course_id" required>{% for k in courses %}<option value="{{ k.id }}">{{ k.title }}</option>{% endfor %}</select></label>
@@ -25425,7 +25700,7 @@ def ac_svc_timetable_manage(slug):
 <div class="card"><h3>2a. Auto-place sessions</h3>
 <p class="small">Finds free times on Monday to Friday, using the seven periods, without a lecturer, venue or group clash.</p>
 <form method="post" action="{{ url_for('ac_svc_timetable_auto', slug=c.slug) }}">{{ csrf }}
-<label>Programme and module<select name="pick" required><option value="">Choose a module</option>{% for k in courses %}{% if module_options.get(k.id) %}<optgroup label="{{ k.title }}">{% for m in module_options.get(k.id) %}<option value="{{ k.id }}|{{ m }}">{{ m }}</option>{% endfor %}</optgroup>{% endif %}{% endfor %}</select></label>
+<label>Programme and module<select name="pick" required><option value="">Choose a module</option>{% for k in courses %}{% if module_options.get(k.id) %}<optgroup label="{{ k.title }}">{% for m in module_options.get(k.id) %}<option value="{{ k.id }}|{{ m }}">{{ module_labels.get(k.id ~ '|' ~ m, m) }}</option>{% endfor %}</optgroup>{% endif %}{% endfor %}</select></label>
 <p class="small">The modules come from the programme list. To add a module, use Add module above.</p>
 <label>Group<input name="grp" value="A" maxlength="1" required></label>
 <label>Lecturer<input name="lecturer" maxlength="120"></label>
@@ -25435,7 +25710,7 @@ def ac_svc_timetable_manage(slug):
 
 <div class="card"><h3>2b. Add one slot by hand</h3>
 <form method="post">{{ csrf }}
-<label>Programme and module<select name="pick" required><option value="">Choose a module</option>{% for k in courses %}{% if module_options.get(k.id) %}<optgroup label="{{ k.title }}">{% for m in module_options.get(k.id) %}<option value="{{ k.id }}|{{ m }}">{{ m }}</option>{% endfor %}</optgroup>{% endif %}{% endfor %}</select></label>
+<label>Programme and module<select name="pick" required><option value="">Choose a module</option>{% for k in courses %}{% if module_options.get(k.id) %}<optgroup label="{{ k.title }}">{% for m in module_options.get(k.id) %}<option value="{{ k.id }}|{{ m }}">{{ module_labels.get(k.id ~ '|' ~ m, m) }}</option>{% endfor %}</optgroup>{% endif %}{% endfor %}</select></label>
 <p class="small">The modules come from the programme list. To add a module, use Add module above.</p>
 <label>Group<input name="grp" value="A" maxlength="1" required></label>
 <label>Day<select name="day" required>{% for d in days %}<option>{{ d }}</option>{% endfor %}</select></label>
@@ -25450,7 +25725,7 @@ def ac_svc_timetable_manage(slug):
 {% for s in slots %}<p class="small" style="border-top:1px solid #ddd;padding-top:6px"><strong>{{ s.module }}</strong> · {{ names.get(s.course_id, '') }} · group {{ s.grp }} · {{ s.day }} {{ s.starts }}–{{ s.ends }}{% if s.venue %} · {{ s.venue }}{% endif %}{% if s.lecturer %} · {{ s.lecturer }}{% endif %} · {% if s.published %}<strong>published</strong>{% else %}not published{% endif %}
 <form method="post" action="{{ url_for('ac_svc_timetable_delete', slug=c.slug, sid=s.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" type="submit">Delete</button></form></p>
 {% else %}<p class="small">No slots yet.</p>{% endfor %}
-</div>''', c=c, courses=courses, names=names, module_options=module_options, slots=slots, unpublished=unpublished, missing=missing, days=SVC_DAYS,
+</div>''', c=c, courses=courses, names=names, module_options=module_options, module_labels=module_labels, slots=slots, unpublished=unpublished, missing=missing, days=SVC_DAYS,
                     periods=sorted(TT_PERIODS.items()), csrf_ok=True)
 
 
@@ -25633,6 +25908,9 @@ def ac_svc_timetable(aid):
     return _svc_student_academic(aid, "Timetable", build)
 
 
+REGISTRATION_MIN_MODULES = 5
+
+
 @app.route("/academic/services/<aid>/registration", methods=["GET", "POST"])
 @login_required
 def ac_svc_registration(aid):
@@ -25646,6 +25924,10 @@ def ac_svc_registration(aid):
         modules = _course_module_names(a["college_id"], a["course_id"])
         if request.method == "POST":
             chosen = list(dict.fromkeys(m for m in request.form.getlist("module") if m in modules))
+            need = min(REGISTRATION_MIN_MODULES, len(modules))
+            if len(chosen) < need:
+                flash("Select at least %d modules for the semester. For more, see your school's course registration coordinator." % need, "danger")
+                return redirect(url_for("ac_svc_registration", aid=aid))
             current = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
             to_add = [m for m in chosen if m not in current]
             to_remove = [m for m in current if m not in chosen]
@@ -25661,12 +25943,12 @@ def ac_svc_registration(aid):
             return redirect(url_for("ac_svc_registration", aid=aid))
         taken = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
         return _ac_page("Course registration", r'''
-<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
+<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p class="small">Tick the modules you want for this semester. At least {{ need }} modules are required. For more, see your school's course registration coordinator.</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 <div class="card"><form method="post">{{ csrf }}
-{% for m in modules %}<label style="display:block;margin:6px 0"><input type="checkbox" name="module" value="{{ m }}" {{ 'checked' if m in taken }}> {{ m }}</label>
+{% for g in groups %}<h3 style="margin:14px 0 4px">{{ g.category }}</h3>{% for m in g.modules %}<label style="display:block;margin:6px 0"><input type="checkbox" name="module" value="{{ m }}" {{ 'checked' if m in taken }}> {{ m }}</label>{% endfor %}
 {% else %}<p class="small">No modules have been posted for your course yet.</p>{% endfor %}
 {% if modules %}<p><button class="btn" type="submit">Save registration</button></p>{% endif %}</form></div>''',
-                         back=_svc_back(aid), c=c, course=course, modules=modules, taken=taken)
+                         back=_svc_back(aid), c=c, course=course, modules=modules, groups=_course_module_groups(a["college_id"], a["course_id"], only=set(modules)), taken=taken, need=min(REGISTRATION_MIN_MODULES, len(modules)))
     return _svc_student_academic(aid, "Course registration", build)
 
 
@@ -25978,13 +26260,18 @@ def ac_ca_manage(slug):
         module_names = [r["module"] for r in mine if r["course_id"] == course_id]
     if module and module not in module_names and _ca_can_module(c, course_id, module):
         module_names = module_names + [module]
+    module_groups = _course_module_groups(c["id"], course_id, only=set(module_names)) if course_id else []
+    grouped = {n for g in module_groups for n in g["modules"]}
+    rest = [n for n in module_names if n not in grouped]
+    if rest:
+        module_groups.append({"category": "Other modules", "modules": rest})
     lecturers = _ac_rows("koja_college_module_lecturers", {"college_id": c["id"], "course_id": course_id, "module": module}, order="created_at.asc", limit=100) if is_owner and course_id and module else []
     return _ac_page("Continuous assessment", r'''
 <div class="card"><h2>Continuous assessment: {{ c.name }}</h2>
 <p class="small"><a href="{{ url_for('ac_exams', slug=c.slug) }}">Exams and marking</a></p>
 {% if is_owner %}<p class="small"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p>{% endif %}
 <form method="get"><label>Course<select name="course_id">{% for k in courses %}<option value="{{ k.id }}" {{ 'selected' if k.id == course_id }}>{{ k.title }}</option>{% endfor %}</select></label>
-<label>Module<select name="module" required>{% for m in module_names %}<option value="{{ m }}" {{ 'selected' if m == module }}>{{ m }}</option>{% else %}<option value="">No modules for this programme yet</option>{% endfor %}</select></label>
+<label>Module<select name="module" required>{% for g in module_groups %}<optgroup label="{{ g.category }}">{% for m in g.modules %}<option value="{{ m }}" {{ 'selected' if m == module }}>{{ m }}</option>{% endfor %}</optgroup>{% else %}<option value="">No modules for this programme yet</option>{% endfor %}</select></label>
 <button class="btn" type="submit">Open</button></form></div>
 
 {% if is_owner %}<div class="card"><h3>Settings</h3>
@@ -26036,7 +26323,7 @@ def ac_ca_manage(slug):
 {% else %}<p class="small">Students registered for this module will appear here. Students register from their portal.</p>{% endif %}
 </div>
 {% endif %}''',
-                    c=c, courses=courses, course_id=course_id, module=module, module_names=module_names, comps=comps, rows=rows, students=students,
+                    c=c, courses=courses, course_id=course_id, module=module, module_names=module_names, module_groups=module_groups, comps=comps, rows=rows, students=students,
                     locked=locked, is_admin=is_admin, settings=_ca_settings(c), out_of=_ca_out_of(c),
                     weight_total=round(sum(float(x.get("weight") or 0) for x in comps), 2),
                     weights_ok=_ca_weights_ok(comps, _ca_out_of(c)), deadline_passed=_ca_deadline_passed(c),
