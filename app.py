@@ -24968,14 +24968,71 @@ def ac_application_view(aid):
     room_letter = _room_letter_data(a, c) if is_student else None
     docs_by_kind = {d.get("kind"): d for d in docs}
     checklist = _college_missing_items({k: a.get(k) for k in COLLEGE_APP_FIELDS}, docs) if a.get("status") == "draft" else []
-    return _ac_page("Application", r'''
+    return _ac_page("Personal Information" if is_student else "Application", r'''
 {% if is_student %}<style>
 .pi-bg{position:fixed;inset:0;z-index:-1;background:url('{{ bg_url }}') center/cover no-repeat fixed;pointer-events:none}
 .pi-bg::after{content:"";position:absolute;inset:0;background:rgba(255,255,255,.86)}
 </style><div class="pi-bg" aria-hidden="true"></div>{% endif %}
+{% if is_student %}
+<style>
+.pi-wrap{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:22px;align-items:start;margin-top:8px}
+.pi-name{background:#5b93c9;color:#fff;padding:9px 12px;font-size:15px;font-weight:bold;text-transform:uppercase}
+.pi-sec{font-weight:bold;font-size:13px;text-transform:uppercase;margin:18px 0 6px;color:#222}
+.pi-kv{width:100%;border-collapse:collapse;font-size:13px}
+.pi-kv td{padding:4px 8px 4px 0;vertical-align:top;color:#222}
+.pi-kv td:first-child{width:42%;font-weight:bold}
+.pi-box{border:1px solid #bbb;background:#fff;font-size:13px}
+.pi-box .hd{background:#e6e6e6;text-align:center;font-weight:bold;padding:6px;font-size:12px;color:#222}
+.pi-box a{display:block;padding:7px 10px;border-top:1px solid #ddd;color:#0a5bd1;text-decoration:none}
+.pi-box a:hover{background:#eef3ff}
+</style>
+<div class="pi-wrap">
+<div>
+<div class="pi-name">Name: {{ a.full_name }}</div>
+<table class="pi-kv" style="margin-top:8px">
+<tr><td>Student number</td><td>{{ a.student_number or 'Given when your place is confirmed' }}</td></tr>
+<tr><td>Gender</td><td>{{ (a.gender or '') | capitalize }}</td></tr>
+<tr><td>NRC</td><td>{{ a.nrc_or_passport or '' }}</td></tr>
+<tr><td>Date of birth</td><td>{{ a.date_of_birth or '' }}</td></tr>
+<tr><td>Student profile status</td><td>{{ a.status | replace('_', ' ') | capitalize }}</td></tr>
+<tr><td>Access level</td><td>Basic student</td></tr>
+<tr><td>Exam centre</td><td>{{ c.name or '' }}</td></tr>
+</table>
+<p class="pi-sec">Program information</p>
+<table class="pi-kv"><tr><td>Study</td><td>{{ course.title or '' }}</td></tr><tr><td>School</td><td>{{ a.study_school or '' }}</td></tr><tr><td>Year of study</td><td>{{ a.year_of_study or '' }}</td></tr><tr><td>Intake</td><td>{{ intake.name if intake else '' }}</td></tr></table>
+<p class="pi-sec">Course progression</p>
+{% if programme_groups %}{% for g in programme_groups %}<p style="margin:6px 0 2px;font-size:13px"><strong>{{ g.category }}</strong></p>{% for m in g.modules %}<p style="margin:0 0 2px 12px;font-size:13px">{{ m }}</p>{% endfor %}{% endfor %}
+{% else %}<p style="color:#c00;font-weight:bold;font-size:13px">UNREGISTERED STUDENT</p><p class="small"><a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Register for modules</a></p>{% endif %}
+<p class="pi-sec">Student contact information</p>
+<table class="pi-kv"><tr><td>Address</td><td>{{ a.address or '' }}</td></tr><tr><td>Phone</td><td>{{ a.phone or '' }}</td></tr><tr><td>Email</td><td>{{ a.email or '' }}</td></tr></table>
+<p class="pi-sec">Emergency information (next of kin)</p>
+<table class="pi-kv"><tr><td>Full name</td><td>{{ a.next_of_kin or '' }}</td></tr><tr><td>Phone number</td><td>{{ a.next_of_kin_phone or '' }}</td></tr></table>
+<p class="pi-sec">Education history</p>
+<table class="pi-kv"><tr><td>Previous school</td><td>{{ a.previous_school or '' }}</td></tr><tr><td>Grade 12 exam number</td><td>{{ a.grade12_exam_number or '' }}</td></tr><tr><td>Subject grades</td><td>{{ a.subject_grades or '' }}</td></tr><tr><td>Qualifications</td><td>{{ a.qualifications or '' }}</td></tr></table>
+<p style="margin-top:14px">{% if a.status in ('accepted', 'enrolled') %}<a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a>{% endif %}{% if room_letter %} <a class="btn secondary" href="{{ url_for('ac_application_room_letter', aid=a.id) }}">Room letter (PDF)</a>{% endif %}{% if a.status in ('offered', 'accepted', 'enrolled') %} <a class="btn secondary" href="{{ url_for('ac_application_letter', aid=a.id) }}">Acceptance letter</a>{% endif %}</p>
+{% if a.decision_note %}<p class="small"><strong>Note from the college:</strong> {{ a.decision_note }}</p>{% endif %}
+{% if not is_owner and a.status == 'offered' %}
+<div class="card"><h3>You have an offer</h3>
+<form method="post" action="{{ url_for('ac_application_respond', aid=a.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="action" value="accept" type="submit">Accept offer</button></form>
+<form method="post" action="{{ url_for('ac_application_respond', aid=a.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" name="action" value="decline" type="submit">Decline</button></form></div>
+{% endif %}
+</div>
+<div>
+<div class="pi-box">
+<div class="hd">ACTIVE ACCOUNT</div>
+<div style="padding:10px;text-align:center">{% if docs_by_kind.get('photo') %}<img src="{{ url_for('ac_application_doc', aid=a.id, did=docs_by_kind['photo'].id) }}" alt="Profile picture" style="width:150px;height:180px;object-fit:cover;border:1px solid #ccc">{% else %}<div style="width:150px;height:180px;margin:0 auto;border:1px dashed #999;display:flex;align-items:center;justify-content:center;color:#555;font-size:12px">No photo yet</div>{% endif %}</div>
+<a href="#documents">Registry files</a>
+<a href="#contact">Edit user information</a>
+<a href="{{ url_for('ac_svc_grades', aid=a.id) }}">Show grades</a>
+<a href="{{ url_for('ac_application_money', aid=a.id) }}">Show payments</a>
+</div>
+</div>
+</div>
+{% endif %}
+{% if not is_student %}
 <div class="card"><h2>{{ course.title }}</h2><p class="small">{{ c.name }}{% if intake %} · {{ intake.name }}{% endif %}</p>
-{% if is_student %}<p><strong>Registered modules:</strong> {% if reg_modules %}{{ reg_modules|join(', ') }}{% else %}none yet. <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Register for modules</a>{% endif %}</p>
-{% if programme_groups %}<p class="small">Modules for your programme (ticked = registered):</p>{% for g in programme_groups %}<p><strong>{{ g.category }}</strong><br>{% for m in g.modules %}<span>{{ '✓ ' if m in reg_modules else '' }}{{ m }}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</p>{% endfor %}{% endif %}{% endif %}
+{% if is_student %}{% if programme_groups %}<p><strong>Registered modules</strong> ({{ reg_modules|length }})</p>{% for g in programme_groups %}<p><strong>{{ g.category }}</strong><br>{% for m in g.modules %}{{ m }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>{% endfor %}{% else %}<p><strong>Registered modules:</strong> none yet. <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Register for modules</a></p>{% endif %}{% endif %}
+
 <p>Status: <strong>{{ a.status | replace('_', ' ') }}</strong>{% if a.student_number %} · Student number: <strong>{{ a.student_number }}</strong>{% endif %}</p>
 {% if is_student and a.status in ('accepted', 'enrolled') %}<p><a class="btn secondary" href="{{ url_for('ac_application_money', aid=a.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=a.id) }}">Room</a></p>{% endif %}{% if is_owner and not is_student %}<form method="post" action="{{ url_for('ac_application_union', aid=a.id) }}" class="small" style="margin:6px 0">{{ csrf }}<label><input type="checkbox" name="union_member" value="1" {{ 'checked' if a.union_member }}> Union member (verified by the college)</label> <button class="btn secondary" type="submit">Save</button></form>
 <p><a class="btn secondary" href="{{ url_for('ac_svc_marks', aid=a.id) }}">Enter marks</a> <a class="btn secondary" href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}">Helpdesk</a></p>{% endif %}
@@ -24987,6 +25044,7 @@ def ac_application_view(aid):
 <form method="post" action="{{ url_for('ac_application_respond', aid=a.id) }}" style="display:inline">{{ csrf }}<button class="btn" name="action" value="accept" type="submit">Accept offer</button></form>
 <form method="post" action="{{ url_for('ac_application_respond', aid=a.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" name="action" value="decline" type="submit">Decline</button></form></div>
 {% endif %}</div>
+{% endif %}
 {% if is_student and a.status in ('draft', 'submitted') %}
 <div class="card"><h3>Documents</h3>
 {% for kind, label in doc_labels %}
@@ -25010,7 +25068,7 @@ def ac_application_view(aid):
     <input type="file" name="photo" accept=".jpg,.jpeg,.png,.webp" required>
     <button class="btn secondary" type="submit">Upload photo</button></form>
 </div>
-<table style="width:100%;border-collapse:collapse" class="small">
+{% if not is_student %}<table style="width:100%;border-collapse:collapse" class="small">
 <tr><td style="padding:4px 0;width:40%"><strong>Full name</strong></td><td>{{ a.full_name }}</td></tr>
 <tr><td style="padding:4px 0"><strong>Student number</strong></td><td>{{ a.student_number or 'Given when your place is confirmed' }}</td></tr>
 <tr><td style="padding:4px 0"><strong>Sex</strong></td><td>{{ a.gender or '' }}</td></tr>
@@ -25020,9 +25078,9 @@ def ac_application_view(aid):
 <tr><td style="padding:4px 0"><strong>Intake</strong></td><td>{{ intake.name if intake else '' }}</td></tr>
 <tr><td style="padding:4px 0"><strong>Status</strong></td><td>{{ a.status | replace('_', ' ') }}</td></tr>
 </table>
-<p class="small">To correct your name, date of birth or NRC, open the Helpdesk and choose "Profile correction".</p>
+<p class="small">To correct your name, date of birth or NRC, open the Helpdesk and choose "Profile correction".</p>{% endif %}
 </div>
-<div class="card"><h3>Contact details</h3>
+<div class="card" id="contact"><h3>Contact details</h3>
 <form method="post" action="{{ url_for('ac_application_contact', aid=a.id) }}">{{ csrf }}
 <label>Phone number<input name="phone" value="{{ a.phone or '' }}" required maxlength="30"></label>
 <label>Email address<input name="email" type="email" value="{{ a.email or '' }}" maxlength="120"></label>
@@ -25032,7 +25090,7 @@ def ac_application_view(aid):
 <button class="btn" type="submit">Save contact details</button></form>
 </div>
 {% endif %}
-<div class="card"><h3>Application details</h3>
+<div class="card" id="documents"><h3>{% if is_student %}Documents{% else %}Application details{% endif %}</h3>{% if not is_student %}
 <p class="small">Name: {{ a.full_name }} · Phone: {{ a.phone or '' }} · Email: {{ a.email or '' }}</p>
 <p class="small">Date of birth: {{ a.date_of_birth or '' }} · Gender: {{ a.gender or '' }} · NRC or passport: {{ a.nrc_or_passport or '' }}</p>
 <p class="small">Address: {{ a.address or '' }}</p>
@@ -25040,7 +25098,7 @@ def ac_application_view(aid):
 <p class="small">Subject grades: {{ a.subject_grades or '' }}</p>
 <p class="small">Qualifications: {{ a.qualifications or '' }}</p>
 <p class="small">Next of kin: {{ a.next_of_kin or '' }} {{ a.next_of_kin_phone or '' }}</p>
-<h3>Documents on file</h3>
+{% endif %}{% if not is_student %}<h3>Documents on file</h3>{% endif %}
 {% for d in docs %}<p class="small"><a href="{{ url_for('ac_application_doc', aid=a.id, did=d.id) }}" target="_blank" rel="noopener">{{ d.kind }}: {{ d.file_name or 'file' }}</a></p>
 {% else %}<p class="small">No documents uploaded.</p>{% endfor %}
 </div>
@@ -25055,7 +25113,7 @@ def ac_application_view(aid):
                     a=a, c=c, course=course, intake=intake, docs=docs, docs_by_kind=docs_by_kind, checklist=checklist, room_letter=room_letter,
                     doc_labels=COLLEGE_DOC_LABELS, is_owner=is_owner, is_student=is_student,
                     reg_modules=sorted({r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}),
-                    programme_groups=(_course_module_groups(a["college_id"], a["course_id"]) if is_student and a.get("course_id") else []),
+                    programme_groups=(_registered_module_groups(a, [r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)]) if is_student else []),
                     staff_statuses=COLLEGE_STAFF_STATUSES, bg_url=url_for("static", filename="college-library-bg.jpg"))
 
 
@@ -25451,7 +25509,7 @@ PORTAL_SHELL_CSS = """
   .svc-outer{margin:0 calc(50% - 50vw);width:100vw;max-width:100vw;overflow:hidden}
   .svc-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap}
   .svc-top img{width:88px;height:88px;min-width:88px;flex:0 0 auto;object-fit:contain;display:block;opacity:1;visibility:visible}
-  .svc-top h2{margin:0;font-size:18px;font-weight:normal;text-transform:uppercase}
+  .svc-top h2{margin:0;font-size:18px;font-weight:normal;text-transform:uppercase;color:#222}
   .svc-top p{margin:2px 0 0;color:#555;font-size:12px}
   .svc-nav{display:flex;flex-wrap:wrap;background:#0a5bd1}
   .svc-nav a{flex:1 1 90px;color:#fff;text-decoration:none;text-align:center;padding:9px 4px;font-size:12px;border-right:1px solid #3c7fe0}
@@ -25466,7 +25524,11 @@ PORTAL_SHELL_CSS = """
   .portal-menu a:hover{background:#eef3ff !important;color:#1d4ed8 !important}
   .portal-menu span.off{color:#888 !important;background:#f7f7f7 !important;cursor:default}
   .portal-menu span.off small{display:block;font-size:11px}
-  .portal-main{background:transparent;min-width:0;padding-bottom:14px;border:0;border-radius:0}
+  .portal-main{background:#fff;color:#222;min-width:0;padding:0 14px 14px;border:0;border-radius:0}
+  .portal-main h1,.portal-main h2,.portal-main h3,.portal-main h4,.portal-main strong,.portal-main b{color:#222}
+  .portal-main p,.portal-main li,.portal-main td,.portal-main th,.portal-main label,.portal-main span{color:#222}
+  .portal-main .small,.portal-main small{color:#555}
+  .portal-main a{color:#0a5bd1}
   .portal-head{background:#5b93c9;color:#fff;padding:9px 14px;font-size:12px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
   .portal-crumb{font-weight:bold}
   .portal-name{font-weight:bold;font-size:13px}
@@ -25648,6 +25710,19 @@ def _course_module_groups(college_id, course_id, only=None):
     extra = [n for n in timetabled if n not in seen and (only is None or n in only)]
     if extra:
         groups.append({"category": "Other modules", "modules": extra})
+    return groups
+
+
+def _registered_module_groups(a, names):
+    """Only the modules the student is registered for, grouped by category. Modules not in the programme list go under 'Other modules'."""
+    names = sorted(set(names or []))
+    if not names or not a.get("course_id"):
+        return []
+    groups = _course_module_groups(a["college_id"], a["course_id"], only=set(names))
+    covered = {m for g in groups for m in g["modules"]}
+    rest = [m for m in names if m not in covered]
+    if rest:
+        groups.append({"category": "Other modules", "modules": rest})
     return groups
 
 
@@ -25952,7 +26027,7 @@ def ac_svc_registration(aid):
             chosen = list(dict.fromkeys(m for m in request.form.getlist("module") if m in modules))
             need = min(REGISTRATION_MIN_MODULES, len(modules))
             if len(chosen) < need:
-                flash("Select at least %d modules for the semester. For more, see your school's course registration coordinator." % need, "danger")
+                flash("Select at least %d modules for the semester. You may choose more." % need, "danger")
                 return redirect(url_for("ac_svc_registration", aid=aid))
             current = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
             to_add = [m for m in chosen if m not in current]
@@ -25969,7 +26044,7 @@ def ac_svc_registration(aid):
             return redirect(url_for("ac_svc_registration", aid=aid))
         taken = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
         return _ac_page("Course registration", r'''
-<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p class="small">Tick the modules you want for this semester. At least {{ need }} modules are required. For more, see your school's course registration coordinator.</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
+<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p class="small">Tick the modules you want for this semester. You need at least {{ need }}. You may choose more than {{ need }} if you need them.</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 <div class="card"><form method="post">{{ csrf }}
 {% for g in groups %}<h3 style="margin:14px 0 4px">{{ g.category }}</h3>{% for m in g.modules %}<label style="display:block;margin:6px 0"><input type="checkbox" name="module" value="{{ m }}" {{ 'checked' if m in taken }}> {{ m }}</label>{% endfor %}
 {% else %}<p class="small">No modules have been posted for your course yet.</p>{% endfor %}
