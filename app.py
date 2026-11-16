@@ -1079,7 +1079,7 @@ nav a:hover{background:rgba(255,255,255,.1);color:#fff}
 @keyframes menuDrop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 
 .container{width:min(1280px,calc(100% - 32px));margin:24px auto 56px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:16px;box-shadow:none}
+.card{background:transparent;border:0;border-radius:0;padding:10px 0;margin-bottom:16px;box-shadow:none}
 .card h2:first-child,.card h3:first-child{margin-bottom:8px}
 .hero{background:linear-gradient(135deg,var(--nav),var(--nav-2));color:#fff;padding:34px 28px;border-radius:18px;margin-bottom:20px;box-shadow:var(--shadow);animation:fadeUp .5s ease both}
 .hero h1,.hero h2,.hero h3{color:#fff}
@@ -1204,7 +1204,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
   .dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}
   .dropdown a{font-size:15px}
   .container{width:calc(100% - 32px);margin-top:16px}
-  .card{padding:16px}
+  .card{padding:8px 0}
   .hero{padding:24px 18px;border-radius:14px}
   table{display:block;overflow-x:auto}
   #map{height:350px}
@@ -22402,14 +22402,27 @@ def _ac_page(title, tpl, **ctx):
         ctx.setdefault("portal_sid", portal_app.get("student_number") or "")
         ctx.setdefault("portal_name", portal_app.get("full_name") or "")
         ctx.setdefault("portal_title", title)
-        tpl = (PORTAL_SHELL_CSS + '<div class="portal"><nav class="portal-menu">'
+        ctx.setdefault("portal_aid", portal_app.get("id"))
+        college = ctx.get("c") or {}
+        ctx.setdefault("portal_college", college.get("name") or "College")
+        ctx.setdefault("portal_crest", bool("nkumbi" in str(college.get("name") or "").lower()))
+        tpl = (PORTAL_SHELL_CSS + '<div class="svc-outer">'
+               '<div class="svc-top">{% if portal_crest %}<img src="{{ url_for(\'static\', filename=\'nkumbi-crest.jpg\') }}" alt="Nkumbi International College crest">{% endif %}'
+               '<div><h2>{{ portal_college }}</h2><p>College information system</p></div></div>'
+               '<div class="svc-nav"><a href="{{ url_for(\'ac_student_portal\', aid=portal_aid) }}">Home</a>'
+               '<a href="{{ url_for(\'ac_svc_timetable\', aid=portal_aid) }}">Timetable</a>'
+               '<a href="{{ url_for(\'ac_svc_ca\', aid=portal_aid) }}">View CA</a>'
+               '<a href="{{ url_for(\'ac_svc_grades\', aid=portal_aid) }}">Grades</a>'
+               '<a href="{{ url_for(\'ac_application_money\', aid=portal_aid) }}">Payments</a>'
+               '<a href="{{ url_for(\'logout\') }}">Log out</a></div>'
+               '<div class="portal"><nav class="portal-menu">'
                '<div class="portal-id"><small>Current user: <b>{{ portal_sid }}</b></small></div>'
                '<div class="portal-role">Basic student <span>&#9662;</span></div>'
                '{{ portal_menu }}</nav>'
                '<div class="portal-main"><div class="portal-head"><div class="portal-crumb">Home &gt; {{ portal_title }}</div>'
                '<div class="portal-name">Name: {{ portal_name }}</div></div>'
-               '<div class="portal-title">{{ portal_title }}</div><div class="portal-body">'
-               + tpl + '</div></div></div>')
+               '<div class="portal-body">'
+               + tpl + '</div></div></div></div>')
     return render_page(title, tpl, **ctx)
 
 
@@ -23954,7 +23967,8 @@ def ac_college_view(slug):
         enrolled_app = next((e for e in mine if e.get("status") in ("offered", "accepted", "enrolled")), None)
     return _ac_page(c.get("name") or "College", r'''
 <style>
-  .ent-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap}
+  .ent-outer{background:transparent;border:0;border-radius:0;box-shadow:none;padding:0;margin:0 calc(50% - 50vw);width:100vw;max-width:100vw;overflow:hidden}
+  .ent-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap;border:0}
   .ent-top img{width:70px;height:70px;object-fit:contain}
   .ent-top h2{margin:0;font-size:19px;font-weight:normal;color:#222;text-transform:uppercase}
   .ent-top .small{margin:2px 0 0;color:#555;font-size:12px}
@@ -23963,7 +23977,7 @@ def ac_college_view(slug):
   .ent-nav a:hover{background:#0848a8}
   .ent-hero{background:#2d4a3a url('{{ url_for('static', filename='college-library-bg.jpg') }}') center/cover no-repeat;padding:14px 8px 18px}
   .ent-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:900px;margin:0 auto;align-items:start}
-  .ent-panel{background:#fff;color:#222;padding:10px;border:1px solid #bbb}
+  .ent-panel{background:#fff;color:#222;padding:10px;border:0;border-radius:0}
   .ent-panel h3{font-size:11px;margin:0 0 6px;color:#222;text-transform:uppercase}
   .ent-panel p{font-size:11px;margin:4px 0;line-height:1.35}
   .ent-panel .btn{display:block;text-align:center;margin:6px 0;width:100%;box-sizing:border-box;color:#fff !important;text-decoration:none;padding:8px 4px;font-size:11px;border:0;border-radius:0}
@@ -23976,7 +23990,7 @@ def ac_college_view(slug):
   .ent-form .btn{margin:0;padding:5px}
   .ent-foot{background:#f3f3f3;color:#555;font-size:11px;padding:8px 14px;border-top:1px solid #d9dde3}
 </style>
-<div class="card" style="padding:0;overflow:hidden">
+<div class="ent-outer">
   <div class="ent-top">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest">{% endif %}<div><h2>{{ c.name }}</h2><p class="small">College information system</p></div></div>
   <div class="ent-nav"><a href="{{ request.path }}">Home</a><a href="#courses">Courses</a><a href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled?</a>{% if user %}<a href="{{ url_for('ac_my_applications') }}">My services</a>{% else %}<a href="{{ url_for('login', next=request.path) }}">Log in</a>{% endif %}</div>
   <div class="ent-hero"><div class="ent-wrap">
@@ -24535,6 +24549,9 @@ def ac_application_view(aid):
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
     is_owner = _college_is_owner(c)
     is_student = a.get("student_user_id") == _ac_uid()
+    if is_student:
+        g.portal_app = a
+        g.portal_plain = False
     if not is_student and not is_owner:
         abort(404)
     if is_owner and not is_student and a.get("status") == "draft":
@@ -24902,6 +24919,8 @@ def ac_student_portal(aid):
         if rinfo:
             room_label = "%s · Room %s · Bed %s" % (rinfo["hostel"]["name"], rinfo["room"]["room_code"], rinfo["bed"]["number"])
     room_status = ("Provisional reservation" if _accommodation_gate(c, a) else "Confirmed") if room_label else None
+    g.portal_app = a
+    g.portal_plain = False
     return _ac_page("Student portal", r"""
 <div>
     <div class="card"><h3>Home</h3>
@@ -24986,8 +25005,11 @@ def ac_svc_helpdesk(aid):
             flash("Message sent." if not err else "Could not send your message. Please try again.", "success" if not err else "danger")
         return redirect(url_for("ac_svc_helpdesk", aid=aid))
     thread = _ac_rows("koja_college_messages", {"application_id": aid}, order="created_at.asc", limit=500)
+    if is_student:
+        g.portal_app = a
+        g.portal_plain = False
     return _ac_page("Helpdesk", r'''
-<div class="card"><h2>Helpdesk</h2><p class="small">{{ c.name }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h2>Helpdesk</h2><p class="small">{{ c.name }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 <div class="card" id="support"><h3>Help and self-service</h3>
 <p class="small">Try these first. Most problems can be fixed here without waiting for the college.</p>
 <ul>
@@ -25016,17 +25038,25 @@ def ac_svc_helpdesk(aid):
 
 PORTAL_SHELL_CSS = """
 <style>
-  .portal{display:grid;grid-template-columns:230px 1fr;gap:0;align-items:start;border:1px solid #ccc;background:#f5f5f5}
-  .portal-menu{display:flex;flex-direction:column;background:#fff;border-right:1px solid #ccc;min-height:100%}
+  .svc-outer{margin:0 calc(50% - 50vw);width:100vw;max-width:100vw;overflow:hidden}
+  .svc-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap}
+  .svc-top img{width:64px;height:64px;object-fit:contain}
+  .svc-top h2{margin:0;font-size:18px;font-weight:normal;text-transform:uppercase}
+  .svc-top p{margin:2px 0 0;color:#555;font-size:12px}
+  .svc-nav{display:flex;flex-wrap:wrap;background:#0a5bd1}
+  .svc-nav a{flex:1 1 90px;color:#fff;text-decoration:none;text-align:center;padding:9px 4px;font-size:12px;border-right:1px solid #3c7fe0}
+  .svc-nav a:hover{background:#0848a8}
+  .portal{display:grid;grid-template-columns:230px 1fr;gap:0;align-items:start;border:0;border-radius:0;background:transparent}
+  .portal-menu{display:flex;flex-direction:column;background:#fff;border:0;border-radius:0;min-height:100%}
   .portal-id{background:#8a8f98;color:#fff;padding:8px 10px;font-size:12px}
   .portal-id b{font-size:13px}
-  .portal-role{background:#fff;border-bottom:1px solid #ccc;padding:8px 10px;font-size:13px;color:#111;font-weight:bold}
+  .portal-role{background:#fff;border:0;padding:8px 10px;font-size:13px;color:#111;font-weight:bold}
   .portal-role span{float:right;color:#555}
   .portal-menu a,.portal-menu span.off{display:block;padding:7px 14px;font-size:13px;text-decoration:none;color:#222 !important;background:#fff !important;border-bottom:0}
   .portal-menu a:hover{background:#eef3ff !important;color:#1d4ed8 !important}
   .portal-menu span.off{color:#888 !important;background:#f7f7f7 !important;cursor:default}
   .portal-menu span.off small{display:block;font-size:11px}
-  .portal-main{background:#fff;min-width:0;padding-bottom:14px}
+  .portal-main{background:transparent;min-width:0;padding-bottom:14px;border:0;border-radius:0}
   .portal-head{background:#5b93c9;color:#fff;padding:9px 14px;font-size:12px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
   .portal-crumb{font-weight:bold}
   .portal-name{font-weight:bold;font-size:13px}
@@ -25077,7 +25107,7 @@ def _svc_student_academic(aid, title, template, extra=None, plain=False):
     try:
         if not _svc_can_use(a):
             return _ac_page(title, r'''<div class="card"><h2>%s</h2><p>This opens once you accept your place.</p>
-<p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''' % title, back=_svc_back(aid))
+<p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>''' % title, back=_svc_back(aid))
         return template(a, c, course, extra or {})
     finally:
         g.portal_app = None
@@ -25104,7 +25134,7 @@ def ac_svc_grades(aid):
         marks = _ac_rows("koja_college_marks", {"application_id": aid}, order="module.asc", limit=300) if released else []
         marks = [dict(m, score=_posted_score(m, c)) for m in marks]
         return _ac_page("Grades", r'''
-<div class="card"><h2>Grades</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p>{% if not released %}<p><strong>Your results are held.</strong> Results are released once at least {{ '%g' % pct }}% of your fees are paid. Contact accounts if you have an agreed exception.</p>{% endif %}</div>
+<div class="card"><h2>Grades</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p>{% if not released %}<p><strong>Your results are held.</strong> Results are released once at least {{ '%g' % pct }}% of your fees are paid. Contact accounts if you have an agreed exception.</p>{% endif %}</div>
 <div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th>Score</th><th>Grade</th></tr>
 {% for m in marks %}<tr style="border-top:1px solid #ddd"><td>{{ m.module }}</td><td align="center">{{ ('%g' | format(m.score)) ~ '%' if m.score is not none else '-' }}</td><td align="center"><strong>{{ m.grade or '-' }}</strong></td></tr>
 {% else %}<tr><td colspan="3" class="small">No grades posted yet.</td></tr>{% endfor %}</table></div>''',
@@ -25450,8 +25480,8 @@ def ac_svc_timetable(aid):
         slots, group, registered = _tt_student_slots(a)
         periods, grid, other = _tt_grid(slots)
         return _ac_page("Timetable", r'''
-<div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }} · Group {{ group }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
-{% if slots %}<div class="card" style="overflow-x:auto;background:#fff;color:#111">
+<div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }} · Group {{ group }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
+{% if slots %}<div class="card" style="overflow-x:auto">
 <style>
   @media (max-width:640px){
     .tt-grid tr{display:block;border:1px solid #888 !important;border-radius:6px;margin-bottom:10px;overflow:hidden}
@@ -25469,8 +25499,8 @@ def ac_svc_timetable(aid):
 {% endfor %}</table>
 {% if other %}<h3 style="margin-top:14px">Other times</h3>{% for s in other %}<p class="small"><strong>{{ s.module }}</strong> &middot; {{ s.day }} {{ s.starts }}&ndash;{{ s.ends }}{% if s.venue %} &middot; {{ s.venue }}{% endif %}{% if s.lecturer %} &middot; {{ s.lecturer }}{% endif %}</p>{% endfor %}{% endif %}
 </div>
-{% else %}<div class="card">{% if not registered %}<p class="small">Register for your modules first. Your timetable appears once you have registered.</p>{% else %}<p class="small">Your timetable has not been published yet.</p>{% endif %}</div>{% endif %}''',
-                         back=_svc_back(aid), c=c, course=course, slots=slots, group=group, registered=registered, periods=periods, grid=grid, other=other)
+{% else %}<div class="card">{% if not registered %}<p class="small">Register for your modules first. Your timetable appears once you have registered.</p><p><a class="btn" href="{{ url_for('ac_svc_registration', aid=aid) }}">Register for modules</a></p>{% else %}<p class="small">Your timetable has not been published yet.</p>{% endif %}</div>{% endif %}''',
+                         back=_svc_back(aid), aid=aid, c=c, course=course, slots=slots, group=group, registered=registered, periods=periods, grid=grid, other=other)
     return _svc_student_academic(aid, "Timetable", build)
 
 
@@ -25483,7 +25513,7 @@ def ac_svc_registration(aid):
             return _ac_page("Course registration", r'''
 <div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p>
 <p>You can register once you have paid at least {{ pct }}% of your fees. Paid {{ '%.2f' % paid }} of {{ '%.2f' % total }}.</p>
-<p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''', c=c, course=course, pct=int(float(_ca_settings(c).get("registration_fee_percent") if _ca_settings(c).get("registration_fee_percent") is not None else 50)), paid=paid, total=total, back=_svc_back(aid))
+<p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>''', c=c, course=course, pct=int(float(_ca_settings(c).get("registration_fee_percent") if _ca_settings(c).get("registration_fee_percent") is not None else 50)), paid=paid, total=total, back=_svc_back(aid))
         modules = _course_module_names(a["college_id"], a["course_id"])
         if request.method == "POST":
             chosen = list(dict.fromkeys(m for m in request.form.getlist("module") if m in modules))
@@ -25502,7 +25532,7 @@ def ac_svc_registration(aid):
             return redirect(url_for("ac_svc_registration", aid=aid))
         taken = {r["module"] for r in _ac_rows("koja_college_registrations", {"application_id": aid}, limit=300)}
         return _ac_page("Course registration", r'''
-<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h2>Course registration</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 <div class="card"><form method="post">{{ csrf }}
 {% for m in modules %}<label style="display:block;margin:6px 0"><input type="checkbox" name="module" value="{{ m }}" {{ 'checked' if m in taken }}> {{ m }}</label>
 {% else %}<p class="small">No modules have been posted for your course yet.</p>{% endfor %}
@@ -25525,7 +25555,7 @@ def ac_svc_evaluation(aid):
                 return redirect(url_for("ac_svc_evaluation", aid=aid))
             flash("Choose a rating from 1 to 5.", "danger")
         return _ac_page("Course evaluation", r'''
-<div class="card"><h2>Course evaluation</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h2>Course evaluation</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 {% if existing %}<div class="card"><p>Thank you. You rated this course <strong>{{ existing.rating }}/5</strong>.</p>{% if existing.comment %}<p class="small">{{ existing.comment }}</p>{% endif %}</div>
 {% else %}<div class="card"><form method="post">{{ csrf }}
 <label>Rating (1 = poor, 5 = excellent)<select name="rating" required><option value="">Choose</option>{% for n in [1,2,3,4,5] %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select></label>
@@ -26892,7 +26922,7 @@ def ac_svc_ca(aid):
                          "total": num(total) if (published and complete) else None,
                          "status": total_status})
         return _ac_page("View CA", r'''
-<div class="card"><h2>View CA</h2><p class="small">{{ c.name }} · {{ course.title }} · continuous assessment</p><p><a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<div class="card"><h2>View CA</h2><p class="small">{{ c.name }} · {{ course.title }} · continuous assessment</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 {% if rows %}<div class="card" style="overflow-x:auto;background:#fff;color:#111">
 <table style="width:100%;border-collapse:collapse;font-size:14px">
 <tr style="background:#1d4e89;color:#fff"><th align="left">Course code</th><th align="left">Course name</th><th align="left">Assessment component</th><th>Weight</th><th>CA</th><th>Exam</th><th>Marks obtained</th><th align="left">Status</th></tr>
@@ -26919,14 +26949,14 @@ def ac_svc_docket(aid):
 <div class="card"><h2>Exam docket</h2><p class="small">{{ c.name }}</p>
 <p><strong>Your exam docket is not available yet.</strong></p>
 <ul>{% for r in cl.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
-<p><a class="btn secondary" href="{{ back }}">Back</a></p></div>''', c=c, cl=cl, back=_svc_back(aid))
+<p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>''', c=c, cl=cl, back=_svc_back(aid))
         slots = [s for s in _ac_rows_all("koja_college_timetable", {"course_id": a["course_id"]}) if s.get("published") and s.get("grp") == (a.get("study_group") or "A")]
         lines = [{"module": m, "slots": sorted([s for s in slots if s["module"] == m], key=_svc_day_key)} for m in cl["modules"]]
         return _ac_page("Exam docket", r'''
 <div class="card"><h2>Exam docket</h2><p class="small">{{ c.name }}</p>
 <p><strong>Name:</strong> {{ a.full_name }}<br><strong>Student number:</strong> {{ a.student_number or 'not issued yet' }}<br><strong>Programme:</strong> {{ course.title }}</p>
 <p class="small">Fees paid: {{ '%.2f' % cl.paid }} of {{ '%.2f' % cl.total }} · Balance {{ '%.2f' % cl.balance }}</p>
-<p class="no-print"><button class="btn" type="button" onclick="window.print()">Print docket</button> <a class="btn secondary" href="{{ back }}">Back</a></p></div>
+<p class="no-print"><button class="btn" type="button" onclick="window.print()">Print docket</button> {% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 <div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">Module</th><th align="left">Day and time</th><th align="left">Venue</th></tr>
 {% for l in lines %}{% for s in l.slots %}<tr style="border-top:1px solid #ddd"><td>{{ l.module }}</td><td>{{ s.day }} {{ s.starts }}–{{ s.ends }}</td><td>{{ s.venue or '' }}</td></tr>{% else %}<tr style="border-top:1px solid #ddd"><td>{{ l.module }}</td><td colspan="2" class="small">Time not posted yet</td></tr>{% endfor %}{% endfor %}</table></div>''',
                          a=a, c=c, course=course, cl=cl, lines=lines, back=_svc_back(aid))
@@ -27708,12 +27738,15 @@ def ac_application_money(aid):
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
     is_owner = _college_is_owner(c)
     is_student = a.get("student_user_id") == _ac_uid()
+    if is_student:
+        g.portal_app = a
+        g.portal_plain = False
     if not is_owner and not is_student:
         abort(404)
     if not _fin_student_ok(a):
         return _ac_page("Fees and payments", r'''<div class="card"><h2>Fees and payments</h2>
 <p>Fees and payments open once your application is accepted.</p>
-<p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''', a=a)
+{% if not portal_menu %}<p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p>{% endif %}</div>''', a=a)
     charges, payments, total, paid, bal = _fin_totals(aid)
     return _ac_page("Fees and payments", r'''
 <div class="card"><h2>Fees and payments</h2><p class="small">{{ c.name }} · {{ a.full_name }}{% if a.student_number %} · {{ a.student_number }}{% endif %}</p>
@@ -27989,6 +28022,8 @@ def ac_application_room(aid):
     a = first_row("koja_college_applications", {"id": aid})
     if not a or a.get("student_user_id") != _ac_uid():
         abort(404)
+    g.portal_app = a
+    g.portal_plain = False
     c = first_row("koja_colleges", {"id": a["college_id"]}) or {}
     status_ok = a.get("status") in ("accepted", "enrolled")
     current = first_row("koja_accommodation_allocations", {"application_id": aid, "status": "active"})
@@ -28062,8 +28097,7 @@ def ac_application_room(aid):
 </div>
 {% if gate %}<div class="card" style="background:#fff;color:#111"><p><strong>Locked.</strong> {{ gate }}</p></div>{% endif %}
 {% endif %}
-<p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p></div>''',
-                    a=a, c=c, status_ok=status_ok, current_label=current_label, status_text=status_text, billing_notice=billing_notice,
+{% if not portal_menu %}<p class="small"><a href="{{ url_for('ac_application_view', aid=a.id) }}">Back to your application</a></p>{% endif %}</div>''',                    a=a, c=c, status_ok=status_ok, current_label=current_label, status_text=status_text, billing_notice=billing_notice,
                     gate=gate, choices=choices, sel=sel, rows=rows, csrf_ok=True)
 
 
