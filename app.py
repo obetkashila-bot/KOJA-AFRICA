@@ -22399,7 +22399,17 @@ def _ac_page(title, tpl, **ctx):
     portal_app = g.get("portal_app")
     if portal_app is not None and not g.get("portal_plain"):
         ctx.setdefault("portal_menu", _portal_menu_html(portal_app))
-        tpl = PORTAL_SHELL_CSS + '<div class="portal"><nav class="portal-menu">{{ portal_menu }}</nav><div>' + tpl + '</div></div>'
+        ctx.setdefault("portal_sid", portal_app.get("student_number") or "")
+        ctx.setdefault("portal_name", portal_app.get("full_name") or "")
+        ctx.setdefault("portal_title", title)
+        tpl = (PORTAL_SHELL_CSS + '<div class="portal"><nav class="portal-menu">'
+               '<div class="portal-id"><small>Current user: <b>{{ portal_sid }}</b></small></div>'
+               '<div class="portal-role">Basic student <span>&#9662;</span></div>'
+               '{{ portal_menu }}</nav>'
+               '<div class="portal-main"><div class="portal-head"><div class="portal-crumb">Home &gt; {{ portal_title }}</div>'
+               '<div class="portal-name">Name: {{ portal_name }}</div></div>'
+               '<div class="portal-title">{{ portal_title }}</div><div class="portal-body">'
+               + tpl + '</div></div></div>')
     return render_page(title, tpl, **ctx)
 
 
@@ -23524,16 +23534,6 @@ NKUMBI_PROGRAMMES = [
 COLLEGE_SCHOOLS = ["School of Agriculture", "School of Business", "School of Education", "School of Engineering and Trades", "School of Short Courses", "Other programmes"]
 
 
-# Verified institutional profile description for Nkumbi International College.
-NKUMBI_COLLEGE_DESCRIPTION = (
-    "Nkumbi International College is a tertiary education and skills development institution "
-    "located in Kapiri Mposhi, Central Province, Zambia. The college provides academic and "
-    "vocational training, equipping students with practical skills and professional knowledge "
-    "for employment, entrepreneurship and community development. It promotes quality education, "
-    "innovation, professional development and lifelong learning."
-)
-
-
 def _school_for_text(text):
     """Maps a programme's group or description to its school (used for the Nkumbi seed and for programmes with no school set)."""
     t = (text or "").lower()
@@ -23952,14 +23952,12 @@ def ac_college_view(slug):
         mine_ids = {e.get("course_id") for e in mine}
         # once a place is accepted or enrolled here, the student uses college services instead of applying again
         enrolled_app = next((e for e in mine if e.get("status") in ("offered", "accepted", "enrolled")), None)
-    college_about = (NKUMBI_COLLEGE_DESCRIPTION if "nkumbi" in (c.get("name") or "").lower()
-                     else c.get("about") or "")
     return _ac_page(c.get("name") or "College", r'''
 <div class="card">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:120px;display:block;margin:0 auto 10px"> {% endif %}<h2>{{ c.name }}</h2>
 <p class="small">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</p>
-{% if college_about %}<p>{{ college_about }}</p>{% endif %}
+{% if c.about %}<p>{{ c.about }}</p>{% endif %}
 <p><a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled? Register here</a></p>
-{% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}{% if is_owner %}<form method="post" action="{{ url_for('ac_college_details', slug=c.slug) }}" class="small" style="margin-top:10px">{{ csrf }}<label>Description (shown under the name)<textarea name="about" rows="5" maxlength="3000">{{ college_about }}</textarea></label><label>Location<input name="location" maxlength="200" value="{{ c.location or '' }}"></label><label>Phone / contact<input name="contact" maxlength="200" value="{{ c.contact or '' }}"></label><button class="btn secondary" type="submit">Save college details</button></form>{% endif %}
+{% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}{% if is_owner %}<form method="post" action="{{ url_for('ac_college_details', slug=c.slug) }}" class="small" style="margin-top:10px">{{ csrf }}<label>Description (shown under the name)<textarea name="about" rows="3" maxlength="3000">{{ c.about or '' }}</textarea></label><label>Location<input name="location" maxlength="200" value="{{ c.location or '' }}"></label><label>Phone / contact<input name="contact" maxlength="200" value="{{ c.contact or '' }}"></label><button class="btn secondary" type="submit">Save college details</button></form>{% endif %}
 </div>
 {% if enrolled_app and enrolled_app.status == 'offered' %}<div class="card"><h3>You have an offer</h3>
 <p class="small">You have been offered a place here. You do not need to apply again. Open your application to accept or decline the offer.</p>
@@ -23995,7 +23993,7 @@ def ac_college_view(slug):
 <p class="small">{{ enrolments|length }} application(s) so far.</p>
 <p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a> <a class="btn secondary" href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> <a class="btn secondary" href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> <a class="btn secondary" href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p></div>
 {% endif %}''',
-                    c=c, courses=courses, school_groups=school_groups, school_choices=COLLEGE_SCHOOLS, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err, college_about=college_about)
+                    c=c, courses=courses, school_groups=school_groups, school_choices=COLLEGE_SCHOOLS, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err)
 
 
 def _course_code_2(v):
@@ -24070,6 +24068,8 @@ def ac_college_details(slug):
     else:
         _college_audit(c, "college.details", "about, location and contact updated")
         flash("College details saved.", "success")
+    if request.form.get("back") == "dashboard":
+        return redirect(url_for("ac_college_dashboard", slug=slug))
     return redirect(url_for("ac_college_view", slug=slug))
 
 
@@ -24994,13 +24994,23 @@ def ac_svc_helpdesk(aid):
 
 PORTAL_SHELL_CSS = """
 <style>
-  .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
-  .portal-menu{display:flex;flex-direction:column;gap:6px}
-  .portal-menu a,.portal-menu span{display:block;padding:9px 12px;border:1px solid #ccc;border-radius:6px;text-decoration:none;color:#111 !important;background:#fff !important}
-  .portal-menu a:hover{background:#eef3ff !important}
-  .portal-menu .off{color:#666 !important;background:#f4f4f4 !important;cursor:default}
-  .portal-menu .off small{display:block;font-size:11px}
-  @media (max-width:760px){ .portal{grid-template-columns:1fr} }
+  .portal{display:grid;grid-template-columns:230px 1fr;gap:0;align-items:start;border:1px solid #ccc;background:#f5f5f5}
+  .portal-menu{display:flex;flex-direction:column;background:#fff;border-right:1px solid #ccc;min-height:100%}
+  .portal-id{background:#8a8f98;color:#fff;padding:8px 10px;font-size:12px}
+  .portal-id b{font-size:13px}
+  .portal-role{background:#fff;border-bottom:1px solid #ccc;padding:8px 10px;font-size:13px;color:#111;font-weight:bold}
+  .portal-role span{float:right;color:#555}
+  .portal-menu a,.portal-menu span.off{display:block;padding:7px 14px;font-size:13px;text-decoration:none;color:#222 !important;background:#fff !important;border-bottom:0}
+  .portal-menu a:hover{background:#eef3ff !important;color:#1d4ed8 !important}
+  .portal-menu span.off{color:#888 !important;background:#f7f7f7 !important;cursor:default}
+  .portal-menu span.off small{display:block;font-size:11px}
+  .portal-main{background:#fff;min-width:0;padding-bottom:14px}
+  .portal-head{background:#5b93c9;color:#fff;padding:9px 14px;font-size:12px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .portal-crumb{font-weight:bold}
+  .portal-name{font-weight:bold;font-size:13px}
+  .portal-title{font-size:18px;font-weight:bold;color:#111;padding:12px 16px 2px}
+  .portal-body{padding:0 16px 8px}
+  @media (max-width:760px){ .portal{grid-template-columns:1fr} .portal-menu{border-right:0;border-bottom:1px solid #ccc} }
 </style>
 """
 
@@ -25036,7 +25046,7 @@ def _portal_menu_html(a):
     return Markup("".join(out))
 
 
-def _svc_student_academic(aid, title, template, extra=None, plain=True):
+def _svc_student_academic(aid, title, template, extra=None, plain=False):
     a, c, course, is_student, is_manager = _svc_app(aid)
     if not is_student:
         abort(404)
@@ -26874,7 +26884,7 @@ def ac_svc_ca(aid):
 <p class="small" style="margin-top:8px">Exam eligibility needs all of your CA published and complete. Exam entry also depends on your fees.</p><p class="small">How Marks obtained is worked out: CA (out of 50) + Exam ÷ 2 (exam out of 100), so the total is out of 100. The Weight column shows the same total as a percentage.</p>
 </div>{% else %}<div class="card"><p class="small">You have no registered modules yet.</p></div>{% endif %}''',
                          back=_svc_back(aid), c=c, course=course, rows=rows, out_of=num(_ca_out_of(c)), course_code=course.get("course_code"))
-    return _svc_student_academic(aid, "View CA", build, plain=True)
+    return _svc_student_academic(aid, "View CA", build)
 
 
 @app.route("/academic/services/<aid>/docket")
@@ -36321,6 +36331,7 @@ def ac_college_dashboard(slug):
     issued = len(_ac_rows_all("koja_mattress_issues", {"college_id": c["id"]}))
     staff = _ac_rows("koja_college_staff", {"college_id": c["id"]}, order="created_at.asc", limit=200)
     return _ac_page("Dashboard", r'''
+<div class="card"><h3>College description, location and contact</h3><p class="small">These show on the college page for students and applicants.</p><form method="post" action="{{ url_for('ac_college_details', slug=c.slug) }}">{{ csrf }}<input type="hidden" name="back" value="dashboard"><label>Description (shown under the name)<textarea name="about" rows="4" maxlength="3000">{{ c.about or '' }}</textarea></label><label>Location<input name="location" maxlength="200" value="{{ c.location or '' }}"></label><label>Phone / contact<input name="contact" maxlength="200" value="{{ c.contact or '' }}"></label><button class="btn" type="submit">Save college details</button></form></div>
 <div class="card"><h2>Management dashboard: {{ c.name }}</h2>
 <p class="small"><a href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> · <a href="{{ url_for('ac_college_accommodation', slug=c.slug) }}">Hostels and rooms</a> · <a href="{{ url_for('ac_college_mattresses', slug=c.slug) }}">Mattress stores</a> · <a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Admissions</a></p></div>
 <div class="card"><h3>Overview</h3>
