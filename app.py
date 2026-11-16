@@ -970,7 +970,7 @@ BASE_HTML = r"""
 <html lang="en" data-koja-theme="system" data-wp="{{ wallpaper|default(1) }}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="{{ 'width=1100, initial-scale=1' if desktop_viewport else 'width=device-width, initial-scale=1' }}">
 <meta name="description" content="{{ meta_description or 'Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.' }}">
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
@@ -1664,7 +1664,7 @@ def render_page(title, body_template, **context):
         graph.insert(0, website)
         seo_jsonld = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False)
 
-    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, wallpaper=wp, meta_description=descriptions.get(title, "Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa."), seo_jsonld=seo_jsonld)
+    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, wallpaper=wp, desktop_viewport=context.get('desktop_viewport', False), meta_description=descriptions.get(title, "Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa."), seo_jsonld=seo_jsonld)
 
 # ============================================================
 # USER SETTINGS
@@ -22394,6 +22394,7 @@ def _ac_teacher_for_user(uid=None):
 
 
 def _ac_page(title, tpl, **ctx):
+    ctx.setdefault("desktop_viewport", True)
     ctx.setdefault("csrf", Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
     ctx.setdefault("money", market_money)
     portal_app = g.get("portal_app")
@@ -25062,7 +25063,6 @@ PORTAL_SHELL_CSS = """
   .portal-name{font-weight:bold;font-size:13px}
   .portal-title{font-size:18px;font-weight:bold;color:#111;padding:12px 16px 2px}
   .portal-body{padding:0 16px 8px}
-  @media (max-width:760px){ .portal{grid-template-columns:1fr} .portal-menu{border-right:0;border-bottom:1px solid #ccc} }
 </style>
 """
 
@@ -25483,14 +25483,9 @@ def ac_svc_timetable(aid):
 <div class="card"><h2>Timetable</h2><p class="small">{{ c.name }} · {{ course.title }} · Group {{ group }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p></div>
 {% if slots %}<div class="card" style="overflow-x:auto">
 <style>
-  @media (max-width:640px){
-    .tt-grid tr{display:block;border:1px solid #888 !important;border-radius:6px;margin-bottom:10px;overflow:hidden}
-    .tt-grid tr:first-child{display:none}
-    .tt-grid td{display:block;border:none !important;border-top:1px solid #ddd !important;min-width:0 !important}
-    .tt-grid td:first-child{background:#1d4e89 !important;color:#fff;font-size:15px}
-    .tt-grid td.tt-empty{display:none}
-    .tt-grid td[data-label]::before{content:attr(data-label);display:block;font-weight:bold;font-size:11px;color:#555;margin-bottom:2px}
-  }
+  .tt-grid{width:100%;border-collapse:collapse}
+  .tt-grid th,.tt-grid td{border:1px solid #888;padding:6px;vertical-align:top}
+  .tt-grid td{min-width:110px}
 </style>
 <table class="tt-grid" style="width:100%;border-collapse:collapse;font-size:13px">
 <tr style="background:#1d4e89;color:#fff"><th align="left" style="border:1px solid #888;padding:6px">Day</th>{% for p, t in periods %}<th style="border:1px solid #888;padding:6px">{{ t[0] }}&ndash;{{ t[1] }}</th>{% endfor %}</tr>
