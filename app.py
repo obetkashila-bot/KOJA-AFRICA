@@ -970,7 +970,7 @@ BASE_HTML = r"""
 <html lang="en" data-koja-theme="system" data-wp="{{ wallpaper|default(1) }}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="{{ 'width=1100, initial-scale=1' if desktop_viewport else 'width=device-width, initial-scale=1' }}">
+<meta name="viewport" content="width=1100, initial-scale=1">
 <meta name="description" content="{{ meta_description or 'Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.' }}">
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
@@ -2585,6 +2585,140 @@ def register():
 </div>
 """)
 
+def _staff_landing_url(next_value):
+    """After login: college staff (and the owner) go to their staff services, not the college page."""
+    m = re.match(r"^/academic/college/([^/?#]+)", str(next_value or ""))
+    if not m:
+        return None
+    try:
+        c = _college_by_slug(m.group(1))
+        if c and (_college_is_owner(c) or _college_any_staff(c) or _ca_my_assignments(c)):
+            return url_for("ac_college_staff_home", slug=c["slug"])
+    except Exception:
+        logger.exception("staff landing check failed")
+    return None
+
+
+@app.route("/academic/college/<slug>/heads", methods=["POST"])
+@login_required
+def ac_college_head_add(slug):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    school = clean(request.form.get("school"))
+    user = find_user_by_email(request.form.get("email"))
+    if school not in COLLEGE_SCHOOLS:
+        flash("Choose a school.", "danger")
+    elif not user or not user.get("id"):
+        flash("No KOJA account uses that email yet. Ask the person to sign up first.", "danger")
+    else:
+        email = clean(request.form.get("email")).lower()
+        row = {"id": str(uuid.uuid4()), "college_id": c["id"], "school": school, "user_id": str(user["id"]),
+               "email": email, "created_at": utc_now()}
+        db_delete("koja_college_school_heads", {"college_id": c["id"], "school": school})
+        _, err = db_insert("koja_college_school_heads", row)
+        if err:
+            flash("Could not save the head of school. Run koja_college_school_heads.sql first.", "danger")
+        else:
+            _college_audit(c, "head.set", "%s: %s" % (school, email))
+            flash("Head of school saved for %s." % school, "success")
+    return redirect(url_for("ac_college_dashboard", slug=c["slug"]))
+
+
+@app.route("/academic/college/<slug>/heads/<hid>/remove", methods=["POST"])
+@login_required
+def ac_college_head_remove(slug, hid):
+    c = _college_by_slug(slug)
+    if not _college_is_owner(c):
+        abort(403)
+    db_delete("koja_college_school_heads", {"id": hid, "college_id": c["id"]})
+    _college_audit(c, "head.removed", hid)
+    flash("Head of school removed.", "success")
+    return redirect(url_for("ac_college_dashboard", slug=c["slug"]))
+
+
+@app.route("/academic/college/<slug>/my-classes")
+@login_required
+def ac_college_my_classes(slug):
+    """Lecturer: the students enrolled in each module assigned to them."""
+    c = _college_by_slug(slug)
+    mine = _ca_my_assignments(c) if c else []
+    if not mine and not _college_is_owner(c):
+        abort(403)
+    blocks = []
+    for r in mine:
+        students = _ca_module_students(c, r["course_id"], r["module"])
+        blocks.append({"module": r["module"], "students": students})
+    return _ac_page("My class lists", r'''
+<h2>My class lists</h2>
+<p class="small">{{ c.name }}</p>
+{% for b in blocks %}<h3 style="margin-top:16px">{{ b.module }} <span class="small">({{ b.students|length }} students)</span></h3>
+<table style="width:100%;border-collapse:collapse">
+<tr style="border-bottom:1px solid #888"><th align="left" style="padding:4px">Student number</th><th align="left" style="padding:4px">Name</th></tr>
+{% for st in b.students %}<tr style="border-bottom:1px solid #ddd"><td style="padding:4px">{{ st.student_number or '—' }}</td><td style="padding:4px">{{ st.full_name }}</td></tr>{% else %}<tr><td class="small" colspan="2">No students registered for this module yet.</td></tr>{% endfor %}
+</table>{% else %}<p class="small">No modules are assigned to you yet.</p>{% endfor %}
+<p class="small"><a href="{{ url_for('ac_college_staff_home', slug=c.slug) }}">Back to Staff services</a></p>
+''', c=c, blocks=blocks)
+
+
+@app.route("/academic/college/<slug>/my-timetable")
+@login_required
+def ac_college_my_timetable(slug):
+    """Lecturer: the timetable slots for the modules assigned to them."""
+    c = _college_by_slug(slug)
+    mine = _ca_my_assignments(c) if c else []
+    if not mine and not _college_is_owner(c):
+        abort(403)
+    my_modules = {r["module"] for r in mine}
+    slots = [x for x in _ac_rows_all("koja_college_timetable", {"college_id": c["id"]}) if x.get("module") in my_modules]
+    slots = sorted(slots, key=_svc_day_key)
+    return _ac_page("My teaching timetable", r'''
+<h2>My teaching timetable</h2>
+<p class="small">{{ c.name }}</p>
+<table style="width:100%;border-collapse:collapse">
+<tr style="border-bottom:1px solid #888"><th align="left" style="padding:4px">Day</th><th align="left" style="padding:4px">Time</th><th align="left" style="padding:4px">Module</th><th align="left" style="padding:4px">Group</th><th align="left" style="padding:4px">Venue</th><th align="left" style="padding:4px">Published</th></tr>
+{% for x in slots %}<tr style="border-bottom:1px solid #ddd"><td style="padding:4px">{{ x.day }}</td><td style="padding:4px">{{ x.starts }}–{{ x.ends }}</td><td style="padding:4px">{{ x.module }}</td><td style="padding:4px">{{ x.grp or '' }}</td><td style="padding:4px">{{ x.venue or '' }}</td><td style="padding:4px">{{ 'Yes' if x.published else 'Not yet' }}</td></tr>{% else %}<tr><td class="small" colspan="6">No teaching slots for your modules yet.</td></tr>{% endfor %}
+</table>
+<p class="small"><a href="{{ url_for('ac_college_staff_home', slug=c.slug) }}">Back to Staff services</a></p>
+''', c=c, slots=slots)
+
+
+@app.route("/academic/college/<slug>/staff-home")
+@login_required
+def ac_college_staff_home(slug):
+    """Staff services: the entries a college staff member or the owner can open."""
+    c = _college_by_slug(slug)
+    mine_modules = _ca_my_assignments(c) if c else []
+    if not c or not (_college_is_owner(c) or _college_any_staff(c) or mine_modules):
+        abort(403)
+    owner = _college_is_owner(c)
+    entries = [
+        ("Continuous assessment (CA)", url_for("ac_ca_manage", slug=c["slug"]), True),
+        ("Programmes", url_for("ac_college_view", slug=c["slug"]) + "#courses", True),
+        ("Timetable", url_for("ac_svc_timetable_manage", slug=c["slug"]), True),
+        ("Admissions", url_for("ac_college_admissions", slug=c["slug"]), owner or _college_can(c, "accounts")),
+        ("Fees and payments", url_for("ac_college_finance", slug=c["slug"]), owner or _college_can(c, "accounts")),
+        ("Hostels and rooms", url_for("ac_college_accommodation", slug=c["slug"]), owner or _college_can(c, "rooms")),
+        ("Stores and mattresses", url_for("ac_college_mattresses", slug=c["slug"]), owner or _college_can(c, "stores")),
+    ]
+    entries = [(label, href) for label, href, show in entries if show]
+    if mine_modules:
+        entries.insert(0, ("Enter CA marks for my modules", url_for("ac_ca_manage", slug=c["slug"])))
+        entries.insert(1, ("My class lists", url_for("ac_college_my_classes", slug=c["slug"])))
+        entries.insert(2, ("My teaching timetable", url_for("ac_college_my_timetable", slug=c["slug"])))
+    my_schools = _college_my_schools(c)
+    if my_schools:
+        entries.insert(0, ("Head of school: " + ", ".join(my_schools) + " (courses, lecturers and timetable for your school)", url_for("ac_college_view", slug=c["slug"]) + "#courses"))
+    return _ac_page("Staff services", r'''
+<h2>Staff services</h2>
+<p class="small">{{ c.name }}</p>
+<ul style="line-height:2;padding-left:18px;font-size:15px">
+{% for label, href in entries %}<li><a href="{{ href }}">{{ label }}</a></li>{% endfor %}
+</ul>
+<p class="small"><a href="{{ url_for('ac_college_view', slug=c.slug) }}">Back to the college page</a></p>
+''', c=c, entries=entries)
+
+
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
@@ -2615,7 +2749,7 @@ def login():
             log_activity("login","User logged into KOJA.")
             if _terms_required_for_user(user):
                 return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
-            return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
+            return redirect(_staff_landing_url(request.args.get("next")) or (safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard")))
 
         # Second: Supabase Auth compatibility.
         auth = supabase_auth_login(email,password)
@@ -2633,7 +2767,7 @@ def login():
             log_activity("login","User logged in through Supabase Auth.")
             if _terms_required_for_user(profile):
                 return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
-            return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
+            return redirect(_staff_landing_url(request.args.get("next")) or (safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard")))
 
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
         return redirect(url_for("login"))
@@ -27392,7 +27526,14 @@ def _college_can_ops(c, dept):
 
 
 def _college_any_staff(c):
-    return any(_college_can(c, d) for d in ("accounts", "rooms", "stores"))
+    return any(_college_can(c, d) for d in ("accounts", "rooms", "stores")) or bool(_college_my_schools(c))
+
+
+def _college_my_schools(c):
+    """Schools this user heads at the college (head of school / HOD)."""
+    if not c or not _ac_uid():
+        return []
+    return [r.get("school") for r in _ac_rows("koja_college_school_heads", {"college_id": c["id"], "user_id": _ac_uid()}, limit=50)]
 
 
 def _college_audit(c, action, detail=""):
@@ -36417,8 +36558,20 @@ def ac_college_dashboard(slug):
 <label>Staff email<input name="email" type="email" required></label>
 <label>Department<select name="department"><option value="accounts">Accounts</option><option value="rooms">Rooms</option><option value="stores">Stores</option></select></label>
 <button class="btn" type="submit">Add staff</button></form></div>
+<div><h3>Heads of school (HOD)</h3>
+<p class="small">One head per school. The head sees Staff services for that school. The account must already exist on KOJA.</p>
+<table style="width:100%;border-collapse:collapse">
+{% for h in heads %}<tr style="border-top:1px solid #ddd"><td style="padding:6px 0">{{ h.school }}</td><td>{{ h.email or h.user_id }}</td>
+<td align="right"><form method="post" action="{{ url_for('ac_college_head_remove', slug=c.slug, hid=h.id) }}" style="display:inline">{{ csrf }}<button class="btn secondary" type="submit">Remove</button></form></td></tr>
+{% else %}<tr><td class="small">No heads of school yet.</td></tr>{% endfor %}
+</table>
+<form method="post" action="{{ url_for('ac_college_head_add', slug=c.slug) }}" style="margin-top:12px">{{ csrf }}
+<label>School<select name="school">{% for sc in school_choices %}<option value="{{ sc }}">{{ sc }}</option>{% endfor %}</select></label>
+<label>HOD email<input name="email" type="email" required></label>
+<button class="btn" type="submit">Save head of school</button></form></div>
 {% endif %}''', c=c, students=students, paid_up=paid_up, confirmed=confirmed, pending=pending, refunds=refunds,
                     owed=owed, occupied=occupied, total_beds=total_beds, inv=inv or {}, issued=issued, staff=staff,
+                    heads=_ac_rows("koja_college_school_heads", {"college_id": c["id"]}, order="created_at.asc", limit=50), school_choices=COLLEGE_SCHOOLS,
                     is_owner=_college_is_owner(c), csrf_ok=True)
 
 
