@@ -970,7 +970,7 @@ BASE_HTML = r"""
 <html lang="en" data-koja-theme="system" data-wp="{{ wallpaper|default(1) }}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="{{ meta_description or 'Find scholarships, jobs, study materials, AI tools, CV support, business ideas and research resources with KOJA AFRICA. Discover digital services, career opportunities and practical tools to help students, job seekers and entrepreneurs grow across Africa.' }}">
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
@@ -23953,8 +23953,60 @@ def ac_college_view(slug):
         # once a place is accepted or enrolled here, the student uses college services instead of applying again
         enrolled_app = next((e for e in mine if e.get("status") in ("offered", "accepted", "enrolled")), None)
     return _ac_page(c.get("name") or "College", r'''
-<div class="card">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest" style="max-height:120px;display:block;margin:0 auto 10px"> {% endif %}<h2>{{ c.name }}</h2>
-<p class="small">{{ c.location or '' }}{% if c.contact %} · {{ c.contact }}{% endif %}</p>
+<style>
+  .ent-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap}
+  .ent-top img{width:70px;height:70px;object-fit:contain}
+  .ent-top h2{margin:0;font-size:19px;font-weight:normal;color:#222;text-transform:uppercase}
+  .ent-top .small{margin:2px 0 0;color:#555;font-size:12px}
+  .ent-nav{display:flex;background:#0a5bd1}
+  .ent-nav a{flex:1 1 0;color:#fff;text-decoration:none;text-align:center;padding:9px 4px;font-size:12px;border-right:1px solid #3c7fe0}
+  .ent-nav a:hover{background:#0848a8}
+  .ent-hero{background:#2d4a3a url('{{ url_for('static', filename='college-library-bg.jpg') }}') center/cover no-repeat;padding:14px 8px 18px}
+  .ent-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:900px;margin:0 auto;align-items:start}
+  .ent-panel{background:#fff;color:#222;padding:10px;border:1px solid #bbb}
+  .ent-panel h3{font-size:11px;margin:0 0 6px;color:#222;text-transform:uppercase}
+  .ent-panel p{font-size:11px;margin:4px 0;line-height:1.35}
+  .ent-panel .btn{display:block;text-align:center;margin:6px 0;width:100%;box-sizing:border-box;color:#fff !important;text-decoration:none;padding:8px 4px;font-size:11px;border:0;border-radius:0}
+  .ent-panel .btn.blue{background:#4a57a8}
+  .ent-panel .btn.red{background:#c9473a}
+  .ent-form{display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center}
+  .ent-form label{font-size:11px;font-weight:bold}
+  .ent-form input{width:100%;box-sizing:border-box;font-size:14px;padding:4px;min-width:0}
+  .ent-form .full{grid-column:1/-1}
+  .ent-form .btn{margin:0;padding:5px}
+  .ent-foot{background:#f3f3f3;color:#555;font-size:11px;padding:8px 14px;border-top:1px solid #d9dde3}
+</style>
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="ent-top">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ url_for('static', filename='nkumbi-crest.jpg') }}" alt="Nkumbi International College crest">{% endif %}<div><h2>{{ c.name }}</h2><p class="small">College information system</p></div></div>
+  <div class="ent-nav"><a href="{{ request.path }}">Home</a><a href="#courses">Courses</a><a href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled?</a>{% if user %}<a href="{{ url_for('ac_my_applications') }}">My services</a>{% else %}<a href="{{ url_for('login', next=request.path) }}">Log in</a>{% endif %}</div>
+  <div class="ent-hero"><div class="ent-wrap">
+    <div class="ent-panel">
+      <h3>Online application and registration</h3>
+      <p>Through the college portal you can apply for a course. Students who were admitted before register here.</p>
+      <p><strong>For course registration you need to log in.</strong></p>
+      <a class="btn blue" href="#courses">Apply for a course</a>
+      <a class="btn red" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled? Register here</a>
+    </div>
+    <div class="ent-panel">
+      <h3>Student and staff login</h3>
+      {% if user %}
+        <p>You are logged in as <strong>{{ user.full_name or user.email }}</strong>.</p>
+        <a class="btn blue" href="{{ url_for('ac_my_applications') }}">Go to my services</a>
+        <p><a href="{{ url_for('logout') }}">Log out</a></p>
+      {% else %}
+        <form method="post" action="{{ url_for('login', next=request.path) }}" class="ent-form">
+          <label>Username</label><input name="identifier" autocomplete="username" required>
+          <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
+          <div class="full">{{ captcha_widget() }}</div>
+          <span></span><button class="btn blue" type="submit">Login</button>
+        </form>
+        <p style="margin-top:8px"><a href="{{ url_for('register', next=request.path) }}">Create an account</a> (students and staff)</p>
+      {% endif %}
+    </div>
+  </div></div>
+  <div class="ent-foot">Online college services by KOJA AFRICA</div>
+</div>
+<div class="card" style="margin-top:14px">
 {% if c.about %}<p>{{ c.about }}</p>{% endif %}
 <p><a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled? Register here</a></p>
 {% if is_owner %}<p class="small">Status: <strong>{{ c.status }}</strong>{% if c.status != 'verified' %} (not shown to students until KOJA verifies it){% endif %}</p>{% endif %}{% if is_owner %}<form method="post" action="{{ url_for('ac_college_details', slug=c.slug) }}" class="small" style="margin-top:10px">{{ csrf }}<label>Description (shown under the name)<textarea name="about" rows="3" maxlength="3000">{{ c.about or '' }}</textarea></label><label>Location<input name="location" maxlength="200" value="{{ c.location or '' }}"></label><label>Phone / contact<input name="contact" maxlength="200" value="{{ c.contact or '' }}"></label><button class="btn secondary" type="submit">Save college details</button></form>{% endif %}
@@ -23965,7 +24017,7 @@ def ac_college_view(slug):
 {% elif enrolled_app %}<div class="card"><h3>You have been admitted</h3>
 <p class="small">You have an accepted place{% if enrolled_app.student_number %} · student number <strong>{{ enrolled_app.student_number }}</strong>{% endif %}. You do not need to apply again. Use college services for fees, rooms and your application.</p>
 <p><a class="btn" href="{{ url_for('ac_student_portal', aid=enrolled_app.id) }}">College services</a> <a class="btn secondary" href="{{ url_for('ac_application_money', aid=enrolled_app.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=enrolled_app.id) }}">Room</a></p></div>{% endif %}
-<div class="card"><h3>Courses</h3><p class="small"><strong>Already enrolled?</strong> <a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Register here</a> (for students in year 1, 2 or 3 who were admitted before)</p>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
+<div class="card" id="courses"><h3>Courses</h3><p class="small"><strong>Already enrolled?</strong> <a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Register here</a> (for students in year 1, 2 or 3 who were admitted before)</p>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
 {% for g in school_groups %}<h3 style="margin:18px 0 4px">{{ g.name }}</h3>{% for k in g.courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
 {% if k.description %}<p class="small">{{ k.description }}</p>{% endif %}
