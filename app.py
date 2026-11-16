@@ -24851,37 +24851,7 @@ def ac_student_portal(aid):
             room_label = "%s · Room %s · Bed %s" % (rinfo["hostel"]["name"], rinfo["room"]["room_code"], rinfo["bed"]["number"])
     room_status = ("Provisional reservation" if _accommodation_gate(c, a) else "Confirmed") if room_label else None
     return _ac_page("Student portal", r"""
-<style>
-  .portal{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
-  .portal-menu{display:flex;flex-direction:column;gap:6px}
-  .portal-menu a,.portal-menu span{display:block;padding:9px 12px;border:1px solid #ccc;border-radius:6px;text-decoration:none;color:#111 !important;background:#fff !important}
-  .portal-menu a:hover{background:#eef3ff !important}
-  .portal-menu .off{color:#666 !important;background:#f4f4f4 !important;cursor:default}
-  .portal-menu .off small{display:block;font-size:11px}
-  @media (max-width:760px){ .portal{grid-template-columns:1fr} }
-</style>
-<div class="card"><h2>{{ c.name }}</h2><p class="small">UNIVERSITY INFORMATION SYSTEM · Current user: <strong>{{ a.student_number or a.full_name }}</strong> · Basic student</p></div>
-<div class="portal">
-  <nav class="portal-menu">
-    <a href="{{ url_for('ac_student_portal', aid=a.id) }}">Home</a>
-    {% if can_use %}<a href="{{ url_for('ac_application_room', aid=a.id) }}">Apply for Accommodation</a>
-    {% else %}<span class="off">Apply for Accommodation<small>Opens once you accept your place</small></span>{% endif %}
-    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}#inbox">Helpdesk Inbox</a>
-    <a href="{{ url_for('ac_svc_helpdesk', aid=a.id) }}#support">Helpdesk Support</a>
-    <a href="{{ url_for('ac_application_view', aid=a.id) }}">Personal Information</a>
-    <a href="{{ url_for('ac_svc_ca', aid=a.id) }}">View CA</a>
-    <a href="{{ url_for('ac_svc_grades', aid=a.id) }}">Grades</a>
-    <a href="{{ url_for('ac_application_money', aid=a.id) }}#payments">Payments</a>
-    <a href="{{ url_for('ac_application_money', aid=a.id) }}#payment-options">Payment Options</a>
-    <a href="{{ url_for('ac_svc_timetable', aid=a.id) }}">Timetable</a>
-    <a href="{{ url_for('ac_svc_evaluation', aid=a.id) }}">Course Evaluation</a>
-    <a href="{{ url_for('ac_svc_registration', aid=a.id) }}">Course registration</a>
-    <a href="{{ url_for('ac_svc_docket', aid=a.id) }}">Print Exam Docket</a>
-    <a href="{{ url_for('ac_application_mattress', aid=a.id) }}">Mattress collection</a>
-    <a href="{{ url_for('ac_change_password') }}">Change Password</a>
-    <a href="{{ url_for('logout') }}">Logout</a>
-  </nav>
-  <div>
+<div>
     <div class="card"><h3>Home</h3>
       <p><strong>Name:</strong> {{ a.full_name }}</p>
       <p><strong>Programme:</strong> {{ course.title }}</p>
@@ -24907,7 +24877,7 @@ def ac_student_portal(aid):
     </div>{% endif %}
     {% if a.status == 'offered' %}<div class="card"><h3>Your offer</h3><p class="small">Open Personal Information to accept or decline your offer.</p></div>{% endif %}
   </div>
-</div>""", a=a, c=c, course=course, intake=intake, can_use=can_use, account_status=account_status, receipts=receipts,
+""", a=a, c=c, course=course, intake=intake, can_use=can_use, account_status=account_status, receipts=receipts,
                     group=group, registered_list=registered_list, next_classes=next_classes, mattress=mattress,
                     room_label=room_label, room_status=room_status)
 
