@@ -24377,7 +24377,7 @@ def ac_college_view(slug):
 </style>
 <div class="ent-outer">
   <div class="ent-top">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ crest_src() }}" alt="Nkumbi International College crest">{% endif %}<div><h2>{{ c.name }}</h2><p class="small">College information system</p></div></div>
-  <div class="ent-nav"><a href="{{ request.path }}">Home</a><a href="#courses">Courses</a><a href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled?</a>{% if user %}<a href="{{ url_for('ac_my_applications') }}">My services</a>{% else %}<a href="{{ url_for('login', next=request.path) }}">Log in</a>{% endif %}</div>
+  <div class="ent-nav">{% if user %}<a href="{{ request.path }}">Home</a><a href="{{ url_for('ac_my_applications') }}">My services</a><a href="{{ url_for('ac_home') }}">eLearning</a>{% else %}<a href="{{ request.path }}">Home</a><a href="#courses">Courses</a><a href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled?</a><a href="{{ url_for('login', next=request.path) }}">Log in</a>{% endif %}</div>
   <div class="ent-hero"><div class="ent-wrap">
     <div class="ent-panel">
       <h3>Online application and registration</h3>
@@ -25491,6 +25491,7 @@ def _portal_menu_html(a):
         ("Course registration", url_for("ac_svc_registration", aid=aid), True, ""),
         ("Timetable", url_for("ac_svc_timetable", aid=aid), True, ""),
         ("Course materials", url_for("ac_svc_materials", aid=aid), True, ""),
+        ("eLearning", url_for("ac_home"), True, ""),
         ("Course Evaluation", url_for("ac_svc_evaluation", aid=aid), True, ""),
         ("Print Exam Docket", url_for("ac_svc_docket", aid=aid), True, ""),
         ("Apply for Accommodation", url_for("ac_application_room", aid=aid), can_use, "Opens once admission is confirmed and the deposit is paid"),
