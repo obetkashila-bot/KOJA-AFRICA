@@ -28319,7 +28319,7 @@ def _college_can_ops(c, dept):
 
 
 def _college_any_staff(c):
-    return any(_college_can(c, d) for d in ("accounts", "rooms", "stores")) or bool(_college_my_schools(c))
+    return any(_college_can(c, d) for d in ("general", "accounts", "rooms", "stores")) or bool(_college_my_schools(c))
 
 
 def _college_my_schools(c):
@@ -39023,6 +39023,14 @@ def ac_college_enter(slug):
     c = _college_by_slug(slug)
     if not c:
         abort(404)
+    if (current_user() or {}).get("role") == "college_staff" and c and _ac_uid() and not _college_is_owner(c):
+        # Staff accounts open the college's staff services straight away. This grant only opens the
+        # staff home; accounts, rooms, stores and marks still need the owner to grant them.
+        if not _college_any_staff(c):
+            _, gerr = db_insert("koja_college_staff", {"id": str(uuid.uuid4()), "college_id": c["id"], "user_id": _ac_uid(),
+                                                       "email": _ca_user_email(), "department": "general", "created_at": utc_now()})
+            if not gerr:
+                return redirect(url_for("ac_college_staff_home", slug=slug))
     if _college_is_owner(c) or _college_any_staff(c) or _ca_my_assignments(c):
         return redirect(url_for("ac_college_staff_home", slug=slug))
     aid = _eapp_my_app_id(c)
