@@ -2694,7 +2694,7 @@ def ac_college_materials_manage(slug):
                    "added_by": _ca_user_email(), "created_at": utc_now()}
             if has_file:
                 info, uerr = upload_storage(upload, folder="college-materials", public=False,
-                                            max_mb=COLLEGE_DOC_MB, allowed=COLLEGE_DOC_TYPES)
+                                            max_mb=COLLEGE_MATERIAL_MB, allowed=COLLEGE_MATERIAL_TYPES)
                 if uerr:
                     flash(uerr, "danger")
                     return redirect(url_for("ac_college_materials_manage", slug=c["slug"]))
@@ -37905,6 +37905,7 @@ _EC_CAL_TPL = r'''
 _EC_COURSE_PAGES_TPL = r'''
 <h2>Course pages</h2>
 <p class="small">{{ c.name }}. Add the reading list and announcements for each module you teach. Students see them on their eLearning page.</p>
+<p><a class="btn secondary" href="{{ url_for('ac_college_materials_bulk', slug=c.slug) }}">Add files to modules</a></p>
 {% for p in pairs %}<div class="ec-sec" style="margin:12px 0"><h3>{{ p.label }}</h3>
 <div style="padding:10px 12px">
 <strong>Reading list</strong>
@@ -38507,6 +38508,62 @@ def ac_svc_assistant(aid):
                 err = _ai_error_message(code)
                 answer = ""
     return _ac_page("Study assistant", _EC_ASSIST_TPL, c=c, a=a, modules=modules, question=question, module=module, answer=answer, err=err)
+
+
+# ---- Bulk upload of course files to modules ----
+
+COLLEGE_MATERIAL_TYPES = COLLEGE_DOC_TYPES | {"doc", "docx", "ppt", "pptx", "txt", "xls", "xlsx"}
+COLLEGE_MATERIAL_MB = 25
+
+_COLLEGE_BULK_TPL = r'''
+<h2>Add files to modules</h2>
+<p class="small">{{ c.name }}. Upload one or more files. Each file becomes a course material for the module you choose, and students see it on their eLearning page. Accepted: PDF, Word, PowerPoint, Excel, text and images, up to {{ mb }} MB each.</p>
+<form method="post" enctype="multipart/form-data" action="{{ url_for('ac_college_materials_bulk', slug=c.slug) }}" style="display:grid;gap:8px;max-width:640px;margin-top:10px">{{ csrf }}
+<label>Module <select name="pair">{% for p in pairs %}<option value="{{ p.course_id }}|{{ p.module }}">{{ p.label }}</option>{% endfor %}</select></label>
+<label>Files <input type="file" name="files" multiple required></label>
+<div><button class="btn" type="submit">Upload files</button></div></form>
+<p class="small" style="margin-top:12px"><a href="{{ url_for('ac_college_course_pages', slug=c.slug) }}">Back to course pages</a></p>
+'''
+
+
+@app.route("/academic/college/<slug>/materials/bulk", methods=["GET", "POST"])
+@login_required
+def ac_college_materials_bulk(slug):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    pairs = _eapp_pairs(c)
+    if not pairs:
+        abort(403)
+    if request.method == "POST":
+        course_id, module = _eapp_parse_pair(c, request.form.get("pair"))
+        if not course_id:
+            flash("Choose one of your modules.", "danger")
+            return redirect(url_for("ac_college_materials_bulk", slug=slug))
+        files = [f for f in request.files.getlist("files") if f and f.filename][:40]
+        if not files:
+            flash("Choose at least one file.", "danger")
+            return redirect(url_for("ac_college_materials_bulk", slug=slug))
+        saved = 0
+        for f in files:
+            info, uerr = upload_storage(f, folder="college-materials", public=False, max_mb=COLLEGE_MATERIAL_MB, allowed=COLLEGE_MATERIAL_TYPES)
+            if uerr:
+                flash("%s was not added: %s" % (f.filename, uerr), "danger")
+                continue
+            row = {"id": str(uuid.uuid4()), "college_id": c["id"], "course_id": course_id, "module": module, "kind": "material",
+                   "title": (os.path.splitext(clean(f.filename))[0] or "Notes")[:200], "url": "uploaded file",
+                   "added_by": _ca_user_email(), "created_at": utc_now(),
+                   "file_path": info["path"], "file_mime": info.get("mime_type") or "", "file_name": info.get("file_name") or f.filename}
+            _, err = db_insert("koja_college_materials", row)
+            if err:
+                flash("%s could not be saved. Run koja_college_materials.sql first." % f.filename, "danger")
+            else:
+                saved += 1
+        if saved:
+            flash("Added %d file%s to %s." % (saved, "" if saved == 1 else "s", module), "success")
+            _college_audit(c, "materials.bulk", "%d files to %s" % (saved, module))
+        return redirect(url_for("ac_college_materials_bulk", slug=slug))
+    return _ac_page("Add files to modules", _COLLEGE_BULK_TPL, c=c, pairs=pairs, mb=COLLEGE_MATERIAL_MB)
 
 
 if __name__=="__main__":
