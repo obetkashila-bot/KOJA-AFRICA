@@ -1239,7 +1239,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 @media(min-width:761px) and (max-width:1199px){.nav-top .nav-label{display:none}.nav-top{padding:8px 9px}}
 </style>
 </head>
-<body>
+<body class="{{ 'cb-on' if g.get('college_brand') else '' }}">
 <div id="kojaLoadBar" aria-hidden="true"></div>
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
@@ -1381,6 +1381,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after,html[data-koja-theme="black"]
 })();
 </script>
 <div class="container">
+{% if g.get('college_brand') %}<style>body.cb-on nav[aria-label="Primary navigation"],body.cb-on footer{display:none!important}body.cb-on .container{max-width:none}</style><div class="cb-head" style="background:{{ g.college_brand.color }};color:#fff;display:flex;align-items:center;gap:12px;padding:10px 16px">{% if g.college_brand.logo %}<img src="{{ g.college_brand.logo }}" alt="" style="height:52px;width:auto;background:#fff;padding:2px">{% endif %}<strong style="font-size:18px">{{ g.college_brand.name }}</strong></div>{% endif %}
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
 {% endwith %}
@@ -1629,6 +1630,8 @@ var kojaRing=(function(){
 def render_page(title, body_template, **context):
     context["user"] = current_user()
     body = render_template_string(body_template, **context)
+    if g.get("inst_wording"):
+        body = _inst_apply(body, g.inst_wording)
     prefs = session.get("koja_settings", {}) or {}
     theme = prefs.get("theme", "system") if prefs.get("theme") in ("system", "light", "dark", "black") else "system"
     wp = (sum(ord(ch) for ch in str(title or "KOJA")) % 10) + 1
@@ -2974,6 +2977,11 @@ def ac_college_staff_home(slug):
         entries.append(("Allocate lecturers to modules (your school)", url_for("ac_college_allocation", slug=c["slug"])))
     if owner or mine_modules:
         entries.append(("Course pages: reading lists and announcements", url_for("ac_college_course_pages", slug=c["slug"])))
+        if _college_is_owner(c):
+            entries.append(("College branding: logo and colour", url_for("ac_college_branding", slug=c["slug"])))
+            entries.append(("Institution setup: type, names and grades", url_for("ac_college_setup", slug=c["slug"])))
+            entries.append(("Module credits (used for GPA)", url_for("ac_college_credits", slug=c["slug"])))
+            entries.append(("Years and semesters: sort students", url_for("ac_college_categories", slug=c["slug"])))
         entries.append(("Analytics for my modules", url_for("ac_college_analytics", slug=c["slug"])))
     if owner or my_schools:
         entries.append(("Academic calendar", url_for("ac_college_calendar", slug=c["slug"])))
@@ -2987,6 +2995,14 @@ def ac_college_staff_home(slug):
 ''', c=c, entries=entries)
 
 
+def _college_back(next_value):
+    """For a sign-in started on a college page (next = /academic/college/<slug>/enter), the college page to return to on failure."""
+    nxt = clean(next_value)
+    if nxt.startswith("/academic/college/") and nxt.endswith("/enter"):
+        return nxt[:-len("/enter")]
+    return ""
+
+
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
@@ -2994,7 +3010,7 @@ def login():
             return "Too many login attempts. Please wait a few minutes and try again.", 429
         if not _captcha_ok(request.form.get("cf-turnstile-response")):
             flash("Please complete the security check and try again.", "danger")
-            return redirect(url_for("login"))
+            return redirect(_college_back(request.args.get("next")) or url_for("login"))
         identifier = clean(request.form.get("identifier") or request.form.get("email")).strip()
         email = identifier.lower()
         password = request.form.get("password","")
@@ -3010,7 +3026,7 @@ def login():
         if user and password_matches(user,password):
             if user.get("is_active") is False:
                 flash("This account is inactive.","danger")
-                return redirect(url_for("login"))
+                return redirect(_college_back(request.args.get("next")) or url_for("login"))
             if _two_factor_enabled(user.get("id")):
                 return _two_factor_challenge(user, request.args.get("next") or "")
             login_user(user)
@@ -3037,6 +3053,10 @@ def login():
                 return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
             return redirect(_staff_landing_url(request.args.get("next")) or (safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard")))
 
+        back = _college_back(request.args.get("next"))
+        if back:
+            flash("Invalid username or password. Please try again.", "danger")
+            return redirect(back)
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
         return redirect(url_for("login"))
 
@@ -3406,8 +3426,11 @@ def admin_two_factor_reset():
 def logout():
     if current_user():
         log_activity("logout","User logged out.")
+    back = clean(request.args.get("next"))
     session.clear()
     flash("You have been logged out.","success")
+    if back.startswith("/academic/college/") and not back.startswith("//"):
+        return redirect(back)
     return redirect(url_for("home"))
 
 # ============================================================
@@ -22795,8 +22818,64 @@ def _ac_teacher_for_user(uid=None):
     return first_row("koja_academic_teachers", {"user_id": uid or _ac_uid()})
 
 
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _college_logo_src(c):
+    """The college's own logo. Nkumbi keeps its crest until its own logo is uploaded."""
+    if c.get("brand_logo_url"):
+        return c["brand_logo_url"]
+    if str(c.get("slug") or "").startswith("nkumbi"):
+        try:
+            return _nkumbi_crest_src()
+        except Exception:
+            return ""
+    return ""
+
+
+def _college_brand(c):
+    color = clean(c.get("brand_color") or "")
+    if not _HEX_COLOR_RE.match(color):
+        color = "#0a5bd1"
+    return {"name": c.get("name") or "College", "logo": _college_logo_src(c), "color": color}
+
+
+def _inst_wording(c):
+    """Pairs of (pattern, replacement) that rename the visible words on this institution's pages."""
+    labels = _inst_labels(c)
+    kind = _inst_type(c)
+    pairs = [("Module", labels["unit"]), ("Lecturer", labels["teacher"])]
+    if kind == "school":
+        pairs += [("Programme", "Class"), ("Course", labels["unit"]), ("School", "Department")]
+    elif kind == "university":
+        pairs += [("School", "Faculty")]
+    out = []
+    for word, rep in pairs:
+        if rep == word:
+            continue
+        # Capitalised form (headings) and lower case (sentences); plural keeps its s.
+        out.append((re.compile(r"\b%s(s?)\b" % word), rep, rep))
+        if word.lower() != word and not (kind == "school" and word == "School"):
+            out.append((re.compile(r"\b%s(s?)\b" % word.lower()), rep.lower(), rep.lower()))
+    return out
+
+
+def _inst_apply(html, pairs):
+    """Renames words in visible text only. Scripts, styles and tags are left untouched."""
+    parts = re.split(r"(<script\b.*?</script>|<style\b.*?</style>|<[^>]*>)", html, flags=re.S | re.I)
+    for i in range(0, len(parts), 2):
+        text = parts[i]
+        for pat, rep, _ in pairs:
+            text = pat.sub(lambda m, r=rep: r + ("s" if m.group(1) else ""), text)
+        parts[i] = text
+    return "".join(parts)
+
+
 def _ac_page(title, tpl, **ctx):
     ctx.setdefault("desktop_viewport", True)
+    cbc = ctx.get("c")
+    g.college_brand = _college_brand(cbc) if isinstance(cbc, dict) and cbc.get("id") else None
+    g.inst_wording = _inst_wording(cbc) if g.college_brand else None
     ctx.setdefault("csrf", Markup('<input type="hidden" name="_csrf_token" value="%s">' % escape(csrf_token())))
     ctx.setdefault("money", market_money)
     portal_app = g.get("portal_app")
@@ -22816,6 +22895,7 @@ def _ac_page(title, tpl, **ctx):
                '<a href="{{ url_for(\'ac_svc_timetable\', aid=portal_aid) }}">Timetable</a>'
                '<a href="{{ url_for(\'ac_svc_ca\', aid=portal_aid) }}">Course Marks</a>'
                '<a href="{{ url_for(\'ac_svc_grades\', aid=portal_aid) }}">Grades</a>'
+               '<a href="{{ url_for(\'ac_svc_transcript\', aid=portal_aid) }}">Transcript</a>'
                '<a href="{{ url_for(\'ac_application_money\', aid=portal_aid) }}">Invoices and payments</a>'
                '<a href="{{ url_for(\'logout\') }}">Log out</a></div>'
                '<div class="portal"><nav class="portal-menu">'
@@ -23956,6 +24036,70 @@ def _college_by_slug(slug):
     return first_row("koja_colleges", {"slug": slug})
 
 
+INSTITUTION_TYPES = {
+    "school": {"name": "School", "level": "Grade", "term": "Term", "unit": "Subject", "teacher": "Subject teacher", "group": "Class"},
+    "college": {"name": "College", "level": "Year", "term": "Semester", "unit": "Module", "teacher": "Lecturer", "group": "School"},
+    "university": {"name": "University", "level": "Year", "term": "Semester", "unit": "Course", "teacher": "Lecturer", "group": "Faculty"},
+}
+DEFAULT_GRADE_BANDS = "A:70,B:60,C:50,D:40,F:0"
+
+
+def _inst_type(c):
+    t = clean(str((c or {}).get("institution_type") or "college")).lower()
+    return t if t in INSTITUTION_TYPES else "college"
+
+
+def _inst_labels(c):
+    """Wording for this institution: the type's defaults, with any names the owner set."""
+    labels = dict(INSTITUTION_TYPES[_inst_type(c)])
+    if clean(str((c or {}).get("level_label") or "")):
+        labels["level"] = clean(c["level_label"])[:40]
+    if clean(str((c or {}).get("unit_label") or "")):
+        labels["unit"] = clean(c["unit_label"])[:40]
+    return labels
+
+
+def _inst_parse_bands(text):
+    """'A:70, B:60, F:0' -> normalised text, or (None, message) when it cannot be read."""
+    parts = [x.strip() for x in clean(text or "").split(",") if x.strip()]
+    if not parts:
+        return None, "Add at least one grade band, for example A:70,B:60,F:0."
+    out = []
+    for part in parts:
+        if ":" not in part:
+            return None, "Each grade band needs a letter and a mark, for example A:70."
+        letter, mark = [x.strip() for x in part.split(":", 1)]
+        try:
+            value = float(mark)
+        except ValueError:
+            return None, "The mark for %s must be a number." % (letter or "a grade")
+        if not letter or len(letter) > 3 or not (0 <= value <= 100):
+            return None, "Grade letters must be 1 to 3 characters and marks 0 to 100."
+        out.append((value, letter.upper()))
+    out.sort(reverse=True)
+    return ",".join("%s:%g" % (letter, value) for value, letter in out), None
+
+
+def _inst_grade(c, pct):
+    """The grade letter for a percentage, using this institution's bands. Empty string if none fit."""
+    try:
+        mark = float(pct)
+    except (TypeError, ValueError):
+        return ""
+    bands = []
+    for part in str((c or {}).get("grade_bands") or DEFAULT_GRADE_BANDS).split(","):
+        if ":" in part:
+            letter, value = part.split(":", 1)
+            try:
+                bands.append((float(value), letter))
+            except ValueError:
+                pass
+    for value, letter in sorted(bands, reverse=True):
+        if mark >= value:
+            return letter
+    return ""
+
+
 NKUMBI_PROGRAMMES = [
     ("Diploma in Animal Science", "Agriculture (diploma with Mulungushi University)"),
     ("Diploma in Crop Science", "Agriculture (diploma with Mulungushi University)"),
@@ -24367,6 +24511,7 @@ def ac_college_new():
         data = {"id": str(uuid.uuid4()), "owner_user_id": uid, "name": name, "slug": slug,
                 "about": clean(request.form.get("about"))[:3000], "location": clean(request.form.get("location"))[:200],
                 "contact": clean(request.form.get("contact"))[:200], "status": "pending",
+                "institution_type": clean(request.form.get("institution_type")).lower() if clean(request.form.get("institution_type")).lower() in INSTITUTION_TYPES else "college",
                 "created_at": utc_now(), "updated_at": utc_now()}
         _, err = db_insert("koja_colleges", data)
         if err:
@@ -24378,6 +24523,8 @@ def ac_college_new():
 <div class="card"><h2>Register your college</h2>
 <form method="post">{{ csrf }}
 <label>College name<input name="name" required maxlength="150"></label>
+<label>What kind of institution is it?<select name="institution_type">
+<option value="school">School</option><option value="college" selected>College</option><option value="university">University</option></select></label>
 <label>Location<input name="location" maxlength="200"></label>
 <label>Contact (phone or email)<input name="contact" maxlength="200"></label>
 <label>About the college<textarea name="about" rows="4" maxlength="3000"></textarea></label>
@@ -24448,7 +24595,7 @@ def ac_college_view(slug):
     <div class="ent-panel ent-login">
       <h3>Student and staff login</h3>
       <p>Please use your student number or username and password to log in to the system.</p>
-      {% if user %}<p class="small">You are signed in as <strong>{{ user.full_name or user.email }}</strong>. Log in here at the college to open your services. <a href="{{ url_for('logout') }}">Log out</a></p>{% endif %}
+      {% if user %}<p class="small">You are signed in as <strong>{{ user.full_name or user.email }}</strong>. Log in here at the college to open your services. <a href="{{ url_for('logout', next=url_for('ac_college_view', slug=c.slug)) }}">Log out</a></p>{% endif %}
         <form method="post" action="{{ url_for('login', next=url_for('ac_college_enter', slug=c.slug)) }}" class="ent-form">
           <table class="ent-kv-table">
             <tr><td>Username</td><td><input name="identifier" autocomplete="username" required></td></tr>
@@ -24461,7 +24608,7 @@ def ac_college_view(slug):
         <p style="font-size:11px">After you log in, the system opens your student or staff area automatically.</p>
     </div>
   </div></div>
-  <div class="ent-foot">Online college services by KOJA AFRICA</div>
+  <div class="ent-foot">Online college services</div>
 </div>
 <div class="card" style="margin-top:14px">
 {% if c.about %}<p>{{ c.about }}</p>{% endif %}
@@ -25616,6 +25763,7 @@ def _portal_menu_html(a):
         ("Invoices", url_for("ac_application_money", aid=aid), True, ""),
         ("Course Marks", url_for("ac_svc_ca", aid=aid), True, ""),
         ("Grades", url_for("ac_svc_grades", aid=aid), True, ""),
+        ("Transcript", url_for("ac_svc_transcript", aid=aid), True, ""),
         ("Payments", url_for("ac_application_money", aid=aid) + "#payments", True, ""),
         ("Report Online", url_for("ac_svc_helpdesk", aid=aid), True, ""),
         ("Course registration", url_for("ac_svc_registration", aid=aid), True, ""),
@@ -25682,6 +25830,180 @@ def ac_svc_grades(aid):
 {% else %}<tr><td colspan="3" class="small">No grades posted yet.</td></tr>{% endfor %}</table></div>''',
                          back=_svc_back(aid), c=c, course=course, marks=marks, released=released, pct=pct)
     return _svc_student_academic(aid, "Grades", build)
+
+
+GRADE_POINTS = {"A": 4.0, "B": 3.0, "C": 2.0, "D": 1.0, "F": 0.0}
+
+
+def _gpa(rows):
+    """Credit-weighted GPA from rows with credits and grade. None when nothing counts yet."""
+    total_credits = 0.0
+    total_points = 0.0
+    for r in rows:
+        credits = float(r.get("credits") or 0)
+        letter = clean(str(r.get("grade") or "")).upper()[:1]
+        if credits <= 0 or letter not in GRADE_POINTS:
+            continue
+        total_credits += credits
+        total_points += credits * GRADE_POINTS[letter]
+    return round(total_points / total_credits, 2) if total_credits else None
+
+
+@app.route("/academic/services/<aid>/transcript")
+@login_required
+def ac_svc_transcript(aid):
+    def build(a, c, course, extra):
+        released, pct = _results_released(a, c)
+        credits = {m["name"]: m.get("credits") or 0 for m in _ac_rows("koja_college_modules", {"college_id": c["id"], "course_id": course["id"]}, limit=300)}
+        marks = _ac_rows("koja_college_marks", {"application_id": aid}, order="module.asc", limit=300) if released else []
+        rows = [{"module": m["module"], "credits": credits.get(m["module"], 0), "grade": m.get("grade") or "",
+                 "points": GRADE_POINTS.get(clean(str(m.get("grade") or "")).upper()[:1])} for m in marks]
+        gpa = _gpa(rows)
+        return _ac_page("Transcript", r'''
+<div class="card"><h2>Transcript</h2><p class="small">{{ c.name }} · {{ course.title }}</p><p>{% if not portal_menu %}<a class="btn secondary" href="{{ back }}">Back</a>{% endif %}</p>{% if not released %}<p><strong>Your results are held.</strong> The transcript opens when results are released.</p>{% endif %}</div>
+<div class="card"><table style="width:100%;border-collapse:collapse"><tr><th align="left">{{ labels.unit }}</th><th>Credits</th><th>Grade</th><th>Points</th></tr>
+{% for r in rows %}<tr style="border-top:1px solid #ddd"><td>{{ r.module }}</td><td align="center">{{ '%g' % r.credits }}</td><td align="center"><strong>{{ r.grade or '-' }}</strong></td><td align="center">{{ '%g' % r.points if r.points is not none else '-' }}</td></tr>
+{% else %}<tr><td colspan="4" class="small">No grades posted yet.</td></tr>{% endfor %}</table>
+<p style="margin-top:12px"><strong>GPA: {{ '%.2f' % gpa if gpa is not none else '-' }}</strong> <span class="small">(credit-weighted; A=4, B=3, C=2, D=1, F=0)</span></p></div>''',
+                         back=_svc_back(aid), c=c, course=course, rows=rows, released=released, gpa=gpa, labels=_inst_labels(c))
+    return _svc_student_academic(aid, "Transcript", build)
+
+
+_COLLEGE_CATEGORIES_TPL = """
+<h2>{{ labels.level }}s and {{ labels.term|lower }}s</h2>
+<p class="small">Set how many {{ labels.level|lower }}s and {{ labels.term|lower }}s there are, then sort each student into one.</p>
+<form method="post" class="ent-panel" style="max-width:560px">{{ csrf }}<input type="hidden" name="action" value="structure">
+  <label>Number of {{ labels.level|lower }}s<br><input name="study_years" type="number" min="1" max="10" value="{{ c.study_years or 3 }}" required></label>
+  <label style="display:block;margin-top:12px">{{ labels.term }}s in each {{ labels.level|lower }}<br><input name="terms_per_year" type="number" min="1" max="4" value="{{ c.terms_per_year or 2 }}" required></label>
+  <p style="margin-top:12px"><button class="btn secondary" type="submit">Save structure</button></p>
+</form>
+<p class="small" style="margin-top:12px">Show: <a href="{{ url_for('ac_college_categories', slug=c.slug) }}">everyone</a>
+{% for y in years %} · <a href="{{ url_for('ac_college_categories', slug=c.slug, year=y) }}">{{ labels.level }} {{ y }}</a>{% endfor %}
+{% for t in terms %} · <a href="{{ url_for('ac_college_categories', slug=c.slug, term=t) }}">{{ labels.term }} {{ t }}</a>{% endfor %}</p>
+<form method="post" style="margin-top:12px">{{ csrf }}<input type="hidden" name="action" value="students">
+<table style="width:100%;border-collapse:collapse">
+<tr><th align="left">Student</th><th align="left">Course</th><th>{{ labels.level }}</th><th>{{ labels.term }}</th></tr>
+{% for a in apps %}<tr style="border-top:1px solid #ddd"><td><input type="hidden" name="id" value="{{ a.id }}">{{ a.full_name }}</td><td class="small">{{ course_names.get(a.course_id, 'Course') }}</td>
+<td><select name="year_{{ a.id }}"><option value="">Not set</option>{% for y in years %}<option value="{{ y }}" {{ 'selected' if a.study_year == y }}>{{ y }}</option>{% endfor %}</select></td>
+<td><select name="term_{{ a.id }}"><option value="">Not set</option>{% for t in terms %}<option value="{{ t }}" {{ 'selected' if a.study_term == t }}>{{ t }}</option>{% endfor %}</select></td></tr>
+{% else %}<tr><td colspan="4" class="small">No students match.</td></tr>{% endfor %}
+</table>
+<p style="margin-top:12px"><button class="btn red" type="submit">Save students</button></p>
+</form>
+<p class="small" style="margin-top:12px"><a href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Back to admissions</a></p>
+"""
+
+
+@app.route("/academic/college/<slug>/categories", methods=["GET", "POST"])
+@login_required
+def ac_college_categories(slug):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    if not _college_is_owner(c):
+        abort(403)
+    years_n = int(c.get("study_years") or 3)
+    terms_n = int(c.get("terms_per_year") or 2)
+    if request.method == "POST":
+        if request.form.get("action") == "structure":
+            try:
+                ny = int(request.form.get("study_years") or 0)
+                nt = int(request.form.get("terms_per_year") or 0)
+            except ValueError:
+                ny, nt = 0, 0
+            if not (1 <= ny <= 10 and 1 <= nt <= 4):
+                flash("Use 1 to 10 years and 1 to 4 terms.", "danger")
+                return redirect(url_for("ac_college_categories", slug=slug))
+            _, err = db_update("koja_colleges", {"id": c["id"]}, {"study_years": ny, "terms_per_year": nt, "updated_at": utc_now()})
+            flash("Structure saved." if not err else "Structure could not be saved. Run koja_year_semester.sql first.", "success" if not err else "danger")
+            return redirect(url_for("ac_college_categories", slug=slug))
+        saved, problems = 0, 0
+        for aid in request.form.getlist("id"):
+            yv = clean(request.form.get("year_" + aid))
+            tv = clean(request.form.get("term_" + aid))
+            try:
+                year = int(yv) if yv else None
+                term = int(tv) if tv else None
+            except ValueError:
+                problems += 1
+                continue
+            if (year is not None and not (1 <= year <= years_n)) or (term is not None and not (1 <= term <= terms_n)):
+                problems += 1
+                continue
+            _, err = db_update("koja_college_applications", {"id": aid, "college_id": c["id"]}, {"study_year": year, "study_term": term})
+            if not err:
+                saved += 1
+        if problems:
+            flash("%d student(s) were not changed: the year or %s was out of range." % (problems, _inst_labels(c)["term"].lower()), "danger")
+        flash("Saved %d student%s." % (saved, "" if saved == 1 else "s"), "success")
+        _college_audit(c, "categories.updated", str(saved))
+        return redirect(url_for("ac_college_categories", slug=slug, **{k: v for k, v in request.args.items() if k in ("year", "term")}))
+    rows = [x for x in _ac_rows_all("koja_college_applications", {"college_id": c["id"]}, order="full_name.asc") if x.get("status") != "draft"]
+    year_f = request.args.get("year", type=int)
+    term_f = request.args.get("term", type=int)
+    if year_f:
+        rows = [x for x in rows if x.get("study_year") == year_f]
+    if term_f:
+        rows = [x for x in rows if x.get("study_term") == term_f]
+    courses = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
+    return _ac_page("Years and semesters", _COLLEGE_CATEGORIES_TPL, c=c, apps=rows, course_names=courses,
+                    years=list(range(1, years_n + 1)), terms=list(range(1, terms_n + 1)), labels=_inst_labels(c))
+
+
+_COLLEGE_CREDITS_TPL = """
+<h2>{{ labels.unit }} credits</h2>
+<p class="small">Set how many credits each {{ labels.unit|lower }} is worth. Transcripts and GPA use these values.</p>
+{% for course, mods in groups %}
+<form method="post" class="ent-panel" style="max-width:640px;margin-bottom:12px">
+  <h3>{{ course.title }}</h3>
+  <table style="width:100%;border-collapse:collapse">
+  {% for m in mods %}<tr style="border-top:1px solid #ddd"><td style="padding:6px">{{ m.name }}</td>
+    <td style="width:120px"><input type="hidden" name="id" value="{{ m.id }}"><input name="credits_{{ m.id }}" type="number" min="0" max="60" step="0.5" value="{{ '%g' % (m.credits or 0) }}" style="width:100px"></td></tr>{% endfor %}
+  </table>
+  <p style="margin-top:8px"><button class="btn red" type="submit" name="course_id" value="{{ course.id }}">Save credits for {{ course.title }}</button></p>
+</form>
+{% else %}<p>No {{ labels.unit|lower }}s yet.</p>{% endfor %}
+<p class="small" style="margin-top:12px"><a href="{{ url_for('ac_college_staff_home', slug=c.slug) }}">Back to staff home</a></p>
+"""
+
+
+@app.route("/academic/college/<slug>/credits", methods=["GET", "POST"])
+@login_required
+def ac_college_credits(slug):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    if not _college_is_owner(c):
+        abort(403)
+    courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    if request.method == "POST":
+        course_id = clean(request.form.get("course_id"))
+        allowed = {k["id"] for k in courses}
+        if course_id not in allowed:
+            abort(400)
+        saved = 0
+        for mid in request.form.getlist("id"):
+            raw = clean(request.form.get("credits_" + mid))
+            try:
+                value = float(raw or 0)
+            except ValueError:
+                flash("Credits must be numbers.", "danger")
+                return redirect(url_for("ac_college_credits", slug=slug))
+            if not (0 <= value <= 60):
+                flash("Credits must be between 0 and 60.", "danger")
+                return redirect(url_for("ac_college_credits", slug=slug))
+            _, err = db_update("koja_college_modules", {"id": mid, "college_id": c["id"], "course_id": course_id}, {"credits": value})
+            if not err:
+                saved += 1
+        flash("Saved credits for %d %s." % (saved, "module" if saved == 1 else "modules"), "success")
+        _college_audit(c, "credits.updated", course_id)
+        return redirect(url_for("ac_college_credits", slug=slug))
+    groups = []
+    for k in courses:
+        mods = sorted(_ac_rows_all("koja_college_modules", {"college_id": c["id"], "course_id": k["id"]}),
+                      key=lambda m: (m.get("sort_order") or 0, m.get("name") or ""))
+        groups.append((k, mods))
+    return _ac_page("Module credits", _COLLEGE_CREDITS_TPL, c=c, groups=groups, labels=_inst_labels(c))
 
 
 @app.route("/academic/application/<aid>/marks", methods=["GET", "POST"])
@@ -27887,7 +28209,7 @@ def ac_college_admissions(slug):
 {% for s in statuses %} · <a href="{{ url_for('ac_college_admissions', slug=c.slug, status=s) }}">{{ s | replace('_', ' ') }} ({{ counts[s] }})</a>{% endfor %}
 </p></div>
 <div class="card"><h3>Applications{% if status %}: {{ status | replace('_', ' ') }}{% endif %}</h3>
-{% for a in shown %}<p><a href="{{ url_for('ac_application_view', aid=a.id) }}">{{ a.full_name }}</a> · {{ course_names.get(a.course_id, 'Course') }}{% if a.intake_id %} · {{ intake_names.get(a.intake_id, '') }}{% endif %} · <strong>{{ a.status | replace('_', ' ') }}</strong></p>
+{% for a in shown %}<p><a href="{{ url_for('ac_application_view', aid=a.id) }}">{{ a.full_name }}</a> · {{ course_names.get(a.course_id, 'Course') }}{% if a.intake_id %} · {{ intake_names.get(a.intake_id, '') }}{% endif %}{% if a.study_year %} · {{ labels.level }} {{ a.study_year }}{% endif %}{% if a.study_term %}, {{ labels.term }} {{ a.study_term }}{% endif %} · <strong>{{ a.status | replace('_', ' ') }}</strong></p>
 <form method="post" action="{{ url_for('ac_college_portal_override', slug=c.slug, aid=a.id) }}" style="margin:0 0 10px">{{ csrf }}<label class="small">Student portal <select name="choice"><option value="" {{ 'selected' if not a.portal_override }}>Automatic (admission confirmed and deposit paid)</option><option value="on" {{ 'selected' if a.portal_override=='on' }}>Force on</option><option value="off" {{ 'selected' if a.portal_override=='off' }}>Force off</option></select></label> <button class="btn secondary" type="submit">Save</button></form>
 <form method="post" action="{{ url_for('ac_college_exemption', slug=c.slug, aid=a.id) }}" style="margin:0 0 12px">{{ csrf }}<p class="small" style="margin:0 0 4px">Exemptions: {% if exempt_kinds.get(a.id) %}{{ exempt_kinds[a.id]|join(', ') }}{% else %}none{% endif %}</p><label class="small">Type <select name="kind"><option value="exam">Exam docket</option><option value="results">Results</option></select></label> <label class="small">Reason <input name="reason" maxlength="300" placeholder="e.g. sponsor pays on 30 Nov" onkeydown="if(event.key==='Enter'){event.preventDefault();}"></label> <input type="hidden" name="exaction" value=""> <button class="btn secondary" type="submit" onclick="this.form.exaction.value='grant'">Grant exemption</button> <button class="btn secondary" type="submit" onclick="this.form.exaction.value='revoke'">Remove exemption</button></form>
 {% else %}<p>No applications here yet.</p>{% endfor %}</div>
@@ -27903,7 +28225,7 @@ def ac_college_admissions(slug):
 <button class="btn" type="submit">Add intake</button></form></div>''',
                     c=c, everything=everything, shown=shown, status=status, statuses=COLLEGE_ALL_STATUSES,
                     counts=counts, course_names=course_names, intake_names=intake_names, intakes=intakes,
-                    seats_used=seats_used, drafts=drafts, csrf_ok=True, portal_deposit=float((_ca_settings(c) or {}).get('portal_deposit') or 0), exempt_kinds=exempt_kinds)
+                    seats_used=seats_used, drafts=drafts, csrf_ok=True, portal_deposit=float((_ca_settings(c) or {}).get('portal_deposit') or 0), exempt_kinds=exempt_kinds, labels=_inst_labels(c))
 
 
 @app.route("/academic/college/<slug>/intake", methods=["POST"])
@@ -38088,7 +38410,7 @@ def _ec_course_view(a):
 <div class="ec-wrap">
 <div class="ec-nav" aria-label="Navigation">
 <h4>Navigation</h4>
-<a href="{{ url_for('ac_home') }}">Home</a>
+<a href="{{ url_for('ac_college_view', slug=c.slug) }}">Home</a>
 <a href="{{ url_for('ac_home', tutors=1) }}">Find a tutor</a>
 <a href="{{ url_for('ac_my_sessions') }}">My lessons</a>
 <a href="{{ url_for('ac_classes') }}">Group classes</a>
@@ -38569,6 +38891,96 @@ def ac_college_materials_bulk(slug):
             _college_audit(c, "materials.bulk", "%d files to %s" % (saved, module))
         return redirect(url_for("ac_college_materials_bulk", slug=slug))
     return _ac_page("Add files to modules", _COLLEGE_BULK_TPL, c=c, pairs=pairs, mb=COLLEGE_MATERIAL_MB)
+
+
+_COLLEGE_BRAND_TPL = """
+<h2>College branding</h2>
+<p class="small">Your logo and colour appear at the top of every college page. KOJA's name does not appear on college pages.</p>
+<form method="post" enctype="multipart/form-data" class="ent-panel" style="max-width:520px">
+  <label>Colour (hex, for example #0a5bd1)<br><input name="brand_color" value="{{ c.brand_color or '#0a5bd1' }}" maxlength="7" pattern="#[0-9a-fA-F]{6}" required></label>
+  <p class="small" style="margin-top:12px">Logo (PNG, JPG, WEBP or SVG, up to 2 MB)<br><input type="file" name="logo" accept="image/png,image/jpeg,image/webp,image/svg+xml"></p>
+  <p style="margin-top:12px"><button class="btn red" type="submit">Save branding</button></p>
+</form>
+<p class="small" style="margin-top:12px"><a href="{{ url_for('ac_college_staff_home', slug=c.slug) }}">Back to staff home</a></p>
+"""
+
+
+_COLLEGE_SETUP_TPL = """
+<h2>Institution setup</h2>
+<p class="small">Choose the kind of institution. The names on every page follow it.</p>
+<form method="post" class="ent-panel" style="max-width:560px">
+  <label>Institution type<br><select name="institution_type">
+    {% for key, t in types %}<option value="{{ key }}" {% if key == current_type %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+  </select></label>
+  <label style="display:block;margin-top:12px">Name for levels (for example Grade, Year, Form)<br><input name="level_label" maxlength="40" value="{{ c.level_label or '' }}" placeholder="{{ defaults.level }}"></label>
+  <label style="display:block;margin-top:12px">Name for units (for example Subject, Module, Course)<br><input name="unit_label" maxlength="40" value="{{ c.unit_label or '' }}" placeholder="{{ defaults.unit }}"></label>
+  <label style="display:block;margin-top:12px">Grade bands (letter:minimum mark, highest first)<br><input name="grade_bands" maxlength="200" value="{{ c.grade_bands or default_bands }}" required></label>
+  <p style="margin-top:12px"><button class="btn red" type="submit">Save setup</button></p>
+</form>
+<p class="small" style="margin-top:12px"><a href="{{ url_for('ac_college_staff_home', slug=c.slug) }}">Back to staff home</a></p>
+"""
+
+
+@app.route("/academic/college/<slug>/setup", methods=["GET", "POST"])
+@login_required
+def ac_college_setup(slug):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    if not _college_is_owner(c):
+        abort(403)
+    if request.method == "POST":
+        kind = clean(request.form.get("institution_type")).lower()
+        if kind not in INSTITUTION_TYPES:
+            flash("Choose school, college or university.", "danger")
+            return redirect(url_for("ac_college_setup", slug=slug))
+        bands, problem = _inst_parse_bands(request.form.get("grade_bands"))
+        if problem:
+            flash(problem, "danger")
+            return redirect(url_for("ac_college_setup", slug=slug))
+        payload = {"institution_type": kind, "level_label": clean(request.form.get("level_label"))[:40],
+                   "unit_label": clean(request.form.get("unit_label"))[:40], "grade_bands": bands, "updated_at": utc_now()}
+        _, err = db_update("koja_colleges", {"id": c["id"]}, payload)
+        if err:
+            flash("Setup could not be saved. Run koja_institution_setup.sql first.", "danger")
+        else:
+            _college_audit(c, "setup.updated", kind)
+            flash("Setup saved.", "success")
+        return redirect(url_for("ac_college_setup", slug=slug))
+    return _ac_page("Institution setup", _COLLEGE_SETUP_TPL, c=c, types=list(INSTITUTION_TYPES.items()),
+                    current_type=_inst_type(c), defaults=_inst_labels({}), default_bands=DEFAULT_GRADE_BANDS)
+
+
+@app.route("/academic/college/<slug>/branding", methods=["GET", "POST"])
+@login_required
+def ac_college_branding(slug):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    if not _college_is_owner(c):
+        abort(403)
+    if request.method == "POST":
+        color = clean(request.form.get("brand_color") or "")
+        if not _HEX_COLOR_RE.match(color):
+            flash("Enter a colour as #rrggbb, for example #0a5bd1.", "danger")
+            return redirect(url_for("ac_college_branding", slug=slug))
+        payload = {"brand_color": color, "updated_at": utc_now()}
+        logo = request.files.get("logo")
+        if logo and logo.filename:
+            info, uerr = upload_storage(logo, folder="college-branding", public=True, max_mb=2,
+                                        allowed={"png", "jpg", "jpeg", "webp", "svg"})
+            if uerr:
+                flash("Logo was not saved: %s" % uerr, "danger")
+                return redirect(url_for("ac_college_branding", slug=slug))
+            payload["brand_logo_url"] = info.get("url") or ""
+        _, err = db_update("koja_colleges", {"id": c["id"]}, payload)
+        if err:
+            flash("Branding could not be saved. Run koja_college_branding.sql first.", "danger")
+        else:
+            _college_audit(c, "branding.updated", color)
+            flash("Branding saved.", "success")
+        return redirect(url_for("ac_college_branding", slug=slug))
+    return _ac_page("College branding", _COLLEGE_BRAND_TPL, c=c)
 
 
 # ---- eLearning entry: log in to a college, which decides student or staff ----
