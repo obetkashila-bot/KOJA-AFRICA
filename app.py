@@ -24421,6 +24421,11 @@ def ac_college_view(slug):
   .ent-panel .btn{display:block;text-align:center;margin:6px 0;width:100%;box-sizing:border-box;color:#fff !important;text-decoration:none;padding:8px 4px;font-size:11px;border:0;border-radius:0}
   .ent-panel .btn.blue{background:#4a57a8}
   .ent-panel .btn.red{background:#c9473a}
+  .ent-login .btn{display:inline-block;width:auto;padding:4px 16px;background:#fff;color:#222 !important;border:1px solid #888;font-size:11px}
+  .ent-login table.ent-kv-table{width:100%;border-collapse:collapse}
+  .ent-login table.ent-kv-table td{padding:3px 4px;font-size:11px;vertical-align:middle;color:#222}
+  .ent-login table.ent-kv-table td:first-child{width:30%;font-weight:700}
+  .ent-login table.ent-kv-table input{width:100%;box-sizing:border-box;padding:3px;font-size:11px;border:1px solid #888}
   .ent-form{display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center}
   .ent-form label{font-size:11px;font-weight:bold}
   .ent-form input{width:100%;box-sizing:border-box;font-size:14px;padding:4px;min-width:0}
@@ -24430,7 +24435,7 @@ def ac_college_view(slug):
 </style>
 <div class="ent-outer">
   <div class="ent-top">{% if 'nkumbi' in (c.name or '')|lower %}<img src="{{ crest_src() }}" alt="Nkumbi International College crest">{% endif %}<div><h2>{{ c.name }}</h2><p class="small">College information system</p></div></div>
-  <div class="ent-nav">{% if user %}<a href="{{ request.path }}">Home</a><a href="{{ url_for('ac_my_applications') }}">My services</a><a href="{{ url_for('ac_home') }}">eLearning</a>{% else %}<a href="{{ request.path }}">Home</a><a href="#courses">Courses</a><a href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled?</a><a href="{{ url_for('login', next=request.path) }}">Log in</a>{% endif %}</div>
+  <div class="ent-nav">{% if user %}<a href="{{ request.path }}">Home</a><a href="{{ url_for('ac_my_applications') }}">My services</a><a href="{{ url_for('ac_elearning_gateway') }}">eLearning</a>{% else %}<a href="{{ request.path }}">Home</a><a href="#courses">Courses</a><a href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled?</a><a href="{{ url_for('login', next=request.path) }}">Log in</a>{% endif %}</div>
   <div class="ent-hero"><div class="ent-wrap">
     <div class="ent-panel">
       <h3>Online application and registration</h3>
@@ -24439,20 +24444,26 @@ def ac_college_view(slug):
       <a class="btn blue" href="#courses">Apply for a course</a>
       <a class="btn red" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Already enrolled? Register here</a>
     </div>
-    <div class="ent-panel">
+    <div class="ent-panel ent-login">
       <h3>Student and staff login</h3>
+      <p>Please use your student number or username and password to log in to the system.</p>
       {% if user %}
-        <p>You are logged in as <strong>{{ user.full_name or user.email }}</strong>.</p>
-        <a class="btn blue" href="{{ url_for('ac_my_applications') }}">Go to my services</a>
-        <p><a href="{{ url_for('logout') }}">Log out</a></p>
+        <table class="ent-kv-table">
+          <tr><td>Signed in as</td><td><strong>{{ user.full_name or user.email }}</strong></td></tr>
+          <tr><td></td><td><a class="btn" href="{{ url_for('ac_college_enter', slug=c.slug) }}">Go to my services</a></td></tr>
+          <tr><td></td><td><a href="{{ url_for('logout') }}">Log out</a></td></tr>
+        </table>
       {% else %}
-        <form method="post" action="{{ url_for('login', next=request.path) }}" class="ent-form">
-          <label>Username</label><input name="identifier" autocomplete="username" required>
-          <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-          <div class="full">{{ captcha_widget() }}</div>
-          <span></span><button class="btn blue" type="submit">Login</button>
+        <form method="post" action="{{ url_for('login', next=url_for('ac_college_enter', slug=c.slug)) }}" class="ent-form">
+          <table class="ent-kv-table">
+            <tr><td>Username</td><td><input name="identifier" autocomplete="username" required></td></tr>
+            <tr><td>Password</td><td><input name="password" type="password" autocomplete="current-password" required></td></tr>
+            <tr><td></td><td>{{ captcha_widget() }}</td></tr>
+            <tr><td></td><td><button class="btn" type="submit">Login</button></td></tr>
+          </table>
         </form>
-        <p style="margin-top:8px"><a href="{{ url_for('register', next=request.path) }}">Create an account</a> (students and staff)</p>
+        <p style="margin-top:8px"><a href="{{ url_for('register') }}">Create an account</a></p>
+        <p style="font-size:11px">After you log in, the system opens your student or staff area automatically.</p>
       {% endif %}
     </div>
   </div></div>
@@ -25616,7 +25627,7 @@ def _portal_menu_html(a):
         ("Course registration", url_for("ac_svc_registration", aid=aid), True, ""),
         ("Timetable", url_for("ac_svc_timetable", aid=aid), True, ""),
         ("Course materials", url_for("ac_svc_materials", aid=aid), True, ""),
-        ("eLearning", url_for("ac_home"), True, ""),
+        ("eLearning", url_for("ac_elearning_gateway"), True, ""),
         ("Assignments", url_for("ac_svc_assignments", aid=aid), True, ""),
         ("Quizzes", url_for("ac_svc_quizzes", aid=aid), True, ""),
         ("Course Evaluation", url_for("ac_svc_evaluation", aid=aid), True, ""),
@@ -38564,6 +38575,55 @@ def ac_college_materials_bulk(slug):
             _college_audit(c, "materials.bulk", "%d files to %s" % (saved, module))
         return redirect(url_for("ac_college_materials_bulk", slug=slug))
     return _ac_page("Add files to modules", _COLLEGE_BULK_TPL, c=c, pairs=pairs, mb=COLLEGE_MATERIAL_MB)
+
+
+# ---- eLearning entry: log in to a college, which decides student or staff ----
+
+_EC_GATEWAY_TPL = r'''
+<h2>eLearning</h2>
+<p class="small">Log in to your college. The system opens the student course page or the staff services for your account.</p>
+<div style="display:grid;gap:10px;max-width:520px;margin-top:12px">{% for k in colleges %}
+<div style="border:1px solid #ccc;padding:12px;background:#fff;color:#222"><strong>{{ k.name }}</strong><br>
+<a class="btn" href="{{ url_for('ac_college_enter', slug=k.slug) }}">Log in to {{ k.name }}</a></div>
+{% endfor %}</div>
+<p class="small" style="margin-top:14px"><a href="{{ url_for('ac_home', tutors=1) }}">Find a tutor instead</a></p>
+'''
+
+_EC_NOT_ENROLLED_TPL = r'''
+<h2>{{ c.name }}</h2>
+<p>Your account is not registered as a student or staff member at {{ c.name }} yet.</p>
+<p class="small">If you have applied, check the status of your application.</p>
+{% if user %}<p class="small">If you are staff at {{ c.name }}, ask the college office to add your account. Give them this sign-in name: <strong>{{ user.email or user.full_name }}</strong>.</p>{% endif %}
+<p><a class="btn" href="{{ url_for('ac_college_view', slug=c.slug) }}">View the college and apply</a>
+<a class="btn secondary" href="{{ url_for('ac_home', tutors=1) }}">Find a tutor</a></p>
+<p class="small" style="margin-top:10px"><a href="{{ url_for('ac_elearning_gateway') }}">Back</a></p>
+'''
+
+
+@app.route("/academic/elearning")
+@login_required
+def ac_elearning_gateway():
+    colleges = _ac_rows("koja_colleges", {"status": "verified"}, order="created_at.asc", limit=50)
+    if not colleges:
+        return redirect(url_for("ac_home", tutors=1))
+    if len(colleges) == 1:
+        return redirect(url_for("ac_college_enter", slug=colleges[0]["slug"]))
+    return _ac_page("eLearning", _EC_GATEWAY_TPL, colleges=colleges)
+
+
+@app.route("/academic/college/<slug>/enter")
+@login_required
+def ac_college_enter(slug):
+    c = _college_by_slug(slug)
+    if not c:
+        abort(404)
+    if _college_is_owner(c) or _college_any_staff(c) or _ca_my_assignments(c):
+        return redirect(url_for("ac_college_staff_home", slug=slug))
+    aid = _eapp_my_app_id(c)
+    row = first_row("koja_college_applications", {"id": aid}) if aid else None
+    if row and row.get("status") not in ("draft", "rejected", "declined"):
+        return redirect(url_for("ac_home"))
+    return _ac_page("eLearning", _EC_NOT_ENROLLED_TPL, c=c)
 
 
 if __name__=="__main__":
