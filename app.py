@@ -2534,7 +2534,7 @@ def register():
         role = clean(request.form.get("role")) or "student"
         terms_agreed = request.form.get("terms_agreed") == "1"
 
-        if role not in ("student","driver","teacher","doctor"):
+        if role not in ("student","driver","teacher","doctor","college_staff"):
             role = "student"
 
         if not full_name or not email or not password:
@@ -2598,6 +2598,7 @@ def register():
 <option value="student">Student / Customer</option>
 <option value="driver">Delivery Driver</option>
 <option value="teacher">Teacher / Tutor</option>
+<option value="college_staff">College staff (lecturer, department or school head)</option>
 <option value="doctor">Doctor</option>
 </select>
 <label>Password</label><input name="password" type="password" minlength="6" required>
@@ -24447,13 +24448,7 @@ def ac_college_view(slug):
     <div class="ent-panel ent-login">
       <h3>Student and staff login</h3>
       <p>Please use your student number or username and password to log in to the system.</p>
-      {% if user %}
-        <table class="ent-kv-table">
-          <tr><td>Signed in as</td><td><strong>{{ user.full_name or user.email }}</strong></td></tr>
-          <tr><td></td><td><a class="btn" href="{{ url_for('ac_college_enter', slug=c.slug) }}">Go to my services</a></td></tr>
-          <tr><td></td><td><a href="{{ url_for('logout') }}">Log out</a></td></tr>
-        </table>
-      {% else %}
+      {% if user %}<p class="small">You are signed in as <strong>{{ user.full_name or user.email }}</strong>. Log in here at the college to open your services. <a href="{{ url_for('logout') }}">Log out</a></p>{% endif %}
         <form method="post" action="{{ url_for('login', next=url_for('ac_college_enter', slug=c.slug)) }}" class="ent-form">
           <table class="ent-kv-table">
             <tr><td>Username</td><td><input name="identifier" autocomplete="username" required></td></tr>
@@ -24464,7 +24459,6 @@ def ac_college_view(slug):
         </form>
         <p style="margin-top:8px"><a href="{{ url_for('register') }}">Create an account</a></p>
         <p style="font-size:11px">After you log in, the system opens your student or staff area automatically.</p>
-      {% endif %}
     </div>
   </div></div>
   <div class="ent-foot">Online college services by KOJA AFRICA</div>
@@ -38593,7 +38587,7 @@ _EC_NOT_ENROLLED_TPL = r'''
 <h2>{{ c.name }}</h2>
 <p>Your account is not registered as a student or staff member at {{ c.name }} yet.</p>
 <p class="small">If you have applied, check the status of your application.</p>
-{% if user %}<p class="small">If you are staff at {{ c.name }}, ask the college office to add your account. Give them this sign-in name: <strong>{{ user.email or user.full_name }}</strong>.</p>{% endif %}
+{% if waiting %}<p>Your account is a college staff account. The college office has not yet added you to the staff list for {{ c.name }}. Give them this sign-in name: <strong>{{ user.email or user.full_name }}</strong>.</p>{% endif %}
 <p><a class="btn" href="{{ url_for('ac_college_view', slug=c.slug) }}">View the college and apply</a>
 <a class="btn secondary" href="{{ url_for('ac_home', tutors=1) }}">Find a tutor</a></p>
 <p class="small" style="margin-top:10px"><a href="{{ url_for('ac_elearning_gateway') }}">Back</a></p>
@@ -38623,7 +38617,8 @@ def ac_college_enter(slug):
     row = first_row("koja_college_applications", {"id": aid}) if aid else None
     if row and row.get("status") not in ("draft", "rejected", "declined"):
         return redirect(url_for("ac_home"))
-    return _ac_page("eLearning", _EC_NOT_ENROLLED_TPL, c=c)
+    waiting = (current_user() or {}).get("role") == "college_staff"
+    return _ac_page("eLearning", _EC_NOT_ENROLLED_TPL, c=c, waiting=waiting)
 
 
 if __name__=="__main__":
