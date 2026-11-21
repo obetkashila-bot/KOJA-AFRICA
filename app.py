@@ -24533,25 +24533,15 @@ def ac_college_new():
 
 @app.route("/academic/college/<slug>")
 def ac_college_view(slug):
-    c = _college_by_slug(slug)
-    uid = _ac_uid()
-    is_real_owner = bool(c and uid and c.get("owner_user_id") == uid)
-    is_admin = bool((current_user() or {}).get("is_admin"))
-    is_owner = is_real_owner or (bool(c) and is_admin)
-    if not c or (c.get("status") != "verified" and not is_owner and not is_admin):
-        abort(404)
-    seed_err = _college_seed_programmes(c) if is_owner or uid else None
-    courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
-    school_groups = _school_groups(courses)
-    enrolments = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=500) if is_owner else []
-    mine_ids = set()
-    enrolled_app = None
-    if uid and not is_real_owner:
-        mine = _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": uid}, limit=500)
-        mine_ids = {e.get("course_id") for e in mine}
-        # once a place is accepted or enrolled here, the student uses college services instead of applying again
-        enrolled_app = next((e for e in mine if e.get("status") in ("offered", "accepted", "enrolled")), None)
-    return _ac_page(c.get("name") or "College", r'''
+    return _college_page(slug, "home")
+
+
+@app.route("/academic/college/<slug>/programmes")
+def ac_college_programmes(slug):
+    return _college_page(slug, "programmes")
+
+
+_COLLEGE_HOME_TPL = r'''
 <style>
   .ent-outer{background:transparent;border:0;border-radius:0;box-shadow:none;padding:0;margin:0 calc(50% - 50vw);width:100vw;max-width:100vw;overflow:hidden}
   .ent-top{background:#fff;color:#222;display:flex;align-items:center;gap:12px;padding:10px 14px;flex-wrap:wrap;border:0}
@@ -24621,6 +24611,15 @@ def ac_college_view(slug):
 {% elif enrolled_app %}<div class="card"><h3>You have been admitted</h3>
 <p class="small">You have an accepted place{% if enrolled_app.student_number %} · student number <strong>{{ enrolled_app.student_number }}</strong>{% endif %}. You do not need to apply again. Use college services for fees, rooms and your application.</p>
 <p><a class="btn" href="{{ url_for('ac_student_portal', aid=enrolled_app.id) }}">College services</a> <a class="btn secondary" href="{{ url_for('ac_application_money', aid=enrolled_app.id) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_application_room', aid=enrolled_app.id) }}">Room</a></p></div>{% endif %}
+<div class="card"><h3>Programmes</h3><p class="small">The programmes this college offers, with fees and how to apply.</p><p><a class="btn" href="{{ url_for('ac_college_programmes', slug=c.slug) }}">View programmes</a></p></div>
+{% if is_owner %}<div class="card"><h3>Applications</h3>
+<p class="small">{{ enrolments|length }} application(s) so far.</p>
+<p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a> <a class="btn secondary" href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> <a class="btn secondary" href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> <a class="btn secondary" href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p></div>
+{% endif %}'''
+
+
+_COLLEGE_PROGRAMMES_TPL = r'''<p class="small"><a href="{{ url_for('ac_college_view', slug=c.slug) }}">Back to {{ c.name }}</a></p>
+<div class="card"><h2>Programmes</h2></div>
 <div class="card" id="courses"><h3>Courses</h3><p class="small"><strong>Already enrolled?</strong> <a class="btn secondary" href="{{ url_for('ac_college_continuing', slug=c.slug) }}">Register here</a> (for students in year 1, 2 or 3 who were admitted before)</p>{% if seed_err and is_owner %}<p class="small" style="color:#b00">Could not load the programme list: {{ seed_err }}</p>{% endif %}{% if is_real_owner %}<p class="small">Students see an "Apply for this course" button beside each course. You manage this college, so you do not apply here.</p>{% endif %}
 {% for g in school_groups %}<h3 style="margin:18px 0 4px">{{ g.name }}</h3>{% for k in g.courses %}<div class="card" style="margin:8px 0"><strong>{{ k.title }}</strong>{% if k.course_code %} <span class="small">· code {{ k.course_code }}</span>{% endif %}
 <p class="small">{% if k.fee %}{{ k.currency }} {{ '%.2f' % k.fee }}{% else %}Fee to be confirmed{% endif %}</p>
@@ -24645,10 +24644,29 @@ def ac_college_view(slug):
 <label>Currency<input name="currency" value="ZMW" maxlength="3"></label>
 <label>Description<textarea name="description" rows="3" maxlength="1000"></textarea></label>
 <button class="btn" type="submit">Add course</button></form></div>
-<div class="card"><h3>Applications</h3>
-<p class="small">{{ enrolments|length }} application(s) so far.</p>
-<p><a class="btn" href="{{ url_for('ac_college_admissions', slug=c.slug) }}">Open admissions</a> <a class="btn secondary" href="{{ url_for('ac_svc_timetable_manage', slug=c.slug) }}">Timetable</a> <a class="btn secondary" href="{{ url_for('ac_ca_manage', slug=c.slug) }}">Continuous assessment</a> <a class="btn secondary" href="{{ url_for('ac_college_finance', slug=c.slug) }}">Fees and payments</a> <a class="btn secondary" href="{{ url_for('ac_college_dashboard', slug=c.slug) }}">Dashboard</a></p></div>
-{% endif %}''',
+{% endif %}'''
+
+
+def _college_page(slug, section="home"):
+    c = _college_by_slug(slug)
+    uid = _ac_uid()
+    is_real_owner = bool(c and uid and c.get("owner_user_id") == uid)
+    is_admin = bool((current_user() or {}).get("is_admin"))
+    is_owner = is_real_owner or (bool(c) and is_admin)
+    if not c or (c.get("status") != "verified" and not is_owner and not is_admin):
+        abort(404)
+    seed_err = _college_seed_programmes(c) if is_owner or uid else None
+    courses = _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300)
+    school_groups = _school_groups(courses)
+    enrolments = _ac_rows("koja_college_applications", {"college_id": c["id"]}, order="created_at.desc", limit=500) if is_owner else []
+    mine_ids = set()
+    enrolled_app = None
+    if uid and not is_real_owner:
+        mine = _ac_rows("koja_college_applications", {"college_id": c["id"], "student_user_id": uid}, limit=500)
+        mine_ids = {e.get("course_id") for e in mine}
+        # once a place is accepted or enrolled here, the student uses college services instead of applying again
+        enrolled_app = next((e for e in mine if e.get("status") in ("offered", "accepted", "enrolled")), None)
+    return _ac_page(c.get("name") or "College", _COLLEGE_PROGRAMMES_TPL if section == "programmes" else _COLLEGE_HOME_TPL,
                     c=c, courses=courses, school_groups=school_groups, school_choices=COLLEGE_SCHOOLS, is_owner=is_owner, is_real_owner=is_real_owner, enrolments=enrolments, mine_ids=mine_ids, enrolled_app=enrolled_app, user=current_user(), seed_err=seed_err)
 
 
