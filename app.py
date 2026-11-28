@@ -1630,6 +1630,12 @@ var kojaRing=(function(){
 def render_page(title, body_template, **context):
     context["user"] = current_user()
     body = render_template_string(body_template, **context)
+    try:
+        biz_id = (request.view_args or {}).get("business_id")
+        if biz_id and request.endpoint != "bh_hub":
+            body = '<p class="small" style="margin:8px 0"><a href="%s">&larr; Business hub</a></p>' % url_for("bh_hub", business_id=biz_id) + body
+    except Exception:
+        logger.exception("business hub link could not be added")
     if g.get("inst_wording"):
         body = _inst_apply(body, g.inst_wording)
     prefs = session.get("koja_settings", {}) or {}
@@ -2950,49 +2956,86 @@ def ac_college_staff_home(slug):
     if not c or not (_college_is_owner(c) or _college_any_staff(c) or mine_modules):
         abort(403)
     owner = _college_is_owner(c)
-    entries = [
-        ("Continuous assessment (CA)", url_for("ac_ca_manage", slug=c["slug"]), True),
-        ("Programmes", url_for("ac_college_view", slug=c["slug"]) + "#courses", True),
-        ("Timetable", url_for("ac_svc_timetable_manage", slug=c["slug"]), True),
-        ("Admissions", url_for("ac_college_admissions", slug=c["slug"]), owner or _college_can(c, "accounts")),
-        ("Fees and payments", url_for("ac_college_finance", slug=c["slug"]), owner or _college_can(c, "accounts")),
-        ("Hostels and rooms", url_for("ac_college_accommodation", slug=c["slug"]), owner or _college_can(c, "rooms")),
-        ("Stores and mattresses", url_for("ac_college_mattresses", slug=c["slug"]), owner or _college_can(c, "stores")),
-    ]
-    entries = [(label, href) for label, href, show in entries if show]
-    if mine_modules:
-        entries.insert(0, ("Enter CA marks for my modules", url_for("ac_ca_manage", slug=c["slug"])))
-        entries.insert(1, ("My class lists", url_for("ac_college_my_classes", slug=c["slug"])))
-        entries.insert(2, ("My teaching timetable", url_for("ac_college_my_timetable", slug=c["slug"])))
-        entries.insert(3, ("Course materials and live class links", url_for("ac_college_materials_manage", slug=c["slug"])))
     my_schools = _college_my_schools(c)
-    if my_schools:
-        entries.insert(0, ("Head of school: " + ", ".join(my_schools) + " (courses, lecturers and timetable for your school)", url_for("ac_college_view", slug=c["slug"]) + "#courses"))
-    if mine_modules or owner:
-        entries.append(("Assignments (dropbox) for my modules", url_for("ac_college_assignments", slug=c["slug"])))
-        entries.append(("Quizzes for my modules", url_for("ac_college_quizzes", slug=c["slug"])))
-    if owner or my_schools or mine_modules:
-        entries.append(("Approvals (CA, exam marks, registration exceptions)", url_for("ac_college_approvals", slug=c["slug"])))
-    if owner or my_schools:
-        entries.append(("Allocate lecturers to modules (your school)", url_for("ac_college_allocation", slug=c["slug"])))
-    if owner or mine_modules:
-        entries.append(("Course pages: reading lists and announcements", url_for("ac_college_course_pages", slug=c["slug"])))
-        if _college_is_owner(c):
-            entries.append(("College branding: logo and colour", url_for("ac_college_branding", slug=c["slug"])))
-            entries.append(("Institution setup: type, names and grades", url_for("ac_college_setup", slug=c["slug"])))
-            entries.append(("Module credits (used for GPA)", url_for("ac_college_credits", slug=c["slug"])))
-            entries.append(("Years and semesters: sort students", url_for("ac_college_categories", slug=c["slug"])))
-        entries.append(("Analytics for my modules", url_for("ac_college_analytics", slug=c["slug"])))
-    if owner or my_schools:
-        entries.append(("Academic calendar", url_for("ac_college_calendar", slug=c["slug"])))
+    slug = c["slug"]
+    sections = []  # (heading, note, [(label, url)])
+
+    if owner:
+        sections.append(("Principal", "Everything in the college. Assign staff and set up the institution here.", [
+            ("Programmes", url_for("ac_college_programmes", slug=slug)),
+            ("Admissions", url_for("ac_college_admissions", slug=slug)),
+            ("Fees and payments", url_for("ac_college_finance", slug=slug)),
+            ("Hostels and rooms", url_for("ac_college_accommodation", slug=slug)),
+            ("Stores and mattresses", url_for("ac_college_mattresses", slug=slug)),
+            ("Continuous assessment (CA)", url_for("ac_ca_manage", slug=slug)),
+            ("Timetable", url_for("ac_svc_timetable_manage", slug=slug)),
+            ("Approvals (CA, exam marks, registration exceptions)", url_for("ac_college_approvals", slug=slug)),
+            ("Allocate lecturers to modules", url_for("ac_college_allocation", slug=slug)),
+            ("Assignments (dropbox) for all modules", url_for("ac_college_assignments", slug=slug)),
+            ("Quizzes for all modules", url_for("ac_college_quizzes", slug=slug)),
+            ("Course pages: reading lists and announcements", url_for("ac_college_course_pages", slug=slug)),
+            ("Academic calendar", url_for("ac_college_calendar", slug=slug)),
+            ("Analytics", url_for("ac_college_analytics", slug=slug)),
+            ("College branding: logo and colour", url_for("ac_college_branding", slug=slug)),
+            ("Institution setup: type, names and grades", url_for("ac_college_setup", slug=slug)),
+            ("Module credits (used for GPA)", url_for("ac_college_credits", slug=slug)),
+            ("Years and semesters: sort students", url_for("ac_college_categories", slug=slug)),
+            ("Modules: all programmes and modules", url_for("ac_college_programmes", slug=slug)),
+            ("Upload material to any module", url_for("ac_college_materials_bulk", slug=slug)),
+        ]))
+
+    for school in my_schools:
+        sections.append(("Head of school (HOD): " + school, "Your school only: its programmes, lecturers, timetable and approvals.", [
+            ("Programmes", url_for("ac_college_programmes", slug=slug)),
+            ("Approvals (CA, exam marks, registration exceptions)", url_for("ac_college_approvals", slug=slug)),
+            ("Allocate lecturers to modules (your school)", url_for("ac_college_allocation", slug=slug)),
+            ("Timetable", url_for("ac_svc_timetable_manage", slug=slug)),
+            ("Academic calendar", url_for("ac_college_calendar", slug=slug)),
+            ("Modules in your school", url_for("ac_college_programmes", slug=slug)),
+            ("Upload material to modules in your school", url_for("ac_college_materials_bulk", slug=slug)),
+        ]))
+
+    if mine_modules and not owner:
+        sections.append(("Lecturer", "Your modules only: marks, classes, materials and timetable.", [
+            ("My modules: students in each module", url_for("ac_college_my_classes", slug=slug)),
+            ("Upload material for my modules", url_for("ac_college_materials_bulk", slug=slug)),
+            ("Enter CA marks for my modules", url_for("ac_ca_manage", slug=slug)),
+            ("My class lists", url_for("ac_college_my_classes", slug=slug)),
+            ("My teaching timetable", url_for("ac_college_my_timetable", slug=slug)),
+            ("Course materials and live class links", url_for("ac_college_materials_manage", slug=slug)),
+            ("Assignments (dropbox) for my modules", url_for("ac_college_assignments", slug=slug)),
+            ("Quizzes for my modules", url_for("ac_college_quizzes", slug=slug)),
+            ("Course pages: reading lists and announcements", url_for("ac_college_course_pages", slug=slug)),
+            ("Approvals (CA, exam marks, registration exceptions)", url_for("ac_college_approvals", slug=slug)),
+            ("Analytics for my modules", url_for("ac_college_analytics", slug=slug)),
+            ("Programmes", url_for("ac_college_programmes", slug=slug)),
+        ]))
+
+    if not owner:
+        dept_items = []
+        if _college_can(c, "accounts"):
+            dept_items += [("Admissions", url_for("ac_college_admissions", slug=slug)), ("Fees and payments", url_for("ac_college_finance", slug=slug))]
+        if _college_can(c, "rooms"):
+            dept_items += [("Hostels and rooms", url_for("ac_college_accommodation", slug=slug))]
+        if _college_can(c, "stores"):
+            dept_items += [("Stores and mattresses", url_for("ac_college_mattresses", slug=slug))]
+        if dept_items:
+            sections.append(("Department staff", "The department the principal gave you.", dept_items))
+
+    if not sections:
+        sections.append(("No role yet", "The principal has not given you a role here yet. Ask the college office to assign your department, modules or school.", []))
+
     return _ac_page("Staff services", r'''
 <h2>Staff services</h2>
 <p class="small">{{ c.name }}</p>
-<ul style="line-height:2;padding-left:18px;font-size:15px">
-{% for label, href in entries %}<li><a href="{{ href }}">{{ label }}</a></li>{% endfor %}
-</ul>
+{% for heading, note, items in sections %}
+<div class="card"><h3>{{ heading }}</h3><p class="small">{{ note }}</p>
+{% if items %}<ul style="line-height:2;padding-left:18px;font-size:15px">
+{% for label, href in items %}<li><a href="{{ href }}">{{ label }}</a></li>{% endfor %}
+</ul>{% endif %}</div>
+{% endfor %}
 <p class="small"><a href="{{ url_for('ac_college_view', slug=c.slug) }}">Back to the college page</a></p>
-''', c=c, entries=entries)
+''', c=c, sections=sections)
 
 
 def _college_back(next_value):
@@ -7903,6 +7946,35 @@ def _notify_available_drivers(tracking_code, pickup, destination, fee):
                 notify_user(uid,'New KOJA delivery available',f'{tracking_code}: {pickup} → {destination}. Fee ZMW {float(fee or 0):.2f}. First approved driver to accept claims it.','delivery',None,'/driver/available-deliveries')
     except Exception: logger.exception('Available-driver notification failed')
 
+MARKET_DELIVERY_STATUSES = ("pending", "assigned", "picked_up", "delivered", "failed")
+
+
+def _market_after_paid(order):
+    """Records the money (ledger) and the local delivery task for an order that has been verified as paid.
+    Safe to run twice: each ledger line and each delivery task is written once per order."""
+    oid = str(order.get("id") or "")
+    if not oid:
+        return
+    seller = str(order.get("seller_id") or "")
+    currency = order.get("currency") or "ZMW"
+    lines = [
+        ("sale", seller, _money_num(order.get("item_amount"))),
+        ("commission", "koja", _money_num(order.get("commission_amount"))),
+        ("platform_fee", "koja", _money_num(order.get("platform_fee"))),
+        ("delivery_fee", "delivery", _money_num(order.get("delivery_fee"))),
+        ("seller_payable", seller, _money_num(order.get("seller_amount"))),
+    ]
+    for kind, party, amount in lines:
+        if amount:
+            db_insert("koja_market_ledger", {"id": str(uuid.uuid4()), "order_id": oid, "entry_kind": kind, "party": party,
+                                             "amount": amount, "currency": currency, "created_at": utc_now()})
+    if str(order.get("fulfillment_method") or "").lower() == "delivery" and not first_row("koja_market_deliveries", {"order_id": oid}):
+        db_insert("koja_market_deliveries", {"id": str(uuid.uuid4()), "order_id": oid, "seller_id": seller,
+                                             "buyer_id": str(order.get("buyer_id") or ""), "status": "pending",
+                                             "recipient_name": order.get("recipient_name") or "", "recipient_phone": order.get("recipient_phone") or "",
+                                             "delivery_address": order.get("delivery_address") or "", "created_at": utc_now(), "updated_at": utc_now()})
+
+
 def _finalize_market_order(order, tx):
     if not order or not tx: return False
     tx_ref=str(order.get('payment_reference') or '')
@@ -7928,6 +8000,10 @@ def _finalize_market_order(order, tx):
             return True
         logger.error('KOJA atomic market finalization failed order=%s: %s %s',order.get('id'),rpc_err or '',atomic_row or '')
         return False
+    try:
+        _market_after_paid(order)
+    except Exception:
+        logger.exception('KOJA market ledger/delivery record failed order=%s', order.get('id'))
     p=market_product(order.get('product_id'))
     # The atomic SQL function owns stock mutation; this process only reads the resulting product state.
     buyer_id=order.get('buyer_id')
@@ -8275,8 +8351,8 @@ def market_product_view(product_id):
     if not p or not as_bool(p.get('is_published')) or str(p.get('approval_status') or '').lower() not in {'approved','active'}: abort(404)
     seller=market_seller(p.get('seller_id')) or {}; seller_name=seller.get('store_name') or marketplace_seller_name(p.get('seller_id'))
     return render_page('Market Product',r'''
-<div class="card"><a href="{{ '/market' }}">← KOJA Market</a>{% if product.image_url %}<img src="{{ url_for('market_image',product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:500px;object-fit:contain;margin:14px 0;border-radius:12px">{% endif %}<p class="small">{{ product.category }} · {{ 'Digital product' if product.product_type=='digital' else 'Physical product' }}</p><h1>{{ product.title }}</h1><p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ money(product.price,product.currency) }}</h2><p class="small">Seller: {{ seller_name }}{% if product.location %} · {{ product.location }}{% endif %}</p>{% if product.product_type=='physical' %}<p><strong>Stock:</strong> {{ product.stock }}</p>{% endif %}{% if product.product_type=='physical' and product.stock|int<=0 %}<p><button class="btn secondary" type="button" disabled>Out of stock</button></p>{% endif %}{% if user and user.id|string != product.seller_id|string and (product.product_type!='physical' or product.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=product.id) }}" class="actions"><label style="width:100%">Quantity<input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required></label><button class="btn secondary" type="submit"> Add to Cart</button></form><form method="post" action="{{ url_for('market_order_create',product_id=product.id) }}"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Mobile-money phone</label><input name="phone" value="{{ user.phone or '' }}" required inputmode="tel"><label>Quantity</label><input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required>{% if product.product_type=='physical' %}<label>Recipient name</label><input name="recipient_name" required><label>Phone</label><input name="recipient_phone" required><label>Delivery address</label><textarea name="delivery_address" required placeholder="Town, area, house/shop details"></textarea><label>Notes (optional)</label><textarea name="notes"></textarea>{% endif %}<button class="btn" type="submit"> Buy Now</button></form>{% elif not user %}<a class="btn" href="{{ url_for('login',next=request.path) }}">Login to Buy</a>{% else %}<p class="small">This is your listing.</p>{% endif %}</div>
-''',product=p,seller_name=seller_name,money=market_money)
+<div class="card"><a href="{{ '/market' }}">← KOJA Market</a>{% if product.image_url %}<img src="{{ url_for('market_image',product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:500px;object-fit:contain;margin:14px 0;border-radius:12px">{% endif %}<p class="small">{{ product.category }} · {{ 'Digital product' if product.product_type=='digital' else 'Physical product' }}</p><h1>{{ product.title }}</h1><p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ money(product.price,product.currency) }}</h2>{% if product.min_order_qty and product.min_order_qty>1 %}<p class="small">Minimum order: {{ product.min_order_qty }} units</p>{% endif %}{% for mq,pr in tiers %}<p class="small">{{ mq }} units or more: {{ money(pr,product.currency) }} each</p>{% endfor %}<p class="small">Seller: {{ seller_name }}{% if product.location %} · {{ product.location }}{% endif %}</p>{% if product.product_type=='physical' %}<p><strong>Stock:</strong> {{ product.stock }}</p>{% endif %}{% if product.product_type=='physical' and product.stock|int<=0 %}<p><button class="btn secondary" type="button" disabled>Out of stock</button></p>{% endif %}{% if user and user.id|string != product.seller_id|string and (product.product_type!='physical' or product.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=product.id) }}" class="actions"><label style="width:100%">Quantity<input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required></label><button class="btn secondary" type="submit"> Add to Cart</button></form><form method="post" action="{{ url_for('market_order_create',product_id=product.id) }}"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Mobile-money phone</label><input name="phone" value="{{ user.phone or '' }}" required inputmode="tel"><label>Quantity</label><input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required>{% if product.product_type=='physical' %}<label>Recipient name</label><input name="recipient_name" required><label>Phone</label><input name="recipient_phone" required><label>Delivery address</label><textarea name="delivery_address" required placeholder="Town, area, house/shop details"></textarea><label>Notes (optional)</label><textarea name="notes"></textarea>{% endif %}<button class="btn" type="submit"> Buy Now</button></form>{% elif not user %}<a class="btn" href="{{ url_for('login',next=request.path) }}">Login to Buy</a>{% else %}<p class="small">This is your listing.</p>{% endif %}</div>
+''',product=p,seller_name=seller_name,money=market_money,tiers=_market_parse_tiers(p.get('price_tiers')) or [])
 
 @app.route('/market/order/<product_id>',methods=['POST'])
 @login_required
@@ -8420,6 +8496,36 @@ def flutterwave_webhook():
         return jsonify({'status':'retry','processed':results}),500
     return jsonify({'status':'ok','processed':results}),200
 
+def _market_parse_tiers(text):
+    """'20:85,100:70' -> [(20, 85.0), (100, 70.0)] sorted by quantity. Empty string -> []. Bad text -> None."""
+    raw = clean(text or "")
+    if not raw:
+        return []
+    out = []
+    for part in raw.split(","):
+        if ":" not in part:
+            return None
+        q, pr = [x.strip() for x in part.split(":", 1)]
+        try:
+            qty, price = int(q), float(pr)
+        except ValueError:
+            return None
+        if qty < 2 or price < 0:
+            return None
+        out.append((qty, price))
+    out.sort()
+    return out
+
+
+def _market_unit_price(p, qty):
+    """The price per unit for this quantity: the highest price level the buyer reaches, else the normal price."""
+    price = float(p.get("price") or 0)
+    for min_qty, level_price in _market_parse_tiers(p.get("price_tiers")) or []:
+        if qty >= min_qty:
+            price = level_price
+    return price
+
+
 @app.route('/market/sell',methods=['GET','POST'])
 @login_required
 def market_sell():
@@ -8431,6 +8537,7 @@ def market_sell():
         try: price=float(request.form.get('price') or 0); stock=max(0,int(request.form.get('stock') or 0))
         except Exception: price=-1; stock=0
         if not title or price<0 or ptype not in KOJA_MARKET_TYPES: flash('Title, product type and valid price are required.','danger'); return redirect(url_for('market_sell'))
+        if _market_parse_tiers(request.form.get('price_tiers')) is None: flash('Price levels must look like 20:85,100:70 (quantity 2 or more, price 0 or more).','danger'); return redirect(url_for('market_sell'))
         if ptype=='physical' and not clean(request.form.get('stock')).isdigit(): flash('Enter how many items are in stock (0 or more) for a physical product.','danger'); return redirect(url_for('market_sell'))
         if category not in KOJA_MARKET_CATEGORIES: category='Other'
         image=request.files.get('image'); image_url=None
@@ -8447,7 +8554,7 @@ def market_sell():
             up,err=upload_storage(f,'koja-market/digital',public=False)
             if err: flash('Digital file upload failed: '+str(err)[:300],'danger'); return redirect(url_for('market_sell'))
             digital_url=(up or {}).get('path'); digital_name=f.filename; stock=999999
-        payload={'seller_id':seller.get('user_id'),'title':title,'description':desc,'category':category,'product_type':ptype,'price':price,'currency':'ZMW','stock':stock,'sku':clean(request.form.get('sku')) or None,'image_url':image_url,'digital_file_url':digital_url,'digital_file_name':digital_name,'delivery_available':bool(request.form.get('delivery_available')),'delivery_fee':float(request.form.get('delivery_fee') or 0) if ptype=='physical' else 0,'location':clean(request.form.get('location')),'is_published':False,'approval_status':'pending','created_at':utc_now(),'updated_at':utc_now()}
+        payload={'seller_id':seller.get('user_id'),'title':title,'description':desc,'category':category,'product_type':ptype,'price':price,'currency':'ZMW','stock':stock,'min_order_qty':max(1,int(clean(request.form.get('min_order_qty')) or 1)) if clean(request.form.get('min_order_qty')).isdigit() else 1,'price_tiers':clean(request.form.get('price_tiers')) or None,'sku':clean(request.form.get('sku')) or None,'image_url':image_url,'digital_file_url':digital_url,'digital_file_name':digital_name,'delivery_available':bool(request.form.get('delivery_available')),'delivery_fee':float(request.form.get('delivery_fee') or 0) if ptype=='physical' else 0,'location':clean(request.form.get('location')),'is_published':False,'approval_status':'pending','created_at':utc_now(),'updated_at':utc_now()}
         _,err=db_insert('koja_market_products',payload)
         if err:
             if image_url: delete_storage_path(image_url)
@@ -8456,7 +8563,7 @@ def market_sell():
         else: flash('Product submitted for KOJA Market approval.','success')
         return redirect(url_for('market_my'))
     return render_page('Sell on KOJA Market',r'''
-<div class="hero"><h1> Sell on KOJA Market</h1><p>List physical or digital products. Approved sellers can reach customers across Africa.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required><label>Description</label><textarea name="description" maxlength="10000" required></textarea><div class="grid"><div><label>Type</label><select name="product_type" id="marketType"><option value="physical">Physical product</option><option value="digital">Digital product</option></select></div><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" required></div><div><label>Stock (physical products: required)</label><input name="stock" type="number" min="0" step="1" placeholder="How many you have, e.g. 5"></div></div><label>SKU (optional)</label><input name="sku"><label>Product image</label><input type="file" name="image" accept="image/jpeg,image/png,image/webp"><div id="digitalFields" style="display:none"><label>Digital file</label><input type="file" name="digital_file"></div><label>Location</label><input name="location" placeholder="City / town / area"><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" min="0" step="0.01" value="0"><label><input type="checkbox" name="delivery_available" checked style="width:auto"> Delivery available</label><button class="btn" type="submit"> Submit Listing</button></form></div><script>const t=document.getElementById('marketType'),d=document.getElementById('digitalFields');t.onchange=()=>d.style.display=t.value==='digital'?'block':'none';</script>
+<div class="hero"><h1> Sell on KOJA Market</h1><p>List physical or digital products. Approved sellers can reach customers across Africa.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required><label>Description</label><textarea name="description" maxlength="10000" required></textarea><div class="grid"><div><label>Type</label><select name="product_type" id="marketType"><option value="physical">Physical product</option><option value="digital">Digital product</option></select></div><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" required></div><div><label>Stock (physical products: required)</label><input name="stock" type="number" min="0" step="1" placeholder="How many you have, e.g. 5"></div></div><label>SKU (optional)</label><input name="sku"><label>Product image</label><input type="file" name="image" accept="image/jpeg,image/png,image/webp"><div id="digitalFields" style="display:none"><label>Digital file</label><input type="file" name="digital_file"></div><label>Location</label><input name="location" placeholder="City / town / area"><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" min="0" step="0.01" value="0"><label><input type="checkbox" name="delivery_available" checked style="width:auto"> Delivery available</label><label>Minimum order (units)</label><input name="min_order_qty" type="number" min="1" step="1" value="1"><label>Bulk price levels (optional): quantity:price per unit, for example 20:85,100:70</label><input name="price_tiers" maxlength="200" placeholder="20:85,100:70"><button class="btn" type="submit"> Submit Listing</button></form></div><script>const t=document.getElementById('marketType'),d=document.getElementById('digitalFields');t.onchange=()=>d.style.display=t.value==='digital'?'block':'none';</script>
 ''',categories=KOJA_MARKET_CATEGORIES)
 
 @app.route('/market/seller/register',methods=['GET','POST'])
@@ -8489,7 +8596,7 @@ def admin_market():
         elif kind=='order': db_update('koja_market_orders',{'id':iid},{'status':action,'updated_at':utc_now()}); flash('Order status updated.','success')
         return redirect(url_for('admin_market'))
     sellers=db_select('koja_market_sellers',order='created_at.desc',limit=300) or []; products=db_select('koja_market_products',order='created_at.desc',limit=300) or []; orders=db_select('koja_market_orders',order='created_at.desc',limit=300) or []
-    return render_page('KOJA Market Admin',r'''<div class="hero"><h1>️ KOJA Market Admin</h1><p>Approve sellers/products and monitor orders and KOJA commission.</p></div><div class="card"><h2>Seller Applications</h2><table><tr><th>Store</th><th>Location</th><th>Status</th><th>Action</th></tr>{% for s in sellers %}<tr><td>{{ s.store_name }}</td><td>{{ s.location }}</td><td>{{ s.approval_status }}</td><td>{% if s.approval_status!='approved' %}<form method="post"><input type="hidden" name="kind" value="seller"><input type="hidden" name="item_id" value="{{ s.id }}"><button class="btn success" name="action" value="approve">Approve</button><button class="btn danger" name="action" value="reject">Reject</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No seller applications.</td></tr>{% endfor %}</table></div><div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Type</th><th>Price</th><th>Status</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ p.product_type }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ p.approval_status }}</td><td>{% if p.approval_status!='approved' %}<form method="post"><input type="hidden" name="kind" value="product"><input type="hidden" name="item_id" value="{{ p.id }}"><button class="btn success" name="action" value="approve">Approve</button><button class="btn danger" name="action" value="reject">Reject</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div><div class="card"><h2>Orders</h2><table><tr><th>Order</th><th>Total</th><th>KOJA commission</th><th>Status</th><th>Action</th></tr>{% for o in orders %}<tr><td>{{ o.order_number }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ money(o.commission_amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status=='paid' %}<form method="post"><input type="hidden" name="kind" value="order"><input type="hidden" name="item_id" value="{{ o.id }}"><button class="btn success" name="action" value="processing">Processing</button><button class="btn" name="action" value="shipped">Shipped</button><button class="btn" name="action" value="completed">Completed</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No orders.</td></tr>{% endfor %}</table></div>''',sellers=sellers,products=products,orders=orders,money=market_money)
+    return render_page('KOJA Market Admin',r'''<div class="hero"><h1>️ KOJA Market Admin</h1><p><a class="btn secondary" href="{{ url_for('admin_market_operations') }}">Ledger, deliveries and seller balances</a></p><p>Approve sellers/products and monitor orders and KOJA commission.</p></div><div class="card"><h2>Seller Applications</h2><table><tr><th>Store</th><th>Location</th><th>Status</th><th>Action</th></tr>{% for s in sellers %}<tr><td>{{ s.store_name }}</td><td>{{ s.location }}</td><td>{{ s.approval_status }}</td><td>{% if s.approval_status!='approved' %}<form method="post"><input type="hidden" name="kind" value="seller"><input type="hidden" name="item_id" value="{{ s.id }}"><button class="btn success" name="action" value="approve">Approve</button><button class="btn danger" name="action" value="reject">Reject</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No seller applications.</td></tr>{% endfor %}</table></div><div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Type</th><th>Price</th><th>Status</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ p.product_type }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ p.approval_status }}</td><td>{% if p.approval_status!='approved' %}<form method="post"><input type="hidden" name="kind" value="product"><input type="hidden" name="item_id" value="{{ p.id }}"><button class="btn success" name="action" value="approve">Approve</button><button class="btn danger" name="action" value="reject">Reject</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div><div class="card"><h2>Orders</h2><table><tr><th>Order</th><th>Total</th><th>KOJA commission</th><th>Status</th><th>Action</th></tr>{% for o in orders %}<tr><td>{{ o.order_number }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ money(o.commission_amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status=='paid' %}<form method="post"><input type="hidden" name="kind" value="order"><input type="hidden" name="item_id" value="{{ o.id }}"><button class="btn success" name="action" value="processing">Processing</button><button class="btn" name="action" value="shipped">Shipped</button><button class="btn" name="action" value="completed">Completed</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No orders.</td></tr>{% endfor %}</table></div>''',sellers=sellers,products=products,orders=orders,money=market_money)
 
 @app.route('/market/cart')
 @login_required
@@ -8498,7 +8605,7 @@ def market_cart():
  for c in carts:
   p=pm.get(str(c.get('product_id')))
   if not p: continue
-  q=max(1,int(c.get('quantity') or 1)); line=float(p.get('price') or 0)*q; total+=line; items.append({'product':p,'quantity':q,'line':line})
+  q=max(1,int(c.get('quantity') or 1)); line=_market_unit_price(p,q)*q; total+=line; items.append({'product':p,'quantity':q,'line':line})
  return render_page('KOJA Market Cart',"""<div class='hero'><h1>My Cart</h1><p>Review your items before checkout.</p><a class='btn secondary' href='{{ '/market' }}'>Continue Shopping</a></div><div class='card'>{% for x in items %}<div style='padding:14px 0;border-bottom:1px solid var(--border)'><strong>{{ x.product.title }}</strong><p>{{ money(x.product.price,x.product.currency) }} x {{ x.quantity }} = {{ money(x.line,x.product.currency) }}</p><form method='post' action='{{ url_for('market_cart_remove',product_id=x.product.id) }}'><button class='btn danger'>Remove</button></form></div>{% else %}<p>Your cart is empty.</p>{% endfor %}{% if items %}<h2>Total: {{ money(total,'ZMW') }}</h2><a class='btn' href='{{ url_for('market_cart_checkout') }}'>Secure Checkout</a>{% endif %}</div>""",items=items,total=total,money=market_money)
 
 @app.route('/market/cart/add/<product_id>',methods=['POST'])
@@ -13667,7 +13774,124 @@ KOJA_PLATFORM_FEE_RATE = float(os.getenv('KOJA_PLATFORM_FEE_RATE','0.015'))
 KOJA_SELLER_PLANS = {'free':0.0,'pro':99.0,'business':299.0}
 KOJA_BUSINESS_PLANS = {'starter':99.0,'growth':299.0,'pro':699.0}
 
-@app.route('/market/checkout', methods=['GET','POST'])
+_MARKET_OPS_TPL = """
+<h2>Marketplace operations</h2>
+<p class="small"><a href="{{ url_for('admin_market') }}">Back to marketplace</a></p>
+<div class="card"><h3>Ledger totals</h3>
+<table style="width:100%;border-collapse:collapse"><tr><th align="left">Entry</th><th align="right">Total ({{ currency }})</th></tr>
+{% for kind, total in totals %}<tr style="border-top:1px solid #ddd"><td>{{ kind | replace('_', ' ') }}</td><td align="right">{{ '%.2f' % total }}</td></tr>{% else %}<tr><td colspan="2" class="small">No paid orders yet.</td></tr>{% endfor %}
+</table></div>
+<div class="card"><h3>Seller balances</h3>
+<table style="width:100%;border-collapse:collapse"><tr><th align="left">Seller</th><th align="right">Earned</th><th align="right">Paid or requested</th><th align="right">Balance</th></tr>
+{% for row in balances %}<tr style="border-top:1px solid #ddd"><td class="small">{{ row.seller }}</td><td align="right">{{ '%.2f' % row.earned }}</td><td align="right">{{ '%.2f' % row.paid }}</td><td align="right"><strong>{{ '%.2f' % row.balance }}</strong></td></tr>{% else %}<tr><td colspan="4" class="small">No sales yet.</td></tr>{% endfor %}
+</table></div>
+<div class="card"><h3>Payout requests</h3>
+{% for p in payouts %}<div style="border-top:1px solid #ddd;padding:8px 0">
+<p><strong>{{ '%.2f' % (p.amount or 0) }} {{ p.currency or 'ZMW' }}</strong> to {{ p.destination }} · {{ p.status }}</p>
+{% if p.status == 'requested' %}<form method="post" class="small"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="payout_id" value="{{ p.id }}">
+<button class="btn" name="action" value="payout_paid" type="submit">Mark paid</button> <button class="btn secondary" name="action" value="payout_rejected" type="submit">Reject</button></form>{% endif %}</div>
+{% else %}<p class="small">No payout requests.</p>{% endfor %}
+</div>
+<div class="card"><h3>Local deliveries</h3>
+{% for d in deliveries %}<div style="border-top:1px solid #ddd;padding:8px 0">
+<p><strong>Order {{ d.order_id }}</strong> · {{ d.status | replace('_', ' ') }}{% if d.courier_user_id %} · courier {{ d.courier_user_id }}{% endif %}</p>
+<p class="small">{{ d.recipient_name }} · {{ d.recipient_phone }} · {{ d.delivery_address }}</p>
+<form method="post" class="small"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="delivery_id" value="{{ d.id }}">
+<input name="courier_user_id" value="{{ d.courier_user_id or '' }}" placeholder="Courier user ID" style="width:200px">
+<button class="btn" name="action" value="assign" type="submit">Assign courier</button></form>
+<form method="post" class="small"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="delivery_id" value="{{ d.id }}">
+<select name="status">{% for st in statuses %}<option value="{{ st }}" {{ 'selected' if st == d.status }}>{{ st | replace('_', ' ') }}</option>{% endfor %}</select>
+<button class="btn secondary" name="action" value="status" type="submit">Update status</button></form></div>
+{% else %}<p class="small">No delivery tasks yet.</p>{% endfor %}
+</div>
+"""
+
+
+@app.route("/admin/market/operations", methods=["GET", "POST"])
+@admin_required
+def admin_market_operations():
+    if request.method == "POST":
+        action = clean(request.form.get("action"))
+        if action == "assign":
+            did = clean(request.form.get("delivery_id")); courier = clean(request.form.get("courier_user_id"))[:100]
+            payload = {"courier_user_id": courier or None, "updated_at": utc_now()}
+            if courier:
+                payload["status"] = "assigned"
+            _, err = db_update("koja_market_deliveries", {"id": did}, payload)
+            flash("Courier assigned." if not err else "Courier could not be assigned. Run koja_market_upgrade.sql first.", "success" if not err else "danger")
+        elif action == "status":
+            did = clean(request.form.get("delivery_id")); status = clean(request.form.get("status"))
+            if status not in MARKET_DELIVERY_STATUSES:
+                flash("Choose a valid delivery status.", "danger")
+            else:
+                _, err = db_update("koja_market_deliveries", {"id": did}, {"status": status, "updated_at": utc_now()})
+                flash("Delivery updated." if not err else "Delivery could not be updated.", "success" if not err else "danger")
+        elif action in ("payout_paid", "payout_rejected"):
+            pid = clean(request.form.get("payout_id"))
+            new_status = "paid" if action == "payout_paid" else "rejected"
+            _, err = db_update("koja_market_payouts", {"id": pid, "status": "requested"}, {"status": new_status})
+            flash("Payout updated." if not err else "Payout could not be updated.", "success" if not err else "danger")
+        return redirect(url_for("admin_market_operations"))
+    ledger = db_select("koja_market_ledger", order="created_at.desc", limit=5000) or []
+    totals = {}
+    earned = {}
+    for row in ledger:
+        amount = float(row.get("amount") or 0)
+        totals[row.get("entry_kind")] = totals.get(row.get("entry_kind"), 0) + amount
+        if row.get("entry_kind") == "seller_payable":
+            earned[row.get("party")] = earned.get(row.get("party"), 0) + amount
+    payouts = db_select("koja_market_payouts", order="created_at.desc", limit=300) or []
+    paid = {}
+    for po in payouts:
+        if po.get("status") in ("requested", "paid"):
+            paid[str(po.get("user_id"))] = paid.get(str(po.get("user_id")), 0) + float(po.get("amount") or 0)
+    balances = []
+    for seller_id, amount in earned.items():
+        out = paid.get(str(seller_id), 0)
+        balances.append({"seller": seller_id, "earned": amount, "paid": out, "balance": amount - out})
+    balances.sort(key=lambda r: -r["balance"])
+    deliveries = db_select("koja_market_deliveries", order="created_at.desc", limit=200) or []
+    return render_page("Marketplace operations", _MARKET_OPS_TPL, totals=sorted(totals.items()), currency="ZMW",
+                       balances=balances, payouts=payouts, deliveries=deliveries, statuses=MARKET_DELIVERY_STATUSES)
+
+
+_MARKET_COURIER_TPL = """
+<h2>My deliveries</h2>
+<p class="small">Deliveries the KOJA office has assigned to you.</p>
+{% for d in deliveries %}<div class="card"><p><strong>Order {{ d.order_id }}</strong> · {{ d.status | replace('_', ' ') }}</p>
+<p class="small">Deliver to: {{ d.recipient_name }} · {{ d.recipient_phone }} · {{ d.delivery_address }}</p>
+{% if d.status not in ('delivered','failed') %}<form method="post" action="{{ url_for('market_courier_status', did=d.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<select name="status"><option value="picked_up">Picked up</option><option value="delivered">Delivered</option><option value="failed">Could not deliver</option></select>
+<button class="btn" type="submit">Update</button></form>{% endif %}</div>
+{% else %}<div class="card"><p>No deliveries assigned to you.</p></div>{% endfor %}
+"""
+
+
+@app.route("/market/courier")
+@login_required
+def market_courier():
+    uid = str((current_user() or {}).get("id") or "")
+    deliveries = db_select("koja_market_deliveries", {"courier_user_id": uid}, order="created_at.desc", limit=100) or [] if uid else []
+    return render_page("My deliveries", _MARKET_COURIER_TPL, deliveries=deliveries)
+
+
+@app.route("/market/courier/<did>/status", methods=["POST"])
+@login_required
+def market_courier_status(did):
+    uid = str((current_user() or {}).get("id") or "")
+    d = first_row("koja_market_deliveries", {"id": did}) if uid else None
+    if not d or str(d.get("courier_user_id") or "") != uid:
+        abort(403)
+    status = clean(request.form.get("status"))
+    if status not in ("picked_up", "delivered", "failed"):
+        flash("Choose picked up, delivered or could not deliver.", "danger")
+    else:
+        _, err = db_update("koja_market_deliveries", {"id": did}, {"status": status, "updated_at": utc_now()})
+        flash("Delivery updated." if not err else "Delivery could not be updated.", "success" if not err else "danger")
+    return redirect(url_for("market_courier"))
+
+
+@app.route("/market/checkout", methods=['GET','POST'])
 @login_required
 def market_cart_checkout():
     uid=(current_user() or {}).get('id')
@@ -13681,7 +13905,9 @@ def market_cart_checkout():
         q=max(1,int(c.get('quantity') or 1))
         if str(p.get('product_type') or 'physical')=='physical' and q>int(p.get('stock') or 0):
             flash(f"Not enough stock for {p.get('title','item')}.",'danger'); return redirect(url_for('market_cart'))
-        line=float(p.get('price') or 0)*q; subtotal+=line
+        minq=max(1,int(p.get('min_order_qty') or 1))
+        if q<minq: flash(f"{p.get('title','item')} needs at least {minq} units.",'danger'); return redirect(url_for('market_cart'))
+        line=_market_unit_price(p,q)*q; subtotal+=line
         item_delivery=float(p.get('delivery_fee') or 0) if str(p.get('product_type') or 'physical')=='physical' and as_bool(p.get('delivery_available')) else 0
         delivery+=item_delivery
         items.append({'product':p,'quantity':q,'line':line,'delivery':item_delivery})
@@ -13892,7 +14118,7 @@ def global_business_payouts(business_id):
 @login_required
 def koja_business():
     uid=(current_user() or {}).get('id'); businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
-    return render_page('KOJA Business',r'''<div class="hero"><h1> KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a>{% for b in businesses %}<a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">{{ b.name }}</a>{% endfor %}</div></div><div class="grid"><div class="card"><h3>POS</h3><p>Record sales and issue receipts.</p></div><div class="card"><h3>Inventory</h3><p>Products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Income, expenses and profit/loss.</p></div><div class="card"><h3>CRM</h3><p>Customers and suppliers.</p></div><div class="card"><h3>Payroll</h3><p>Employees and payroll records.</p></div><div class="card"><h3>Online Store</h3><p>Connect your business catalogue to KOJA Market.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>{% if can_live %}<div class="card"><h3>KOJA Live</h3><p>You are an approved KOJA Live partner. Add streams and manage the ones you added.</p><div class="actions"><a class="btn" href="{{ url_for('media_live_add') }}">Add live stream</a><a class="btn secondary" href="{{ url_for('media_live_manage') }}">Manage my streams</a></div></div>{% endif %}''',businesses=businesses,can_live=_media_live_can_publish(current_user()))
+    return render_page('KOJA Business',r'''<div class="hero"><h1> KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a>{% for b in businesses %}<a class="btn secondary" href="{{ url_for('bh_hub',business_id=b.id) }}">{{ b.name }}</a>{% endfor %}</div></div><div class="grid"><div class="card"><h3>POS</h3><p>Record sales and issue receipts.</p></div><div class="card"><h3>Inventory</h3><p>Products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Income, expenses and profit/loss.</p></div><div class="card"><h3>CRM</h3><p>Customers and suppliers.</p></div><div class="card"><h3>Payroll</h3><p>Employees and payroll records.</p></div><div class="card"><h3>Online Store</h3><p>Connect your business catalogue to KOJA Market.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>{% if can_live %}<div class="card"><h3>KOJA Live</h3><p>You are an approved KOJA Live partner. Add streams and manage the ones you added.</p><div class="actions"><a class="btn" href="{{ url_for('media_live_add') }}">Add live stream</a><a class="btn secondary" href="{{ url_for('media_live_manage') }}">Manage my streams</a></div></div>{% endif %}''',businesses=businesses,can_live=_media_live_can_publish(current_user()))
 
 @app.route('/business/new',methods=['GET','POST'])
 @login_required
@@ -14566,7 +14792,7 @@ def _post_simple_accounting_entry(business_id,kind,amount,description,source_typ
     if existing: return existing.get('id')
     _ensure_business_accounting(business_id)
     if kind=='sale':
-        method=str(payment_method or 'cash').lower(); debit_code='1010' if 'bank' in method else ('1020' if 'mobile' in method else '1000'); credit_code='4000'
+        method=str(payment_method or 'cash').lower(); debit_code='1010' if ('bank' in method or 'card' in method) else ('1020' if 'mobile' in method else '1000'); credit_code='4000'  # card sales settle into the bank
     else:
         debit_code={'rent':'5200','salary':'5300','transport':'5400','marketing':'5600','utilities':'5500','tax':'5700'}.get(str(category or '').lower(),'5100'); credit_code='1000'
     debit_id=_account_id(business_id,debit_code); credit_id=_account_id(business_id,credit_code)
@@ -21662,32 +21888,55 @@ def bh_hub(business_id):
 <div class="bh-row">{% if prof and prof.status == 'published' %}<span class="bh-chip ok">Public profile live</span>{% elif prof %}<span class="bh-chip warn">Profile {{ prof.status }}</span>{% else %}<span class="bh-chip warn">No public profile yet</span>{% endif %}
 {% if prof and prof.industry %}<span class="bh-chip">{{ names.get(prof.industry) }}</span>{% endif %}</div></div>
 
-<div class="card"><h2>Businesses &mdash; run it</h2><div class="bh-grid">
+<div class="card"><h2>Overview</h2><div class="bh-grid">
+<div class="card"><h3>Dashboard</h3><p class="muted">Today's sales, money and what needs attention.</p><a class="btn" href="{{ url_for('business_dashboard', business_id=b.id) }}">Open dashboard</a></div>
+<div class="card"><h3>Core status</h3><p class="muted">Checks that the business is set up correctly.</p><a class="btn secondary" href="{{ url_for('business_core_status', business_id=b.id) }}">Check status</a></div>
+<div class="card"><h3>Records</h3><p class="muted">Business records and documents.</p><a class="btn secondary" href="{{ url_for('business_records', business_id=b.id) }}">Records</a></div>
+<div class="card"><h3>Subscription</h3><p class="muted">Your KOJA Business plan.</p><a class="btn secondary" href="{{ url_for('business_subscription', business_id=b.id) }}">Subscription</a></div></div></div>
+
+<div class="card"><h2>Your company &mdash; what you sell</h2><div class="bh-grid">
 <div class="card"><h3>Company profile</h3><p class="muted">Public page, industry, logo and what you offer.</p><a class="btn" href="{{ url_for('bh_profile_edit', business_id=b.id) }}">Edit profile</a>{% if prof %} <a class="btn secondary" href="{{ url_for('bh_company', slug=prof.slug) }}">View</a>{% endif %}</div>
 <div class="card"><h3>Products</h3><p class="muted">{{ stats.products }} product(s)</p><a class="btn" href="{{ url_for('business_products', business_id=b.id) }}">Manage products</a></div>
 <div class="card"><h3>Services</h3><p class="muted">{{ stats.services }} active</p><a class="btn" href="{{ url_for('bh_services', business_id=b.id) }}">Manage services</a></div>
 <div class="card"><h3>Inventory</h3><p class="muted">Stock levels, adjustments, movement log.</p><a class="btn" href="{{ url_for('bh_inventory', business_id=b.id) }}">Open inventory</a></div>
 <div class="card"><h3>Pricing</h3><p class="muted">Volume / wholesale price tiers.</p><a class="btn" href="{{ url_for('bh_pricing', business_id=b.id) }}">Set pricing</a></div>
+<div class="card"><h3>Store</h3><p class="muted">Your online store.</p><a class="btn" href="{{ url_for('business_store', business_id=b.id) }}">Open store</a></div></div></div>
+
+<div class="card"><h2>Sell and get paid</h2><div class="bh-grid">
 <div class="card"><h3>POS</h3><p class="muted">Sell in-store, print receipts, post to accounting.</p><a class="btn success" href="{{ url_for('bh_pos', business_id=b.id) }}">Open POS</a></div>
-<div class="card"><h3>Staff</h3><a class="btn" href="{{ url_for('business_employees', business_id=b.id) }}">Employees</a></div>
 <div class="card"><h3>Invoices</h3><a class="btn" href="{{ url_for('business_invoices', business_id=b.id) }}">Invoices</a></div>
 <div class="card"><h3>CRM</h3><a class="btn" href="{{ url_for('business_customers', business_id=b.id) }}">Customers</a></div>
-<div class="card" id="payments"><h3>Payments</h3><a class="btn" href="{{ url_for('business_payments', business_id=b.id) }}">Payments</a> <a class="btn secondary" href="{{ url_for('business_accounting_v2', business_id=b.id) }}">Accounting</a></div></div></div>
+<div class="card" id="payments"><h3>Payments and accounting</h3><a class="btn" href="{{ url_for('business_payments', business_id=b.id) }}">Payments</a> <a class="btn secondary" href="{{ url_for('business_accounting_v2', business_id=b.id) }}">Accounting</a></div>
+<div class="card"><h3>Delivery</h3><p class="muted">Paid B2B orders create delivery jobs automatically when fulfilment starts.</p><a class="btn" href="{{ url_for('business_delivery', business_id=b.id) }}">Delivery</a></div></div></div>
 
-<div class="card"><h2>Industries &amp; customers &mdash; be found</h2><div class="bh-grid">
-<div class="card"><h3>Industries</h3><p class="muted">Ten sectors, with company listings.</p><a class="btn" href="{{ url_for('bh_industries') }}">Browse industries</a></div>
-<div class="card"><h3>Directory</h3><p class="muted">How customers search, compare and request quotes.</p><a class="btn" href="{{ url_for('business_directory_v2') }}">Open directory</a></div>
-<div class="card"><h3>Orders &amp; payment</h3><p class="muted">Quotes, orders, secure payment, fulfilment.</p><a class="btn" href="{{ url_for('b2bv4_centre', business_id=b.id) }}">B2B centre</a></div></div></div>
-
-<div class="card"><h2>KOJA Connect+ &mdash; trade with other businesses</h2><div class="bh-grid">
-<div class="card"><h3>RFQ board</h3><p class="muted">Open requests from buyers you can quote on.</p><a class="btn" href="{{ url_for('bh_rfq_board', business_id=b.id) }}">Find RFQs</a></div>
-<div class="card"><h3>Contracts</h3><p class="muted">{{ stats.contracts }} open</p><a class="btn" href="{{ url_for('bh_contracts', business_id=b.id) }}">Contracts</a></div>
-<div class="card"><h3>Partnerships</h3><p class="muted">{{ stats.partners }} active / proposed</p><a class="btn" href="{{ url_for('bh_partnerships', business_id=b.id) }}">Partnerships</a></div>
+<div class="card"><h2>Suppliers and team</h2><div class="bh-grid">
 <div class="card"><h3>Suppliers &amp; connections</h3><a class="btn" href="{{ url_for('business_suppliers', business_id=b.id) }}">Suppliers</a> <a class="btn secondary" href="{{ url_for('business_connect', business_id=b.id) }}">Connections</a></div>
+<div class="card"><h3>Employees</h3><a class="btn" href="{{ url_for('business_employees', business_id=b.id) }}">Employees</a> <a class="btn secondary" href="{{ url_for('business_staff_v2', business_id=b.id) }}">Staff tools</a></div>
+<div class="card"><h3>Payroll</h3><a class="btn" href="{{ url_for('business_payroll', business_id=b.id) }}">Payroll</a></div>
+<div class="card"><h3>Live</h3><p class="muted">Live sessions for your team and customers.</p><a class="btn secondary" href="{{ url_for('business_live_v2', business_id=b.id) }}">Open live</a></div></div></div>
+
+<div class="card"><h2>Trade with other businesses (KOJA Connect+)</h2><div class="bh-grid">
+<div class="card"><h3>B2B centre</h3><p class="muted">Quotes, orders, secure payment, fulfilment.</p><a class="btn" href="{{ url_for('b2bv4_centre', business_id=b.id) }}">B2B centre</a> <a class="btn secondary" href="{{ url_for('b2bv4_request_new', business_id=b.id) }}">New request</a></div>
+<div class="card"><h3>RFQ board</h3><p class="muted">Open requests from buyers you can quote on.</p><a class="btn" href="{{ url_for('bh_rfq_board', business_id=b.id) }}">Find RFQs</a></div>
+<div class="card"><h3>Contracts</h3><p class="muted">{{ stats.contracts }} open</p><a class="btn" href="{{ url_for('bh_contracts', business_id=b.id) }}">Contracts</a> <a class="btn secondary" href="{{ url_for('bh_contract_new', business_id=b.id) }}">New contract</a></div>
+<div class="card"><h3>Partnerships</h3><p class="muted">{{ stats.partners }} active / proposed</p><a class="btn" href="{{ url_for('bh_partnerships', business_id=b.id) }}">Partnerships</a></div>
 <div class="card"><h3>Investors</h3><p class="muted">Raise funds or invest.</p><a class="btn" href="{{ url_for('bh_fundraising', business_id=b.id) }}">Fundraising</a> <a class="btn secondary" href="{{ url_for('bh_investors_home') }}">Investor hub</a></div></div></div>
 
-<div class="card"><h2>KOJA Delivery &mdash; goods &amp; services reach the customer</h2><p class="muted">Paid B2B orders create delivery jobs automatically when fulfilment starts.</p>
-<a class="btn" href="{{ url_for('business_delivery', business_id=b.id) }}">Delivery</a></div></div>''',
+<div class="card"><h2>Import, export and global trade</h2><div class="bh-grid">
+<div class="card"><h3>Global hub</h3><p class="muted">Trade across borders from one place.</p><a class="btn" href="{{ url_for('global_business_hub', business_id=b.id) }}">Global hub</a></div>
+<div class="card"><h3>Import and export</h3><a class="btn" href="{{ url_for('global_import_export', business_id=b.id) }}">Import and export</a></div>
+<div class="card"><h3>Customs</h3><a class="btn secondary" href="{{ url_for('business_customs', business_id=b.id) }}">Customs</a></div>
+<div class="card"><h3>Freight</h3><a class="btn secondary" href="{{ url_for('business_freight', business_id=b.id) }}">Freight</a></div>
+<div class="card"><h3>Disputes and payouts</h3><a class="btn secondary" href="{{ url_for('global_business_dispute', business_id=b.id) }}">Disputes</a> <a class="btn secondary" href="{{ url_for('global_business_payouts', business_id=b.id) }}">Payouts</a></div></div></div>
+
+<div class="card"><h2>Insight and assistant</h2><div class="bh-grid">
+<div class="card"><h3>AI assistant</h3><a class="btn" href="{{ url_for('business_ai', business_id=b.id) }}">Open AI</a></div>
+<div class="card"><h3>Intelligence</h3><a class="btn" href="{{ url_for('business_intelligence', business_id=b.id) }}">Intelligence</a> <a class="btn secondary" href="{{ url_for('business_intelligence_v3', business_id=b.id) }}">Intelligence v3</a></div></div></div>
+
+<div class="card"><h2>Be found by customers</h2><div class="bh-grid">
+<div class="card"><h3>Industries</h3><p class="muted">Ten sectors, with company listings.</p><a class="btn" href="{{ url_for('bh_industries') }}">Browse industries</a></div>
+<div class="card"><h3>Directory</h3><p class="muted">How customers search, compare and request quotes.</p><a class="btn" href="{{ url_for('business_directory_v2') }}">Open directory</a></div></div></div>
+</div>''',
                     b=b, prof=prof, stats=stats, names=BH_INDUSTRY_NAME)
 
 
@@ -37591,8 +37840,19 @@ def _eapp_pairs(c):
                 out.append({"course_id": k["id"], "module": m, "label": "%s · %s" % (k["title"], m)})
         return out
     names = {k["id"]: k["title"] for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, limit=300)}
-    return [{"course_id": r["course_id"], "module": r["module"], "label": "%s · %s" % (names.get(r["course_id"], ""), r["module"])}
-            for r in _ca_my_assignments(c)]
+    out = [{"course_id": r["course_id"], "module": r["module"], "label": "%s · %s" % (names.get(r["course_id"], ""), r["module"])}
+           for r in _ca_my_assignments(c)]
+    schools = set(_college_my_schools(c))
+    if schools:
+        seen = {(x["course_id"], x["module"]) for x in out}
+        for k in _ac_rows("koja_college_courses", {"college_id": c["id"]}, order="created_at.asc", limit=300):
+            if k.get("school") not in schools:
+                continue
+            for m in _course_module_names(c["id"], k["id"]):
+                if (k["id"], m) not in seen:
+                    seen.add((k["id"], m))
+                    out.append({"course_id": k["id"], "module": m, "label": "%s · %s" % (k["title"], m)})
+    return out
 
 
 def _eapp_parse_pair(c, value):
